@@ -1,0 +1,71 @@
+From 01430ad93527dbdc5c1f3c6a42bf04bb5a6abdeb Mon Sep 17 00:00:00 2001
+From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 05:04:43 -0600
+Subject: [PATCH 15/15] Murlocs: weapons always drawn, a moment before the loot
+ window opens
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01JU37XfnHTvru3VVz2sNN7z
+---
+ src/server/game/Handlers/LootHandler.cpp  | 13 +++++++++++++
+ src/server/game/SoloSim/solosim_races.cpp | 14 ++++++++++++--
+ 2 files changed, 25 insertions(+), 2 deletions(-)
+
+diff --git a/src/server/game/Handlers/LootHandler.cpp b/src/server/game/Handlers/LootHandler.cpp
+index 428c19b..9092a60 100644
+--- a/src/server/game/Handlers/LootHandler.cpp
++++ b/src/server/game/Handlers/LootHandler.cpp
+@@ -368,6 +368,19 @@ void WorldSession::HandleLootOpcode(WorldPacket& recvData)
+     if (player->IsNonMeleeSpellCast(false))
+         player->InterruptNonMeleeSpells(false);
+ 
++    // SoloWoW: murlocs (race 15) have no kneel-to-loot animation, so the window opened at once - give the corpse the same
++    // moment of rummaging every other race spends (Nov 17)
++    if (player->getRace() == 15)
++    {
++        player->StopMoving();
++        player->m_Events.AddEventAtOffset([player, guid]()
++        {
++            if (player->IsAlive() && player->IsInWorld())
++                player->SendLoot(guid, LOOT_CORPSE);
++        }, 900ms);
++        return;
++    }
++
+     player->SendLoot(guid, LOOT_CORPSE);
+ }
+ 
+diff --git a/src/server/game/SoloSim/solosim_races.cpp b/src/server/game/SoloSim/solosim_races.cpp
+index 6cdacd1..ea91e81 100644
+--- a/src/server/game/SoloSim/solosim_races.cpp
++++ b/src/server/game/SoloSim/solosim_races.cpp
+@@ -1,6 +1,7 @@
+ // SoloWoW: our own playable races' server-side rules.
+ // Murloc (race 15): the creature murloc body can hold weapons but can't wear drawn armour (armour textures are painted
+-// for humanoid bodies), so only the weapon slots are shown; armour still counts in full.
++// for humanoid bodies), so only the weapon slots are shown; armour still counts in full. Weapons are always drawn, and
++// looting waits a moment (LootHandler.cpp) as there is no loot animation.
+ #include "Player.h"
+ #include "PlayerScript.h"
+ #include "ScriptMgr.h"
+@@ -14,7 +15,16 @@ namespace
+     class solosim_race_looks : public PlayerScript
+     {
+     public:
+-        solosim_race_looks() : PlayerScript("solosim_race_looks", { PLAYERHOOK_ON_AFTER_SET_VISIBLE_ITEM_SLOT }) { }
++        solosim_race_looks() : PlayerScript("solosim_race_looks", { PLAYERHOOK_ON_AFTER_SET_VISIBLE_ITEM_SLOT, PLAYERHOOK_ON_UPDATE }) { }
++
++        // the creature body has no sheathe/draw animations and no proper back or hip points: murlocs keep their weapons
++        // in hand, like every murloc you've ever met (Nov 17). Ranged stays ranged while shooting.
++        void OnPlayerUpdate(Player* player, uint32 /*diff*/) override
++        {
++            if (player->getRace() != RACE_MURLOC || player->GetSheath() != SHEATH_STATE_UNARMED) return;
++            if (player->GetWeaponForAttack(BASE_ATTACK, true) || player->GetWeaponForAttack(OFF_ATTACK, true))
++                player->SetSheath(SHEATH_STATE_MELEE);
++        }
+ 
+         void OnPlayerAfterSetVisibleItemSlot(Player* player, uint8 slot, Item* /*item*/) override
+         {
+-- 
+2.56.0.windows.2
+

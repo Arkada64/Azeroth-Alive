@@ -52,9 +52,7 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
     water, per-zone looks, longer view distance; copies files next to Wow.exe, hooks Direct3D in memory) into the
     installer (fetched, not vendored). Check its docs/INSTALL.md against our DXVK + ReShade setup and our MPQs first.
     "Could be used with Project Reforged models": their HD packs are their files - we don't ship or copy them.
-  - Murloc (then every new race the same way): no starter quests in the start area; sheath/unsheath doesn't work and
-    weapons on the back sit wrong; items picked up instantly (no loot animation); characters start without spells -
-    a murloc shaman had no class spells and no auto-attack on 1 (the race's playercreateinfo_spell/action rows).
+
 - **Audit Nov 17 (01:55) - fix these:**
   - Not in the sim yet (no towns, adventurers, camps, herds or thinning there - an empty world): Eastern Kingdoms -
     Alterac Mountains, the Hinterlands, Searing Gorge, Burning Steppes, Blasted Lands, Deadwind Pass, Western and
@@ -330,6 +328,21 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
   animations (the creature model has none - needs animation merging from the murloc costume model or new ones), skin
   colours (one model per colour, or a working composite), our own racials and icon, the customization rows that do
   nothing, unsheathing outside combat to check.
+- **Murloc, second pass, Nov 17 (05:05), not yet seen in game** (the user's playtest: no starter quests, sheathing
+  broken and back weapons misaligned, instant looting, no class spells or auto-attack for a shaman):
+  - spells/bars/kits: the Trolls' (all six murloc classes; the Undead have no shamans or hunters, so those got nothing),
+    shared class skills from rows trolls share with another Horde race - existing murloc characters need re-creating;
+  - quests: murlocs are in every quest, item, race condition and area-aura mask that has the Undead or the Trolls -
+    2257 quests incl. Deathknell's whole chain, 4924 items, 33 conditions (no mask had bit 16384 before);
+  - weapons always drawn (the body has no sheath animations or proper back/hip points; murlocs carry them in hand);
+  - looting waits 0.9 s (no kneel animation, the window opened at once);
+  - own icon: the game's murloc head icon on the race button and portrait (was the Undead's);
+  - the 25 "Skeleton" NPC looks now use the Undead body (they'd have drawn as murlocs);
+  - jumping falls back to the swimming paddle (as falling already did) instead of standing upright.
+  Still open: sit/emote animations (need animations made for this model - the fallback trick only fits jumps), skin
+  colours (one baked texture; needs a working composite), our own racials, the customization rows that do nothing.
+  Same check for the other races: Worgen and Goblin come from mod-worgoblin, whose SQL already widens quests, items
+  and starting skills/bars for them; Tuskarr/Furbolg/Naga will need this whole list from the start.
 - Classes (the user's convention, Nov 16): follow what Reforged allows in play, then adjust by each race's lore
   and nature as we go. Murloc: Warrior, Hunter, Rogue, Priest, Shaman, Mage (no Paladin, Death Knight, Warlock,
   Druid - as seen in their game; their file tables still list Warlock, so their server trims it). Worgen:

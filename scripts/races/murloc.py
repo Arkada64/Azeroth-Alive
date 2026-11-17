@@ -148,6 +148,22 @@ for raw in so.raw:
                 for at in (8, 104, 200): struct.pack_into("<I", raw, at + 4 * k, 0)
 so.save(os.path.join(OUT, "DBFilesClient", "CharStartOutfit.dbc"))
 
+# ---- animations the creature murloc lacks: a jump fell back to standing (an upright hop). Jumping now falls back to
+#      the swimming paddle, the same as falling already does - only models with no jump of their own (Nov 17)
+ad = Dbc(SRC + r"\AnimationData.dbc")
+for i in range(len(ad.raw)):
+    row = ad.row(i)
+    if row[0] == 38 and row[5] == 0: row[5] = 41; ad.set_row(i, row)
+ad.save(os.path.join(OUT, "DBFilesClient", "AnimationData.dbc"))
+
+# ---- NPC looks that used race 15 when it was the unused "Skeleton" slot (25 of them): they would draw as murlocs now;
+#      the Undead body carries their baked skeleton textures (Nov 17)
+cx = Dbc(SRC + r"\CreatureDisplayInfoExtra.dbc"); moved = 0
+for i in range(len(cx.raw)):
+    row = cx.row(i)
+    if row[1] == RACE: row[1] = 5; cx.set_row(i, row); moved += 1
+save(cx, "CreatureDisplayInfoExtra.dbc"); print(f"CreatureDisplayInfoExtra.dbc: {moved} skeleton looks moved to the Undead body")
+
 # ---- what the Horde shares: skills and class abilities the Trolls have together with at least one other Horde race
 #      (so shaman and hunter lines come along, troll-only racials don't); reputations as the Forsaken's (Orc + Undead)
 def widen(d, fields, name, shared):
@@ -174,9 +190,29 @@ button13 = ('<CheckButton name="CharacterCreateRaceButton13" inherits="Character
 assert anchor in xml
 open(OUT + r"\Interface\GlueXML\CharacterCreate.xml", "w", encoding="utf-8").write(xml.replace(anchor, button13 + anchor, 1))
 lua = open(GLUE + r"\CharacterCreate.lua", encoding="utf-8").read().replace("MAX_RACES = 12;", "MAX_RACES = 13;", 1)
-lua += ('\n-- SoloWoW: murlocs borrow the Undead icon until they have their own\n'
+lua += ('\n-- SoloWoW: murlocs have no slot in the race-icon sheets, so their button and portrait use the game\'s own murloc\n'
+        '-- head icon (Nov 17; was the Undead icon). The coords entries stay so the stock code finds something.\n'
         'RACE_ICON_TCOORDS["MURLOC_MALE"] = RACE_ICON_TCOORDS["SCOURGE_MALE"];\n'
         'RACE_ICON_TCOORDS["MURLOC_FEMALE"] = RACE_ICON_TCOORDS["SCOURGE_FEMALE"];\n'
+        'local SOLO_MURLOC_ICON = "Interface\\\\Icons\\\\INV_Misc_Head_Murloc_01";\n'
+        'local SOLO_ROUND = "Interface\\\\Glues\\\\CharacterCreate\\\\UI-CharacterCreate-RacesRound";\n'
+        'local function SoloMurlocButton()\n'
+        '\tlocal n = _G["CharacterCreateRaceButton13NormalTexture"]; local p = _G["CharacterCreateRaceButton13PushedTexture"];\n'
+        '\tif ( n ) then n:SetTexture(SOLO_MURLOC_ICON); n:SetTexCoord(0.08, 0.92, 0.08, 0.92); end\n'
+        '\tif ( p ) then p:SetTexture(SOLO_MURLOC_ICON); p:SetTexCoord(0.08, 0.92, 0.08, 0.92); end\n'
+        'end\n'
+        'local function SoloMurlocPortrait()\n'
+        '\tlocal _, fileString = GetNameForRace();\n'
+        '\tif ( fileString and strupper(fileString) == "MURLOC" ) then\n'
+        '\t\tCharacterCreateRaceIcon:SetTexture(SOLO_MURLOC_ICON); CharacterCreateRaceIcon:SetTexCoord(0.08, 0.92, 0.08, 0.92);\n'
+        '\telse\n'
+        '\t\tCharacterCreateRaceIcon:SetTexture(SOLO_ROUND);\n'
+        '\tend\n'
+        'end\n'
+        'local SoloSetRace = SetCharacterRace;\n'
+        'function SetCharacterRace(id) SoloSetRace(id); SoloMurlocPortrait(); end\n'
+        'local SoloSetGender = SetCharacterGender;\n'
+        'function SetCharacterGender(sex) SoloSetGender(sex); SoloMurlocPortrait(); end\n'
         '\n-- SoloWoW: race buttons laid out by faction to fit their banner, however many races each side has: each\n'
         '-- side\'s buttons share the space between the banner title and the gender buttons, shrinking when needed.\n'
         'local SOLO_RACE_TOP, SOLO_RACE_SPACE, SOLO_RACE_GAP = -50, 310, 10;\n'
@@ -206,6 +242,7 @@ lua += ('\n-- SoloWoW: murlocs borrow the Undead icon until they have their own\
         'function CharacterCreateEnumerateRaces(...)\n'
         '\tSoloEnumerateRaces(...);\n'
         '\tSoloArrangeRaceButtons();\n'
+        '\tSoloMurlocButton();\n'
         'end\n')
 open(OUT + r"\Interface\GlueXML\CharacterCreate.lua", "w", encoding="utf-8").write(lua)
 gp = open(GLUE + r"\GlueParent.lua", encoding="utf-8").read()

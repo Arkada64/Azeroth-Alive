@@ -31,3 +31,15 @@ INSERT INTO `playercreateinfo_spell_custom` (`racemask`, `classmask`, `Spell`, `
 -- small and quick
 DELETE FROM `player_race_stats` WHERE `Race` = 15;
 INSERT INTO `player_race_stats` (`Race`, `Strength`, `Agility`, `Stamina`, `Intellect`, `Spirit`) VALUES (15, -2, 3, 0, -1, 2);
+
+-- quests, items, race conditions and area auras: murlocs are allowed wherever the Undead (their start, Deathknell and
+-- the Forsaken's chains) or the Trolls (shaman/hunter class quests) are - Nov 17: they got no quests at all, as no
+-- race mask in the game included bit 16384. "Everyone" masks include the Undead, so they're covered too.
+UPDATE `quest_template` SET `AllowableRaces` = `AllowableRaces` | 16384
+WHERE `AllowableRaces` <> 0 AND (`AllowableRaces` & (16 | 128)) AND NOT (`AllowableRaces` & 16384);
+UPDATE `item_template` SET `AllowableRace` = `AllowableRace` | 16384
+WHERE `AllowableRace` NOT IN (0, -1) AND (`AllowableRace` & (16 | 128)) AND NOT (`AllowableRace` & 16384);
+UPDATE `conditions` SET `ConditionValue1` = `ConditionValue1` | 16384
+WHERE `ConditionTypeOrReference` = 16 AND (`ConditionValue1` & (16 | 128)) AND NOT (`ConditionValue1` & 16384);
+UPDATE `spell_area` SET `racemask` = `racemask` | 16384
+WHERE `racemask` <> 0 AND (`racemask` & (16 | 128)) AND NOT (`racemask` & 16384);
