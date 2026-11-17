@@ -185,6 +185,10 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
   helmets (see RACES-SURVEY.md). Both must work as NPCs too: our own CreatureDisplayInfoExtra looks in our patch,
   the race in the sim's race pools (townsfolk, adventurers, NPCBots), and faction/reputation so guards and
   townsfolk treat them as their side.
+- Classes (the user's convention, Nov 16): follow what Reforged allows in play, then adjust by each race's lore
+  and nature as we go. Murloc: Warrior, Hunter, Rogue, Priest, Shaman, Mage (no Paladin, Death Knight, Warlock,
+  Druid - as seen in their game; their file tables still list Warlock, so their server trims it). Worgen:
+  Warrior, Hunter, Rogue, Priest, Mage, Warlock, Druid (their list; Cataclysm also had Death Knight - decide later).
 - Start zones (proposed, not yet confirmed): Worgen in Teldrassil (Gilneas refugees taken in by the night elves;
   3.3.5's Gilneas terrain isn't playable) unless the module's own start is better; Murloc on Tirisfal's north coast
   (low-level murloc camps by Brill, matches Reforged's undead/troll starter kits) as Horde, or a neutral murloc
