@@ -178,6 +178,22 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
   trimmed more than kills in 20-60; 60-70 TBC pace; 70-80 native. Show hours per band before switching on. Same
   curve for sim adventurers and companions.
 - Vanilla difficulty beyond XP: tougher mobs, slower regen, scarcer gear (to design).
+- **Revert the WotLK-era easing of vanilla and TBC content (the user, Nov 17 - VERY important to them).** 3.3.5 is not
+  how levels 1-70 played: patches 3.0-3.3 (and some late TBC ones) made the old world and Outland much easier. Goal:
+  1-60 plays like vanilla, 60-70 like TBC, Northrend as is. Method: go through the official patch notes 3.0.2 -> 3.3.5
+  (and 2.3/2.4 for the older easing), list every change that touched 1-70 difficulty, and revert each one that's data
+  or config (world DB, DBC, spell fixes, settings) - reversible, like the Era preset (originals kept in backup tables,
+  -Off restores). Nothing below is confirmed yet; verify each against the patch notes before changing anything:
+  - mob strength in old content: outdoor elites and group quests made non-elite/soloable, lower-level dungeon mob
+    health/damage cut, dungeon/raid entry requirements (attunements, keys) removed;
+  - levelling speed: XP to level cut for 20-60 and 60-70, quest XP and gold raised (the XP bands are part of this - check
+    their numbers against the real pre-3.0 tables);
+  - travel and comfort: riding levels/costs (done in Era), flight paths added, faster mounts, things that made the
+    world smaller;
+  - the player's side: class/talent power at low levels (the 3.0 talent redesign, mana and regen, ammo/reagents,
+    heirlooms) - the hardest and riskiest to revert; decide item by item, some may stay.
+  Where reverting needs code (e.g. a class change), it goes in as its own opt-in setting. Fits with the vanilla
+  difficulty line above and the XP bands; together they become the Era preset's full scope.
 
 ## 7. Memory and performance
 - **Server manager (the user's ask, Nov 17):** the server shutdown doesn't really work (the launcher leaves MySQL and
