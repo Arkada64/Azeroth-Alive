@@ -117,6 +117,14 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
   marks a piece due (kit_due, max 6) and the weakest due pieces are rerolled at the next spawn; anything equipped on a
   sim body (your gifts, their finds) is recorded. Still to do: the sim's fight odds from the real kit (gear tier is
   still abstract), quality curve and set coherence on top of NPCBots' generator.
+- **Generated loot for the player (the user's pick, Nov 17 - next before PvP drops; noted, not started):** WoW's own
+  items only - real items of the right level, slot and class use, each drop rolling its own random suffix/property
+  ("of the Bear", "of the Monkey"...) from the client's ItemRandomSuffix/ItemRandomProperties data. No new item IDs, no
+  client patch, never an invented stat formula (DESIGN.md "Loot", Nov 15). Comes from:
+  1. generated quest rewards, by the quest's difficulty (stakes ladder band, grey never);
+  2. dungeons once they're re-infested (the sim-taken old places);
+  3. rarely, at random, from enemies of every kind - on top of the normal static loot, at world-drop-like odds.
+  New named uniques (option B) stay parked.
 - **World-PvP gear drops (the user's design):** when someone is killed in world PvP (never in battlegrounds or
   Wintergrasp), there's a chance they drop one random piece of their equipped gear, which someone else can loot.
   **Sim people's gear only - never the player's.** Fits the war track (enemy bodies near you, sim clashes off-screen).
