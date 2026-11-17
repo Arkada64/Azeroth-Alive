@@ -12,6 +12,21 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
   pinned trickerer/AzerothCore-wotlk-with-NPCBots commit.
 
 ## 1. Correctness (now)
+- **Audit Nov 17 (01:55) - fix these:**
+  - Not in the sim yet (no towns, adventurers, camps, herds or thinning there - an empty world): Eastern Kingdoms -
+    Alterac Mountains, the Hinterlands, Searing Gorge, Burning Steppes, Blasted Lands, Deadwind Pass, Western and
+    Eastern Plaguelands; Kalimdor - Thousand Needles, Feralas, Tanaris, Un'Goro Crater, Silithus, Felwood,
+    Winterspring, Azshara, Moonglade. That's most of the 35-60 world, so the sim's people stall in the 40s (highest
+    45, only 14 of 468 are 40+): add these zones (ExpandRegion handles a grown world) - and with them the neutral
+    goblin towns (Gadgetzan, Everlook) and the Horde/Alliance outposts there.
+  - Horde capitals are small: Orgrimmar's and the Undercity's sites were filed under Durotar and Tirisfal (their
+    city zone ids 1637/1497 never show), so they get town-sized folk (48 for all of Durotar, 48 for Tirisfal) instead
+    of a capital's 100-220 like Stormwind/Ironforge/Darnassus; Thunder Bluff (1638) has no townsfolk at all.
+    Also: the indoor-door search for the Undercity, and the Horde capitals' districts.
+  - Bad hunting grounds: training dummies count as level 60-80 grounds in Stormwind, Ironforge, Darnassus and Durotar;
+    Lordaeron Citizen (the Undercity's ghostly ambient folk) is a 15-70 ground in Tirisfal; some grounds have
+    merged level ranges (Flatland Cougar 7-80 in Mulgore, Slimeshell Makrura 12-57 in the Barrens). Exclude
+    dummies/ambient/friendly creatures and keep a ground's level range to its own creature.
 - Deaths by place: raids never touch the sim; dungeons rarely final (15% of the open-world chance); open world as is.
   SoloSim.Permadeath = 0 turns permanent death off for testing. (done Nov 16)
 - Catch-up: one week cap (SoloSim.Live.CatchUpHours 168), quieter: deaths x0.3, people with regard >= 40 for a player
