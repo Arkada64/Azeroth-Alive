@@ -1,7 +1,7 @@
 From 6220edc33f890a491d382c7b212cdc09fd5beb7b Mon Sep 17 00:00:00 2001
 From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
 Date: Mon, 16 Nov 2026 21:50:52 -0600
-Subject: [PATCH 05/23] Wildlife v1: hunting pressure, neglect spills, herds
+Subject: [PATCH 05/24] Wildlife v1: hunting pressure, neglect spills, herds
  and predator packs
 
 - sim_ground: hunted grounds yield less and recover daily; adventurers drift to quieter ones
