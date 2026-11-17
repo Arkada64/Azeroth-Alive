@@ -1,7 +1,7 @@
 From c26dd18f1c246ac67cb8c3ef34d990849ceb04c6 Mon Sep 17 00:00:00 2001
 From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
 Date: Tue, 17 Nov 2026 04:44:48 -0600
-Subject: [PATCH 14/21] SoloSim: playtest fixes - errand pay by level, distance
+Subject: [PATCH 14/22] SoloSim: playtest fixes - errand pay by level, distance
  and danger; fewer requests; rumours only real news; escorts settle where
  taken; townsfolk hold still while talked to and speak in /say
 

@@ -1,7 +1,7 @@
 From 715e3c52598848c56cb459d4428b2a234075c7de Mon Sep 17 00:00:00 2001
 From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
 Date: Tue, 17 Nov 2026 05:56:41 -0600
-Subject: [PATCH 19/21] SoloSim: danger recognition (danger map, the careful
+Subject: [PATCH 19/22] SoloSim: danger recognition (danger map, the careful
  avoid, sneak past and move away, townsfolk stay in), adventurers talk near
  you, townsfolk use benches, boards, mailboxes, forges and fires; clash odds
  for a fuller world

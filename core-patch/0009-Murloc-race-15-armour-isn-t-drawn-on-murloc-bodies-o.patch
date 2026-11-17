@@ -1,7 +1,7 @@
 From a98b24fd281574aa9863ac1eed83a51ffb81e52d Mon Sep 17 00:00:00 2001
 From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
 Date: Mon, 16 Nov 2026 23:58:39 -0600
-Subject: [PATCH 09/21] Murloc race (15): armour isn't drawn on murloc bodies,
+Subject: [PATCH 09/22] Murloc race (15): armour isn't drawn on murloc bodies,
  only weapons
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

@@ -1,0 +1,210 @@
+From 094544500c26a0e0c944307ec0c16ac6ab0efbce Mon Sep 17 00:00:00 2001
+From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 06:18:39 -0600
+Subject: [PATCH 22/22] Fewer letters from innkeepers, wildlife moves about and
+ comes in varied group sizes, adventurer bodies walk in town and at their own
+ pace on the road
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01JU37XfnHTvru3VVz2sNN7z
+---
+ src/server/game/AI/NpcBots/bot_ai.cpp     |  4 +++
+ src/server/game/AI/NpcBots/botbubble.cpp  |  7 +++++
+ src/server/game/AI/NpcBots/botbubble.h    |  1 +
+ src/server/game/SoloSim/solosim.cpp       | 34 +++++++++++++++++++----
+ src/server/game/SoloSim/solosim.h         |  2 ++
+ src/server/game/SoloSim/solosim_camps.cpp | 10 +++++++
+ 6 files changed, 52 insertions(+), 6 deletions(-)
+
+diff --git a/src/server/game/AI/NpcBots/bot_ai.cpp b/src/server/game/AI/NpcBots/bot_ai.cpp
+index 6fc97eb..b7e2ccd 100644
+--- a/src/server/game/AI/NpcBots/bot_ai.cpp
++++ b/src/server/game/AI/NpcBots/bot_ai.cpp
+@@ -15868,6 +15868,7 @@ void bot_ai::ResetEngageTimer(uint32 delay)
+ 
+ void bot_ai::OnStartAttack(Unit const* u)
+ {
++    if (me->IsWalking()) me->SetWalk(false);   // SoloWoW: never chase at a walk
+     if (u->GetGUID() != _lastTargetGuid)
+     {
+         ResetChase(u);
+@@ -15888,6 +15889,7 @@ bool bot_ai::StartAttack(Unit const* u, bool force)
+ void bot_ai::JustEngagedWith(Unit* u)
+ {
+     _atHome = false;
++    if (me->IsWalking()) me->SetWalk(false);   // SoloWoW: a stroller runs when it comes to a fight
+ 
+     //clear gossip during combat. See CheckAuras() for restore
+     if (me->HasNpcFlag(UNIT_NPC_FLAG_GOSSIP))
+@@ -18823,6 +18825,8 @@ void bot_ai::Evade()
+                     //    wpc->SetTempSummonType(TEMPSUMMON_TIMED_DESPAWN);
+ 
+                     movepos.Relocate(me);
++                    if (IsWanderer() && BotBubble::SimAgentOf(me->GetEntry()))      // SoloWoW: their own pace, not a run everywhere
++                        const_cast<Creature*>(me)->SetWalk(BotBubble::SimWalk(me));
+                     BotMovement(BOT_MOVE_POINT, &pos, nullptr, use_path);
+                 }
+                 return;
+diff --git a/src/server/game/AI/NpcBots/botbubble.cpp b/src/server/game/AI/NpcBots/botbubble.cpp
+index b56aef3..5d63a93 100644
+--- a/src/server/game/AI/NpcBots/botbubble.cpp
++++ b/src/server/game/AI/NpcBots/botbubble.cpp
+@@ -787,6 +787,13 @@ void BotBubble::OnBodyDied(Creature const* bot, Unit const* killer)
+     fallen.emplace_back(agent, who, dungeon, by ? by->GetGUID().GetCounter() : 0u, by && by->GetTeamId() == TEAM_HORDE);
+ }
+ 
++bool BotBubble::SimWalk(Creature const* bot)
++{
++    uint32 agent = bot ? SimAgentOf(bot->GetEntry()) : 0;
++    SoloSim::SimIntent in;
++    return agent && sSoloSim->Intent(agent, in) && in.walk;
++}
++
+ uint32 BotBubble::SimAgentOf(uint32 botEntry)
+ {
+     auto it = simEntryToAgent.find(botEntry);
+diff --git a/src/server/game/AI/NpcBots/botbubble.h b/src/server/game/AI/NpcBots/botbubble.h
+index be9c6b1..3cc0390 100644
+--- a/src/server/game/AI/NpcBots/botbubble.h
++++ b/src/server/game/AI/NpcBots/botbubble.h
+@@ -49,6 +49,7 @@ namespace BotBubble
+     // and nextNode when the step is along the roads), how long to wait first and how close counts as arrived.
+     // Returns false if this bot is not a sim body (wander normally).
+     bool SimLife(Creature* bot, WanderNode const* cur, Position& target, WanderNode const*& nextNode, uint32& waitMs, float& arrive);
++    bool SimWalk(Creature const* bot);              // a sim body's pace out of combat: walk (town, tired, hurt, by nature) or run
+     void ForgetLife(uint32 botEntry);
+     // A sim body died in the game world: the sim hears of it (a defeat, or worse) on the next bubble check.
+     void OnBodyDied(Creature const* bot, Unit const* killer);
+diff --git a/src/server/game/SoloSim/solosim.cpp b/src/server/game/SoloSim/solosim.cpp
+index 01709ff..d89fa53 100644
+--- a/src/server/game/SoloSim/solosim.cpp
++++ b/src/server/game/SoloSim/solosim.cpp
+@@ -1696,11 +1696,23 @@ void World::PostBounties()
+         Log(EventType::BountyPosted, Nobody(), h.id, text, true);
+         if (b.kind == BOUNTY_RARE)                           // people the town knows hear of a price on a rare
+         {
++            // only towns that know you - someone living there thinks well of you - of your own side (or neutral), and
++            // one such letter every two days at most (Nov 17: every rare anywhere wrote to everyone; the mailbox filled)
+             std::set<uint32> known;
+-            for (SimMemory const& m : _memories) if (m.subjectType == 4) known.insert(m.subject);
+-            for (SimBounty const& o : _bounties) if (o.player) known.insert(o.player);
++            for (SimMemory const& m : _memories)
++                if (m.subjectType == 4 && m.valence > 0)
++                    if (SimAgent const* who = AgentById(m.agent); who && who->home == h.id) known.insert(m.subject);
+             for (uint32 g : known)
++            {
++                {
++                    std::lock_guard<std::mutex> lk(_sideLock);
++                    auto side = _playerHorde.find(g);
++                    if (h.side != SIDE_NEUTRAL && side != _playerHorde.end() && side->second != (h.side == SIDE_HORDE)) continue;
++                }
++                if (auto last = _lastRareMail.find(g); last != _lastRareMail.end() && _clock - last->second < 2 * MIN_PER_DAY) continue;
++                _lastRareMail[g] = _clock;
+                 _mail.push_back({ g, h.id, "A price on " + RareName(b.target), text + "\n\nThe board is outside the inn, if you're interested.", 0 });
++            }
+         }
+     }
+ }
+@@ -2571,7 +2583,8 @@ bool World::MakeCamp(SimSite const& h, SimSite const& src, Rng& r, bool nearSour
+     k.id = _nextCamp++; k.map = h.map; k.entry = entry; k.town = h.id; k.name = src.creatureName; k.level = uint8(lvl);
+     k.kind = CAMP_BAND; k.home = src.id;
+     k.x = at.x + 12.0f; k.y = at.y + 12.0f; k.z = at.z;                         // just off the road
+-    k.size = k.alive = uint8(r.Range(4, 7)); k.made = _clock; k.until = _clock + r.Range(3, 5) * MIN_PER_DAY;
++    { uint32 roll = r.Range(1, 100); k.size = k.alive = uint8(roll <= 25 ? r.Range(2, 3) : roll <= 80 ? r.Range(4, 5) : r.Range(6, 7)); }   // camps vary too
++    k.made = _clock; k.until = _clock + r.Range(3, 5) * MIN_PER_DAY;
+     k.site = ClosestSite(k.map, k.x, k.y);
+     _camps.push_back(k);
+     Log(EventType::RareFind, Nobody(), h.id, nearSource
+@@ -2701,14 +2714,19 @@ void World::SpawnWildlife()
+             k.id = _nextCamp++; k.map = map; k.entry = entry; k.town = TownOf(src.id); k.name = src.creatureName; k.level = uint8(lvl);
+             k.kind = herd ? CAMP_HERD : CAMP_PACK; k.home = src.id; k.site = src.id;
+             k.x = src.x + float(r.Range(0, 40)) - 20.0f; k.y = src.y + float(r.Range(0, 40)) - 20.0f; k.z = src.z;
+-            k.size = k.alive = uint8(herd ? r.Range(4, 8) : r.Range(3, 5));
++            // not every sighting is a crowd (the user, Nov 17): herds - a straggler or a pair now and then, mostly a few,
++            // sometimes a big herd; predators - often alone or a pair, a small pack, rarely a big one
++            uint32 roll = r.Range(1, 100);
++            k.size = k.alive = uint8(herd ? (roll <= 25 ? r.Range(1, 2) : roll <= 75 ? r.Range(3, 5) : r.Range(6, 9))
++                                          : (roll <= 30 ? 1 : roll <= 60 ? 2 : roll <= 90 ? r.Range(3, 4) : r.Range(5, 6)));
+             k.made = _clock; k.until = _clock + (herd ? r.Range(10, 20) : r.Range(7, 14)) * MIN_PER_DAY;
+             _camps.push_back(k);
+             if (herd) { ++herds; continue; }
+             ++packs;
++            if (k.size < 3) continue;                       // a lone hunter or a pair: no bounty, no warning - just out there
+             Log(EventType::RareFind, Nobody(), k.town, Acore::StringFormat("A pack of {} is hunting the country around {}. Mind the roads after dark.", Plural(k.name), AreaOf(SiteName(src.id))), true);
+             SimBounty b;
+-            b.id = _nextBounty++; b.hub = k.town; b.site = k.site; b.kind = BOUNTY_RARE; b.count = k.size; b.party = 2;
++            b.id = _nextBounty++; b.hub = k.town; b.site = k.site; b.kind = BOUNTY_RARE; b.count = k.size; b.party = k.size >= 5 ? 2 : 1;
+             b.target = k.id | CAMP_MARK; b.targetLevel = k.level;
+             b.reward = lvl * lvl * 20 + 300;
+             b.posted = _clock; b.expires = k.until;
+@@ -2726,7 +2744,7 @@ void World::RebuildDanger()
+     _danger.clear(); _enemyNear.clear();
+     std::vector<std::tuple<uint32, float, float, float>> sources;     // map, x, y, weight
+     for (SimCamp const& k : _camps)
+-        if (!k.done && k.kind != CAMP_HERD) sources.emplace_back(k.map, k.x, k.y, k.kind == CAMP_PACK ? 1.0f : 1.5f);
++        if (!k.done && k.kind != CAMP_HERD) sources.emplace_back(k.map, k.x, k.y, k.kind == CAMP_PACK ? std::max(0.3f, 0.3f * float(k.alive)) : 1.5f);   // a lone wolf is less than a pack
+     for (auto const& [id, o] : _agents)
+     {
+         SimSite const* s = SiteById(o.site);
+@@ -3862,6 +3880,10 @@ bool World::Intent(uint32 agentId, SimIntent& out)
+                 }
+     uint32 idx = SiteRoad(out.siteId);
+     out.goalNode = idx == UINT32_MAX ? 0 : _roads[idx].id;
++    // pace: nobody runs about town; on the road the weary, the hurt and the unhurried (three in ten, by nature) walk
++    bool inTown = !out.travelling && out.siteType == SiteType::Hub;
++    bool stroller = (Mix(uint64(a->id) * 2654435761u) % 10) < 3;
++    out.walk = inTown || a->doing == Verb::Recover || (out.travelling && (a->fatigue >= 60 || a->wounds >= 50 || stroller));
+     return true;
+ }
+ 
+diff --git a/src/server/game/SoloSim/solosim.h b/src/server/game/SoloSim/solosim.h
+index 0ddc349..6f64de8 100644
+--- a/src/server/game/SoloSim/solosim.h
++++ b/src/server/game/SoloSim/solosim.h
+@@ -217,6 +217,7 @@ namespace SoloSim
+         uint32 escort = 0;                // townsfolk: the player walking them to another town (character guid)
+         uint8 escortState = 0;            // 1 on the road, 2 arrived
+         float destX = 0, destY = 0, destZ = 0;   // where they're being walked to
++        bool walk = false;                // their pace: walk in town and when tired or hurt; some people always stroll (Nov 17)
+     };
+ 
+     // ---------------------------------------------------------------- the world
+@@ -455,6 +456,7 @@ namespace SoloSim
+         std::unordered_map<uint64, uint32> _enemyNear;    // (site << 1 | horde) -> that side's adventurers hunting there
+         std::mutex _sideLock;                              // guards _playerHorde (set from the bubble, read under sBodyLock)
+         std::unordered_map<uint32, bool> _playerHorde;    // player guid -> on the Horde's side
++        std::unordered_map<uint32, SimTime> _lastRareMail;  // player guid -> when a town last wrote about a rare (not saved)
+         std::unordered_map<uint32, SimTime> _lastClash;   // at most one clash a day each (not saved: a restart forgives)
+         std::vector<uint32> _requeue;              // agents whose wakeAt changed outside their own wake (party members)
+         uint32 _nextParty = 1, _nextBounty = 1, _nextNews = 1;
+diff --git a/src/server/game/SoloSim/solosim_camps.cpp b/src/server/game/SoloSim/solosim_camps.cpp
+index e355a8a..fea2790 100644
+--- a/src/server/game/SoloSim/solosim_camps.cpp
++++ b/src/server/game/SoloSim/solosim_camps.cpp
+@@ -133,6 +133,15 @@ namespace SoloCamps
+                         }
+                     it->second.x = k->x; it->second.y = k->y;
+                 }
++                else if (k != camps.end() && k->kind != SoloSim::CAMP_BAND)
++                    // where they are: a herd grazes about, a pack paces (Nov 17 - they stood stock still at their spot)
++                    for (ObjectGuid const& g : it->second.members)
++                        if (Creature* c = map->GetCreature(g); c && c->IsAlive() && !c->IsInCombat()
++                            && c->GetMotionMaster()->GetCurrentMovementGeneratorType() == IDLE_MOTION_TYPE)
++                        {
++                            c->SetWalk(true);
++                            c->GetMotionMaster()->MoveRandom(k->kind == SoloSim::CAMP_HERD ? 12.0f : 7.0f);
++                        }
+                 ++it;
+                 continue;
+             }
+@@ -162,6 +171,7 @@ namespace SoloCamps
+                 if (TempSummon* c = map->SummonCreature(k.entry, pos))
+                 {
+                     c->SetHomePosition(pos);
++                    if (k.kind != SoloSim::CAMP_BAND) { c->SetWalk(true); c->GetMotionMaster()->MoveRandom(k.kind == SoloSim::CAMP_HERD ? 12.0f : 7.0f); }
+                     p.members.push_back(c->GetGUID());
+                     memberOf[c->GetGUID()] = k.id;
+                 }
+-- 
+2.56.0.windows.2
+

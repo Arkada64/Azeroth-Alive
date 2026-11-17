@@ -12,7 +12,26 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
   pinned trickerer/AzerothCore-wotlk-with-NPCBots commit.
 
 ## 1. Correctness (now)
-- **Playtest feedback, Nov 17 (04:35) - the user's list.** Done the same morning, not yet seen in game: errands pay
+- **Playtest feedback, Nov 17 (06:13) - the user's list:**
+  - Requests/quests from NPCs into the real quest log, tracking progress and saying what to do - **next batch**: a pool
+    of reserved quest ids filled at runtime from the sim (text, kill/item/event objectives, quest-log map points);
+    taking a request adds the quest, finishing completes it (WDB cache is cleared at launch; ids are never reused in a
+    session).
+  - Mailbox filled by innkeepers - **fixed:** a rare's bounty wrote to every player the sim knew, from every town (153
+    letters for Myrtha); now only towns of your side (or neutral) where someone living there thinks well of you, at most
+    one letter every two days.
+  - Wildlife - **fixed:** herds and packs stood still at their spot - they now graze/pace about it (random movement
+    whenever they're not being moved). The "non-hostile boars" were right: Rockhide Boars are faction 189, the game's
+    own neutral creatures - herds keep their real templates; bands and packs are the hostile ones. Group sizes vary
+    now (the user): herds 1-2 (25%), 3-5 (50%), 6-9 (25%); predators alone 30%, pairs 30%, 3-4 30%, 5-6 10% - lone
+    ones and pairs get no bounty or warning, packs of 5+ say to bring a friend; road camps 2-7; a pack's danger scales
+    with its size.
+  - Adventurer bodies' pace - **done:** they walk in town, when recovering, and on the road when tired (fatigue 60+),
+    hurt (wounds 50+) or unhurried by nature (3 in 10); they run otherwise, and always run once a fight starts.
+    Still to do: adventurers using the world (board, mailbox, forge, benches) like the townsfolk now do.
+  - "The game really needs more text": more lines, more variety, everywhere (town talk, adventurer talk, requests,
+    rumours, board notices, letters) - with the dialogue/text-generator decision above.
+ - the user's list.** Done the same morning, not yet seen in game: errands pay
   lvl^2 x 3 + 40 copper (was x12 + 150), escorts x distance (800 yd = 1x, 0.5-3x) x danger (camps/threats on the way,
   up to 3x), old foes lvl^2 x 6 + 100; requests posted at 3.5% a tick (was 20%) and trimmed to one in seven townsfolk;
   rumours and board notices only from news worth passing on (deaths, defeats, clashes, rares, bounties, comings and
