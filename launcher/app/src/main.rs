@@ -141,8 +141,8 @@ impl eframe::App for App {
         egui::TopBottomPanel::bottom("settings").show(ctx, |ui| {
             ui.add_space(4.0);
             ui.collapsing("Settings", |ui| {
-                ui.add(egui::Slider::new(&mut self.settings.wanderers, 0..=80).text("adventurers around you"));
-                ui.add(egui::Slider::new(&mut self.settings.townsfolk, 0..=60).text("townsfolk around you"));
+                ui.add(egui::Slider::new(&mut self.settings.wanderers, 0..=300).text("adventurers around you"));
+                ui.add(egui::Slider::new(&mut self.settings.townsfolk, 0..=200).text("townsfolk around you"));
                 ui.checkbox(&mut self.settings.stop_with_client, "Stop the world when I close WoW");
                 ui.checkbox(&mut self.settings.era, "Era preset").on_hover_text(
                     "Slower levelling (half XP), no dungeon-finder teleports, no quest areas on the map, riding at vanilla/TBC levels and costs. Off = stock 3.3.5.");

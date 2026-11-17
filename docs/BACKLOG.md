@@ -27,12 +27,23 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
     rumours: drop the "X shared stories with Y" kind - only what a listener would want to know; an escorted townsperson
     vanished after paying - they should stay and live in that area; townsfolk walk away while you talk to them - stop
     them; townsfolk play the talk animation but nothing shows in /say; bounty boards float (a wall board standing in
-    the open) - a better model, or the same one placed against a wall where it makes sense.
+    the open) - a better model, or the same one placed against a wall where it makes sense. **Boards, Nov 17 (05:40):**
+    hung on a wall near the town centre (solid behind at chest and knee height, room to stand in front, not a corner),
+    flat against it and facing out; the old open spot only when no wall is found.
   - Generated quests/requests: a quest marker (map/minimap POI) where to go - vague is fine, an idea is the point.
+    **Done Nov 17 (05:40), not yet seen in game:** taking a townsperson's request or a board bounty puts a red flag on
+    your map and minimap (the guards' direction marker), named for what's there; "remind me" shows it again. Searches
+    (thinning, stolen goods, old foes, bounties, the missing, someone to carry word to) are 40-90 yd off - roughly
+    there; an escort's destination is exact; fetching has no place.
   - Townsfolk lives: walking onto railings and tables, several sitting in the same spot, random paths - robotic. Real
-    places to go and things to do (stalls, benches, wells, doors, each other), one person per seat.
+    places to go and things to do (stalls, benches, wells, doors, each other), one person per seat. **First pass Nov 17
+    (05:40):** spots are found at street level (not roofs), never on something raised half a yard above the ground
+    around it (tables, crates, railings) and never where someone already stands - for strolling and in front of
+    vendors (inn seats were already one each). Still to do: real destinations (benches, wells, stalls, doors).
   - Embodied count: 40 bodies at a time feels empty (even at night); live WoW areas had hundreds - optimise toward
-    hundreds (lighter bodies far away, sleepers indoors, townsfolk cheap).
+    hundreds (lighter bodies far away, sleepers indoors, townsfolk cheap). **Raised Nov 17 (the user's call, to test):**
+    150 adventurer bodies + 100 townsfolk (150 in capitals), spawn/recycle 8/10 per check; configure.ps1 defaults and
+    the launcher's sliders (now to 300/200) follow. Watch CPU/RAM in play and tune.
   - New world fills at once - **done Nov 17 (05:25), not yet seen in game:** every inn town has an adventurer
     population (14/18/24/30 by size, 120 per capital shared between its inns) and is filled to it at once - on a new
     world before its fortnight of history, and on load for an older one (this world: 770 -> 1636 adventurers, 3165

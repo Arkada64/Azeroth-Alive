@@ -1,0 +1,342 @@
+From 91de78d647db0833f53ef5317fbfddeeb4fb926e Mon Sep 17 00:00:00 2001
+From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 05:33:21 -0600
+Subject: [PATCH 18/18] Map flags for requests and bounties, boards hung on
+ walls, townsfolk keep off tables, railings and each other; capitals get half
+ as many townsfolk again
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01JU37XfnHTvru3VVz2sNN7z
+---
+ src/server/game/AI/NpcBots/botbubble.cpp      |  2 +-
+ src/server/game/SoloSim/solosim.cpp           | 56 +++++++++++++++++
+ src/server/game/SoloSim/solosim.h             |  3 +
+ src/server/game/SoloSim/solosim_boards.cpp    | 55 ++++++++++++++++-
+ src/server/game/SoloSim/solosim_boards.h      |  3 +
+ src/server/game/SoloSim/solosim_civilians.cpp | 61 ++++++++++++++++---
+ 6 files changed, 171 insertions(+), 9 deletions(-)
+
+diff --git a/src/server/game/AI/NpcBots/botbubble.cpp b/src/server/game/AI/NpcBots/botbubble.cpp
+index aa4e0c8..bd7deb1 100644
+--- a/src/server/game/AI/NpcBots/botbubble.cpp
++++ b/src/server/game/AI/NpcBots/botbubble.cpp
+@@ -169,7 +169,7 @@ namespace
+         sSoloSim->Bodies(mapId, bodies);
+         // townsfolk are plain creatures with their own cap; adventurers are NPCBots
+         // the capitals are crowded: more townsfolk around you there (they're plain creatures, much lighter than bots)
+-        uint32 townCap = (zoneId == 1519 || zoneId == 1537 || zoneId == 1657 || zoneId == 1637 || zoneId == 1497 || zoneId == 1638) ? std::max<uint32>(cfg.townsfolk, 70) : cfg.townsfolk;
++        uint32 townCap = (zoneId == 1519 || zoneId == 1537 || zoneId == 1657 || zoneId == 1637 || zoneId == 1497 || zoneId == 1638) ? std::max<uint32>(cfg.townsfolk * 3 / 2, 70) : cfg.townsfolk;   // capitals: half as many again (Nov 17)
+         SoloCivilians::Update(player, mapId, bubble, bodies, townCap, cfg.safeDistance);
+         std::erase_if(bodies, [&](SoloSim::SimBody const& b) { return b.role == SoloSim::ROLE_CIVILIAN || !bubble.contains(b.zone); });
+         std::ranges::sort(bodies, [&](SoloSim::SimBody const& x, SoloSim::SimBody const& y) {
+diff --git a/src/server/game/SoloSim/solosim.cpp b/src/server/game/SoloSim/solosim.cpp
+index ff10852..a1832e3 100644
+--- a/src/server/game/SoloSim/solosim.cpp
++++ b/src/server/game/SoloSim/solosim.cpp
+@@ -5159,4 +5159,60 @@ void World::StartLive()
+     LOG_INFO("server.loading", "SoloWoW sim: live at {} ({}; caught up {} sim-minutes in {} ms). {}", Clock(_clock), ready, target - from, GetMSTimeDiffToNow(ms), Status());
+ }
+ 
++// ---------------------------------------------------------------------------------------------------------------------
++// map flags for what the player took on: roughly where (40-90 yd off for searches - "somewhere around there"), exact
++// for a town to walk someone to
++static void Vague(uint32 seed, float& x, float& y)
++{
++    float ang = float(seed % 628) / 100.0f, d = 40.0f + float((seed / 628) % 50);
++    x += d * std::cos(ang); y += d * std::sin(ang);
++}
++
++bool World::ErrandPlace(uint32 agentId, uint32 guid, uint32& map, float& x, float& y, std::string& name)
++{
++    std::lock_guard<std::mutex> guard(sBodyLock);
++    for (SimErrand const& e : _errands)
++    {
++        if (e.agent != agentId || e.done || e.player != guid) continue;
++        SimSite const* s = nullptr;
++        switch (e.kind)
++        {
++            case ERRAND_CULL: case ERRAND_STOLEN:
++                s = SiteById(e.site); if (s) name = Acore::StringFormat("{} near {}", s->creatureName, AreaOf(SiteName(s->id))); break;
++            case ERRAND_OLDFOE:
++                s = SiteById(e.site); name = RareName(e.target); break;
++            case ERRAND_ESCORT:
++                s = SiteById(e.site); name = SiteName(e.site); break;
++            case ERRAND_MESSAGE:
++                if (SimAgent const* t = AgentById(e.target)) { s = SiteById(t->site); name = Acore::StringFormat("{} - last seen here", t->FullName()); }
++                break;
++            case ERRAND_MISSING:
++                if (SimAgent const* t = AgentById(e.target)) { s = SiteById(t->site); name = Acore::StringFormat("Where {} was last seen", t->FullName()); }
++                break;
++            default: return false;                         // fetching: any market or the wilds will do
++        }
++        if (!s) return false;
++        map = s->map; x = s->x; y = s->y;
++        if (e.kind != ERRAND_ESCORT) Vague(e.id * 7919u + guid, x, y);
++        return true;
++    }
++    return false;
++}
++
++bool World::BountyPlace(uint32 guid, uint32& map, float& x, float& y, std::string& name)
++{
++    std::lock_guard<std::mutex> guard(sBodyLock);
++    SimBounty const* best = nullptr;
++    for (SimBounty const& b : _bounties) if (!b.done && b.player == guid && (!best || b.id > best->id)) best = &b;
++    if (!best) return false;
++    SimSite const* s = SiteById(best->site);
++    if (!s) return false;
++    map = s->map; x = s->x; y = s->y;
++    if (best->target & CAMP_MARK)                           // a camp sits where it was pitched
++        for (SimCamp const& k : _camps) if (k.id == (best->target & ~CAMP_MARK)) { map = k.map; x = k.x; y = k.y; }
++    name = best->kind == BOUNTY_RARE ? RareName(best->target) : Acore::StringFormat("{} near {}", s->creatureName, AreaOf(SiteName(s->id)));
++    Vague(best->id * 104729u + guid, x, y);
++    return true;
++}
++
+ } // namespace SoloSim
+diff --git a/src/server/game/SoloSim/solosim.h b/src/server/game/SoloSim/solosim.h
+index 7ddedb8..69ba138 100644
+--- a/src/server/game/SoloSim/solosim.h
++++ b/src/server/game/SoloSim/solosim.h
+@@ -279,6 +279,9 @@ namespace SoloSim
+         // townsfolk: talking, news and their requests (map threads; locked)
+         bool ErrandFor(uint32 agentId, SimErrand& out);
+         std::string ErrandText(SimErrand const& e);
++        // where to go for what you took on, roughly (a map flag; Nov 17): an errand from a townsperson, or your newest bounty
++        bool ErrandPlace(uint32 agentId, uint32 guid, uint32& map, float& x, float& y, std::string& name);
++        bool BountyPlace(uint32 guid, uint32& map, float& x, float& y, std::string& name);
+         std::string TakeErrand(uint32 agentId, uint32 guid, std::string const& name);
+         bool FinishErrand(uint32 agentId, uint32 guid, std::string const& name, uint32& reward, std::string& thanks);
+         std::string Rumor(uint32 agentId);
+diff --git a/src/server/game/SoloSim/solosim_boards.cpp b/src/server/game/SoloSim/solosim_boards.cpp
+index a08581d..45cea6d 100644
+--- a/src/server/game/SoloSim/solosim_boards.cpp
++++ b/src/server/game/SoloSim/solosim_boards.cpp
+@@ -11,6 +11,9 @@
+ #include "ObjectMgr.h"
+ #include "Player.h"
+ #include "ScriptedGossip.h"
++#include "GossipDef.h"
++#include "WorldPacket.h"
++#include "WorldSession.h"
+ #include <cmath>
+ #include <map>
+ #include <mutex>
+@@ -42,9 +45,47 @@ namespace
+         tplBuilt = true;
+     }
+ 
+-    // a spot in the open near the town centre, the same one every time
++    // The Wanted Board is a wall board: hung on a wall near the town centre, flat against it and facing out (Nov 17 - in
++    // the open it floated). Candidates spiral out to 30 yd; a wall is something solid within 1.5 yd at chest height in
++    // one direction with open ground behind the spot. The same spot every time. No wall: the old open spot.
++    bool WallSpot(Map* map, SoloSim::SimSite const& town, Position& out)
++    {
++        auto blocked = [map](float x, float y, float z, float ang, float dist) {
++            return !map->isInLineOfSight(x, y, z, x + std::cos(ang) * dist, y + std::sin(ang) * dist, z, PHASEMASK_NORMAL,
++                LINEOFSIGHT_CHECK_VMAP, VMAP::ModelIgnoreFlags::Nothing);
++        };
++        for (uint32 k = 0; k < 60; ++k)
++        {
++            float ang = float(k) * 2.399f + float(town.id);
++            float r = 4.0f + float(k) * 0.45f;
++            float x = town.x + r * std::cos(ang), y = town.y + r * std::sin(ang);
++            float z = map->GetHeight(PHASEMASK_NORMAL, x, y, town.z + 6.0f, true, 20.0f);
++            if (z <= INVALID_HEIGHT || std::fabs(z - town.z) > 6.0f) continue;
++            if (map->GetLiquidData(PHASEMASK_NORMAL, x, y, z, 2.0f, {}).Status != LIQUID_MAP_NO_WATER) continue;
++            float chest = z + 1.4f;
++            for (uint32 d = 0; d < 16; ++d)
++            {
++                float wa = float(d) * float(M_PI) / 8.0f;
++                if (!blocked(x, y, chest, wa, 1.5f)) continue;                      // nothing there to hang it on
++                if (!blocked(x, y, z + 0.4f, wa, 1.6f)) continue;                   // a railing or a ledge, not a wall
++                if (blocked(x, y, chest, wa + float(M_PI), 3.5f)) continue;         // no room to stand and read it
++                if (blocked(x, y, chest, wa + float(M_PI) / 2.0f, 1.0f) && blocked(x, y, chest, wa - float(M_PI) / 2.0f, 1.0f)) continue;   // a corner/alley
++                float gap = 1.5f;                                                   // how far the wall is: step in
++                for (float s = 0.2f; s <= 1.5f; s += 0.1f) if (blocked(x, y, chest, wa, s)) { gap = s; break; }
++                float bx = x + std::cos(wa) * std::max(0.0f, gap - 0.25f), by = y + std::sin(wa) * std::max(0.0f, gap - 0.25f);
++                float bz = map->GetHeight(PHASEMASK_NORMAL, bx, by, z + 2.0f, true, 6.0f);
++                if (bz <= INVALID_HEIGHT || std::fabs(bz - z) > 1.0f) bz = z;
++                out.Relocate(bx, by, bz, wa + float(M_PI));                         // back to the wall, face out
++                return true;
++            }
++        }
++        return false;
++    }
++
++    // a spot in the open near the town centre, the same one every time (fallback when no wall is found)
+     bool BoardSpot(Map* map, SoloSim::SimSite const& town, Position& out)
+     {
++        if (WallSpot(map, town, out)) return true;
+         for (uint32 k = 0; k < 24; ++k)
+         {
+             float ang = float(k) * 2.399f + float(town.id);
+@@ -122,7 +163,11 @@ namespace
+             uint32 guid = player->GetGUID().GetCounter();
+             float x = player->GetPositionX(), y = player->GetPositionY();
+             if (action >= ACT_TAKE)
++            {
+                 Say(player, sSoloSim->PlayerTake(player->GetMapId(), x, y, guid, player->GetName(), action - ACT_TAKE));
++                uint32 m = 0; float px = 0, py = 0; std::string where;
++                if (sSoloSim->BountyPlace(guid, m, px, py, where)) SoloBoards::SendMarker(player, m, px, py, where);
++            }
+             else if (action == ACT_TURNIN)
+             {
+                 uint32 reward = 0;
+@@ -156,6 +201,14 @@ namespace
+ 
+ namespace SoloBoards
+ {
++    void SendMarker(Player* player, uint32 map, float x, float y, std::string const& name)
++    {
++        if (!player || player->GetMapId() != map) return;           // the flag only makes sense on your own map
++        WorldPacket data(SMSG_GOSSIP_POI, 4 + 4 + 4 + 4 + 4 + name.size() + 1);
++        data << uint32(99) << float(x) << float(y) << uint32(ICON_POI_REDFLAG) << uint32(0) << name;
++        player->GetSession()->SendPacket(&data);
++    }
++
+     GameObjectTemplate const* Template(uint32 entry)
+     {
+         if (entry != BOARD_ENTRY) return nullptr;
+diff --git a/src/server/game/SoloSim/solosim_boards.h b/src/server/game/SoloSim/solosim_boards.h
+index 49dcca8..c112327 100644
+--- a/src/server/game/SoloSim/solosim_boards.h
++++ b/src/server/game/SoloSim/solosim_boards.h
+@@ -3,6 +3,7 @@
+ #define SOLOWOW_SOLOSIM_BOARDS_H
+ 
+ #include "Define.h"
++#include <string>
+ 
+ struct GameObjectTemplate;
+ class Player;
+@@ -11,6 +12,8 @@ namespace SoloBoards
+ {
+     GameObjectTemplate const* Template(uint32 entry);   // our runtime board template, nullptr if not ours
+     void Update(Player* player);                        // world thread: put up boards in inn towns near the player
++    // a flag on the player's map and minimap (the guards' direction marker), named
++    void SendMarker(Player* player, uint32 map, float x, float y, std::string const& name);
+ }
+ 
+ void AddSC_solosim_boards();
+diff --git a/src/server/game/SoloSim/solosim_civilians.cpp b/src/server/game/SoloSim/solosim_civilians.cpp
+index 9771b31..27055a3 100644
+--- a/src/server/game/SoloSim/solosim_civilians.cpp
++++ b/src/server/game/SoloSim/solosim_civilians.cpp
+@@ -5,6 +5,7 @@
+ // look of the region's peasants and lumberjacks. See DESIGN.md "Civilians' homes".
+ #include "solosim_civilians.h"
+ #include "solosim.h"
++#include "solosim_boards.h"
+ #include "botbubble.h"
+ #include "CellImpl.h"
+ #include "Creature.h"
+@@ -225,6 +226,16 @@ namespace
+         Unit const* _me; float _x, _y, _range; uint32 _flags;
+     };
+ 
++    // anyone (else) standing on a spot already
++    class SpotTaken
++    {
++    public:
++        SpotTaken(Unit const* me, float x, float y) : _me(me), _x(x), _y(y) { }
++        bool operator()(Creature* c) const { return c && c != _me && c->IsAlive() && c->GetExactDist2d(_x, _y) < 1.3f; }
++    private:
++        Unit const* _me; float _x, _y;
++    };
++
+     // ------------------------------------------------------------------------------------------------- the body
+     class TownsfolkAI : public CreatureAI
+     {
+@@ -396,16 +407,17 @@ namespace
+         bool RandomNear(float cx, float cy, float cz, float minR, float maxR, Position& out)
+         {
+             Map* map = me->GetMap();
+-            for (int attempt = 0; attempt < 8; ++attempt)
++            for (int attempt = 0; attempt < 12; ++attempt)
+             {
+                 float dist = minR + rand_norm() * (maxR - minR);
+                 float ang = float(rand_norm()) * 2.0f * float(M_PI);
+                 float x = cx + dist * std::cos(ang), y = cy + dist * std::sin(ang), z = cz;
+-                float ground = map->GetHeight(me->GetPhaseMask(), x, y, z + 5.0f);
++                float ground = map->GetHeight(me->GetPhaseMask(), x, y, z + 2.0f, true, 8.0f);   // street level, not the roofs above
+                 if (ground <= INVALID_HEIGHT) continue;
+                 z = ground;
+                 if (!map->CanReachPositionAndGetValidCoords(me, x, y, z)) continue;
+                 if (map->IsInWater(me->GetPhaseMask(), x, y, z, me->GetCollisionHeight())) continue;
++                if (Raised(x, y, z) || Taken(x, y)) continue;
+                 out.Relocate(x, y, z, frand(0.0f, 2.0f * float(M_PI)));
+                 return true;
+             }
+@@ -424,13 +436,42 @@ namespace
+             return *it;
+         }
+ 
++        // a spot with someone on it already, or up on something (a table top, a crate, a railing: half a yard or more
++        // above the ground around it) - not somewhere a person would stand (Nov 17)
++        bool Taken(float x, float y)
++        {
++            std::list<Creature*> found;
++            SpotTaken check(me, x, y);
++            Acore::CreatureListSearcher<SpotTaken> searcher(me, found, check);
++            Cell::VisitObjects(me, searcher, me->GetExactDist2d(x, y) + 2.0f);
++            return !found.empty();
++        }
++        bool Raised(float x, float y, float z)
++        {
++            Map* map = me->GetMap();
++            float low = z;
++            for (int k = 0; k < 6; ++k)
++            {
++                float a = float(k) * 1.047f;
++                float h = map->GetHeight(me->GetPhaseMask(), x + std::cos(a) * 1.0f, y + std::sin(a) * 1.0f, z + 0.5f, true, 4.0f);
++                if (h > INVALID_HEIGHT) low = std::min(low, h);
++            }
++            return z - low > 0.5f;
++        }
++
+         Position InFrontOf(Creature* npc)
+         {
+-            float ang = npc->GetAngle(me) + frand(-0.6f, 0.6f);
+-            float d = frand(2.0f, 3.5f);
+-            float x = npc->GetPositionX() + std::cos(ang) * d, y = npc->GetPositionY() + std::sin(ang) * d, z = npc->GetPositionZ();
+-            if (!npc->GetMap()->CheckCollisionAndGetValidCoords(npc, npc->GetPositionX(), npc->GetPositionY(), npc->GetPositionZ(), x, y, z))
+-            { x = npc->GetPositionX(); y = npc->GetPositionY(); }
++            float base = npc->GetAngle(me);
++            float x = npc->GetPositionX(), y = npc->GetPositionY(), z = npc->GetPositionZ();
++            for (int attempt = 0; attempt < 6; ++attempt)               // a free spot in front of them, not on someone else's
++            {
++                float ang = base + frand(-0.9f, 0.9f), d = frand(2.0f, 3.8f);
++                float tx = npc->GetPositionX() + std::cos(ang) * d, ty = npc->GetPositionY() + std::sin(ang) * d, tz = npc->GetPositionZ();
++                if (!npc->GetMap()->CheckCollisionAndGetValidCoords(npc, npc->GetPositionX(), npc->GetPositionY(), npc->GetPositionZ(), tx, ty, tz)) continue;
++                if (Taken(tx, ty) || Raised(tx, ty, tz)) continue;
++                x = tx; y = ty; z = tz;
++                break;
++            }
+             return Position(x, y, z, 0.0f);
+         }
+ 
+@@ -632,6 +673,8 @@ namespace
+                     SoloSim::SimErrand e;
+                     if (sSoloSim->ErrandFor(agent, e) && e.kind == SoloSim::ERRAND_ESCORT && e.player == guid)
+                         if (TownsfolkAI* ai = dynamic_cast<TownsfolkAI*>(c->AI())) ai->Wake();
++                    uint32 m = 0; float px = 0, py = 0; std::string where;
++                    if (sSoloSim->ErrandPlace(agent, guid, m, px, py, where)) SoloBoards::SendMarker(player, m, px, py, where);
+                     break;
+                 }
+                 case ACT_FINISH:
+@@ -651,7 +694,11 @@ namespace
+                     break;
+                 }
+                 case ACT_REMIND:
++                {
+                     c->Say("No rush. Well - a little rush.", LANG_UNIVERSAL, player);
++                    uint32 m = 0; float px = 0, py = 0; std::string where;      // and where it was again
++                    if (sSoloSim->ErrandPlace(agent, guid, m, px, py, where)) SoloBoards::SendMarker(player, m, px, py, where);
++                }
+                     break;
+                 default:
+                     break;
+-- 
+2.56.0.windows.2
+

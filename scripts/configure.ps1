@@ -4,7 +4,7 @@
 # -NoBubble  old behaviour: -Bots spread over -Continent for the whole session.
 # -Continent (NoBubble only) EK, Kalimdor, Outland, Northrend or All. Maps and level spread are set
 #            together: a spread asking for levels the maps lack trips an assert (botdatamgr.cpp:411).
-param([int]$Bots = 40, [switch]$NoBubble, [switch]$NoEra, [switch]$RandomBots,
+param([int]$Bots = 150, [switch]$NoBubble, [switch]$NoEra, [switch]$RandomBots,
       [ValidateSet('EK','Kalimdor','Outland','Northrend','All')][string]$Continent = 'All',
       [string]$Config = 'Release', [switch]$Fresh)
 $Bin  = "C:\SoloWoW\server"
@@ -84,7 +84,7 @@ if ($NoBubble) {
     # sim = the bubble embodies the SoloSim people (named, levelled, going about their lives);
     # random = anonymous random wanderers (the old bubble). -RandomBots picks random.
     $w['NpcBot.Bubble.Source'] = if ($RandomBots) { 'random' } else { 'sim' }
-    $w['NpcBot.Bubble.Townsfolk'] = '30'   # townsfolk bodies around the player (plain creatures, sim source only)
+    $w['NpcBot.Bubble.Townsfolk'] = '100'  # townsfolk bodies around the player (Nov 17: 30 -> 100; capitals x1.5) (plain creatures, sim source only)
 }
 # SoloSim living world: runs alongside the server in real time. While the server is off it catches up
 # (up to CatchUpHours) on the next start; at TimeScale 1 the sim's hour of day follows the wall clock.
