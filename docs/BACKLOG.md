@@ -53,10 +53,28 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
     a day (was one newcomer on 60% of days). Cost: 48 sim hours in 28 s (a week's catch-up after time away ~100 s).
   - Danger recognition (adventurers and townsfolk): leave areas, avoid roads or sneak through when a place is judged
     too dangerous (camps, threats, war, recent deaths) - builds on immigration's push and the route costs.
+    **Done Nov 17 (05:55), not yet seen in game:** a danger map (every 3 sim hours): camps 1.5 / packs 1 within 700 yd,
+    a threat 3 within 1500 yd, each death there in the last 3 days 1, and per side the other side's adventurers
+    hunting there (0.7 each, up to 4). The careful pick safer grounds (by caution against bravery; avenging or revenge
+    targets exempt), and the careful leave a home at danger 3+; on the road the careful slip past camps they can't beat
+    and keep off the road when they see the other side first; farmhands and labourers stay in when danger at home is
+    2+. With the world twice as full, clashes are at 6% (grounds) and 3%/6% (roads, day/night): a 48 h test gave 104
+    clashes, 117 defeats, 17 deaths among ~1600 adventurers.
   - Crafters: people working the professions - goods, armour, weapons, potions - who gather or buy every ingredient,
     need the right place (forge and anvil, alchemy lab...) and sell what they make (shops, markets, the player).
   - Cooks: buy ingredients or hunt for them, cook, sell to taverns and shops (the inns' food comes from someone).
   - Adventurers: interact with the world around them and talk with each other (in /say, near you).
+    **Talk done Nov 17 (05:50), not yet seen in game:** within 30 yd of you, now and then (one line every few seconds
+    at most, a minute between lines each) an adventurer body speaks: to the sim person beside them by name - friends,
+    rivals, the other side, the one they swore revenge on, townsfolk - or about their own day (revenge, avenging a
+    friend, wounds, a bounty, saving gold, a place they want to see, the creatures they're hunting, rain, their class).
+    Templated, filled with sim facts. Still to do: adventurers using the world (board, mail, forge) - their bodies move
+    through NPCBots' own AI and the inn-seat code, a bigger job.
+  - NPCs using the world around them (the user, Nov 17) - **townsfolk, done Nov 17 (05:55), not yet seen in game:**
+    benches and chairs outside (one person per seat, benches by their slots, the chair's height), the bounty board
+    (stand in front and read), mailboxes (a short visit), anvils and forges (labourers hammer there, one each), cooking
+    fires (crouched by them). Idling picks one ~40% of the time; work sends labourers to the forge a third of the time;
+    an evening out falls back to a bench when the inn is full; errands sometimes go by the mailbox.
   - Camping (from WoW Forever) brought to 3.3.5: a camp you set up to rest with your party, with benefits; sim people
     camp too, alone or together, between areas.
   - Dialogue: "might be time to consider a text generator" for natural talk about world events, life and rumours,

@@ -1,0 +1,437 @@
+From 715e3c52598848c56cb459d4428b2a234075c7de Mon Sep 17 00:00:00 2001
+From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 05:56:41 -0600
+Subject: [PATCH 19/19] SoloSim: danger recognition (danger map, the careful
+ avoid, sneak past and move away, townsfolk stay in), adventurers talk near
+ you, townsfolk use benches, boards, mailboxes, forges and fires; clash odds
+ for a fuller world
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01JU37XfnHTvru3VVz2sNN7z
+---
+ src/server/game/AI/NpcBots/botbubble.cpp      |  27 +++++
+ src/server/game/SoloSim/solosim.cpp           | 112 +++++++++++++++++-
+ src/server/game/SoloSim/solosim.h             |   7 ++
+ src/server/game/SoloSim/solosim_civilians.cpp | 101 ++++++++++++++++
+ 4 files changed, 245 insertions(+), 2 deletions(-)
+
+diff --git a/src/server/game/AI/NpcBots/botbubble.cpp b/src/server/game/AI/NpcBots/botbubble.cpp
+index bd7deb1..ebea5e4 100644
+--- a/src/server/game/AI/NpcBots/botbubble.cpp
++++ b/src/server/game/AI/NpcBots/botbubble.cpp
+@@ -94,6 +94,8 @@ namespace
+     std::unordered_map<uint32, uint32> simEntryToAgent;   // bot entry -> sim agent
+     std::unordered_map<uint32, uint32> simAgentToEntry;   // sim agent -> bot entry
+     std::unordered_map<uint32, uint32> simSpawnedAt;      // bot entry -> getMSTime() when queued
++    std::unordered_map<uint32, uint32> saidAt;            // bot entry -> getMSTime() of their last line
++    uint32 lastChatter = 0;
+ 
+     void ForgetSimBot(uint32 entry)
+     {
+@@ -244,6 +246,31 @@ namespace
+         if (std::string found = sSoloSim->ReachedPlace(guid, mapId, player->GetPositionX(), player->GetPositionY()); !found.empty())
+             ChatHandler(player->GetSession()).SendSysMessage(found);
+ 
++        // adventurers talking within earshot: now and then one of them says something, to whoever is beside them or about
++        // their own day (templated; at most one line every few seconds, a minute between lines for each)
++        if (urand(1, 100) <= 30 && GetMSTimeDiffToNow(lastChatter) > 4000)
++        {
++            std::vector<std::pair<Creature*, uint32>> nearBodies;
++            for (auto const& [entry, agent] : simEntryToAgent)
++                if (Creature* bot = const_cast<Creature*>(BotDataMgr::FindBot(entry)); bot && bot->IsInWorld() && bot->IsAlive() && bot->IsFreeBot()
++                    && bot->GetMapId() == mapId && !bot->IsInCombat() && bot->GetExactDist(player) < 30.0f
++                    && GetMSTimeDiffToNow(saidAt[entry]) > 60000)
++                    nearBodies.emplace_back(bot, agent);
++            if (!nearBodies.empty())
++            {
++                auto [bot, agent] = nearBodies[urand(0, uint32(nearBodies.size()) - 1)];
++                uint32 other = 0; float best = 10.0f;
++                for (auto const& [ob, oa] : nearBodies)
++                    if (ob != bot) if (float d = ob->GetExactDist(bot); d < best) { best = d; other = oa; }
++                if (std::string line = sSoloSim->AdventurerChatter(agent, other); !line.empty())
++                {
++                    bot->Say(line, LANG_UNIVERSAL);
++                    saidAt[bot->GetEntry()] = getMSTime();
++                    lastChatter = getMSTime();
++                }
++            }
++        }
++
+         statusTimer += cfg.interval;
+         if (statusTimer >= 30000 || zoneId != statusZone)
+         {
+diff --git a/src/server/game/SoloSim/solosim.cpp b/src/server/game/SoloSim/solosim.cpp
+index a1832e3..bc367ba 100644
+--- a/src/server/game/SoloSim/solosim.cpp
++++ b/src/server/game/SoloSim/solosim.cpp
+@@ -861,6 +861,7 @@ std::string World::EnsureReady()
+         FindRares();
+         EnsureCivilians();
+         FillAdventurers();
++        RebuildDanger();
+         CharacterDatabase.DirectExecute("DELETE FROM sim_event WHERE notable = 0");   // older saves kept every routine step
+         RebuildTownTalk();
+         return Acore::StringFormat("loaded {} sites and {} people at {}", uint32(_sites.size()), uint32(_agents.size()), Clock(_clock));
+@@ -878,6 +879,7 @@ std::string World::EnsureReady()
+     FindRares();
+     EnsureCivilians();
+     FillAdventurers();                                  // born full: every town has its adventurers from the first day
++    RebuildDanger();
+     // a fortnight of history before anyone arrives: people have levels, friends, grudges and a few graves
+     SimTime start = _clock;
+     uint32 wakes = 0;
+@@ -1137,6 +1139,8 @@ uint32 World::PickHuntSite(SimAgent& a)
+         float avg = (s.minLevel + s.maxLevel) / 2.0f;
+         float score = 100.0f - std::abs(avg - ideal) * 12.0f - float(TravelMinutes(a.site, s.id, a)) * 0.6f - (s.elite ? 25.0f : 0.0f)
+             - std::min(30.0f, Pressure(s.id) / float(std::max<uint32>(s.spawns, 4)) * 1.5f);   // hunted out lately: go elsewhere
++        bool sought = (a.ambition == AmbitionType::Avenge || a.ambition == AmbitionType::Revenge) && a.ambitionTarget == s.id;
++        if (!sought) score -= DangerFor(a, s.id) * (float(a.caution) - float(a.bravery) * 0.4f + 30.0f) / 8.0f;   // the careful keep clear
+         scored.emplace_back(score, s.id);
+     }
+     if (scored.empty()) return 0;
+@@ -2010,7 +2014,7 @@ bool World::Clash(SimAgent& a, SimSite const& site)
+     if (!foe) return false;
+     Rng r(_seed, a.id ^ (foe->id << 12), _clock, P_FIGHT + 950);
+     bool sought = (a.ambition == AmbitionType::Revenge && a.avengeFor == foe->id) || (foe->ambition == AmbitionType::Revenge && foe->avengeFor == a.id);
+-    if (!sought && !r.Chance(0.15f)) return false;                 // the ground is wide: often they never cross paths
++    if (!sought && !r.Chance(0.06f)) return false;                 // the ground is wide: often they never cross paths
+     return Duel(a, *foe, site, site.id, sought, r, Acore::StringFormat("over the {} hunting", site.creatureName), Acore::StringFormat("hunting {}", site.creatureName));
+ }
+ 
+@@ -2715,8 +2719,49 @@ void World::SpawnWildlife()
+ 
+ // every three hours: herds drift between their grazing grounds (not in the rain); packs follow the nearest herd by
+ // day and take one of it when they catch up; at night packs go down to the roads
++// how dangerous a place is right now (Nov 17): camps and packs nearby, a roaming threat, people who died there lately,
++// the other side's adventurers about. Rebuilt every few sim hours; 0 = quiet, 3+ = most folk would rather not.
++void World::RebuildDanger()
++{
++    _danger.clear(); _enemyNear.clear();
++    std::vector<std::tuple<uint32, float, float, float>> sources;     // map, x, y, weight
++    for (SimCamp const& k : _camps)
++        if (!k.done && k.kind != CAMP_HERD) sources.emplace_back(k.map, k.x, k.y, k.kind == CAMP_PACK ? 1.0f : 1.5f);
++    for (auto const& [id, o] : _agents)
++    {
++        SimSite const* s = SiteById(o.site);
++        if (!s) continue;
++        if (o.role == ROLE_THREAT && o.status == AgentStatus::Active) sources.emplace_back(s->map, s->x, s->y, 3.0f);
++        else if (o.status == AgentStatus::Dead && _clock - o.diedAt < 3 * MIN_PER_DAY) sources.emplace_back(s->map, s->x, s->y, 1.0f);
++    }
++    for (SimSite const& s : _sites)
++    {
++        float d = 0.0f;
++        for (auto const& [m, x, y, w] : sources)
++            if (m == s.map)
++            {
++                float dist = Dist2d(x, y, s.x, s.y);
++                if (dist < 1500.0f) d += w * (w >= 3.0f ? 1.0f : (dist < 700.0f ? 1.0f : 0.0f));
++            }
++        if (d > 0.0f) _danger[s.id] = d;
++    }
++    // the other side about: their adventurers on (or near) a ground make it contested - for each side its own way
++    for (auto const& [id, o] : _agents)
++        if (o.role == ROLE_ADVENTURER && o.status == AgentStatus::Active && o.doing == Verb::Fight)
++            _enemyNear[(uint64(o.site) << 1) | (IsHordeRace(o.race) ? 1u : 0u)] += 1;
++}
++
++float World::DangerFor(SimAgent const& a, uint32 site) const
++{
++    float d = 0.0f;
++    if (auto it = _danger.find(site); it != _danger.end()) d = it->second;
++    if (auto it = _enemyNear.find((uint64(site) << 1) | (IsHordeRace(a.race) ? 0u : 1u)); it != _enemyNear.end()) d += 0.7f * float(std::min<uint32>(it->second, 4));
++    return d;
++}
++
+ void World::WildlifeTick()
+ {
++    RebuildDanger();
+     bool night = HourOf(_clock) >= 21 || HourOf(_clock) < 5;
+     for (SimCamp& k : _camps)
+     {
+@@ -2788,7 +2833,8 @@ bool World::RoadClash(SimAgent& a, SimSite const& f, SimSite const& t)
+     if (!foe) return false;
+     Rng r(_seed, a.id ^ (foe->id << 12), _clock, P_FIGHT + 960);
+     bool night = HourOf(_clock) >= 21 || HourOf(_clock) < 5;
+-    if (!sought && !r.Chance(night ? 0.12f : 0.06f)) return false;
++    if (!sought && !r.Chance(night ? 0.06f : 0.03f)) return false;   // Nov 17: halved again for a world twice as full
++    if (!sought && a.caution > 55 && r.Chance(float(a.caution - 45) / 120.0f)) return false;   // saw them first, kept off the road
+     return Duel(a, *foe, t, 0, sought, r, "on the road", "on the road");
+ }
+ 
+@@ -2803,6 +2849,12 @@ void World::RoadDanger(SimAgent& a, uint32 from, uint32 to)
+         Rng r(_seed, a.id, _clock, P_FIGHT + 900);
+         bool night = HourOf(_clock) >= 21 || HourOf(_clock) < 5;
+         if (!r.Chance(k.kind == CAMP_PACK ? (night ? 0.3f : 0.08f) : 0.25f)) return;
++        // the careful see it first and slip by - off the road, through the trees, or wait for dark (Nov 17)
++        if (a.level < k.level + 3 && a.caution > 50 && r.Chance(float(a.caution - 40) / 100.0f))
++        {
++            Log(EventType::Departed, a, to, Acore::StringFormat("{} spotted {} near {} and slipped past off the road.", a.FullName(), Plural(k.name), AreaOf(SiteName(k.site))), false);
++            return;
++        }
+         if (a.level >= k.level + 3)
+         {
+             uint32 n = std::min<uint32>(k.alive, r.Range(1, 2));
+@@ -3149,6 +3201,8 @@ void World::CivilianDecide(SimAgent& a)
+     if (awake < 60) v = Verb::Idle;                                                     // up and about
+     else if (a.job != JOB_LOAFER && awake < 9 * 60)                                     // the working day
+         v = (rain && a.job == JOB_FARMHAND && r.Chance(0.5f)) ? Verb::Socialize : Verb::Work;
++    if (v == Verb::Work && (a.job == JOB_FARMHAND || a.job == JOB_LABORER))        // the fields are outside the walls
++        if (float d = DangerFor(a, a.home); d >= 2.0f && r.Chance(std::min(0.9f, d * 0.25f))) v = Verb::Socialize;   // stay in (Nov 17)
+     else if (toBed <= 180 && (a.sociability > 35 || rain)) v = Verb::Socialize;         // evenings at the inn
+     else v = r.Chance(0.3f) ? Verb::Trade : Verb::Idle;                                 // errands, the market, idling
+     uint32 minutes = std::max<uint32>(15, std::min<uint32>(toBed ? toBed : 15, r.Range(45, 120)));
+@@ -3240,6 +3294,8 @@ void World::Decide(SimAgent& a)
+     float ties   = a.sociability * 0.35f + std::min(40.0f, hoursAlone / 2.0f) + ((MinutesToBed(a) <= 4 * 60 && !night) ? 20.0f : 0.0f) + (rain ? 20.0f : 0.0f) - 25.0f + noise();
+     float ambition = (a.ambition == AmbitionType::SeePlace || a.ambition == AmbitionType::Avenge || a.ambition == AmbitionType::Revenge) ? 20.0f + a.wanderlust * 0.4f + noise() : 0.0f;
+     float moveOn = HasFittingHunt(a, a.home, 2500.0f) ? 0.0f : 120.0f;
++    if (float d = DangerFor(a, a.home); d >= 3.0f && a.caution > 55)           // too dangerous to live here (Nov 17)
++        moveOn = std::max(moveOn, (d - 2.0f) * float(a.caution - 40) * 0.6f + noise());
+     bool canGather = std::ranges::any_of(a.prof, [](uint8 p) { return p == PROF_MINING || p == PROF_HERBALISM || p == PROF_FISHING; });
+     float work   = canGather ? 20.0f + a.greed * 0.25f + (a.money < uint32(a.level) * a.level * 100 ? 20.0f : 0.0f) - (night ? 35.0f : 0.0f) - (rain ? 10.0f : 0.0f) - a.fatigue * 0.2f + noise() : -1.0f;
+     float train  = a.level >= a.trainedLevel + 2 ? 30.0f + (a.level - a.trainedLevel) * 12.0f - (night ? 30.0f : 0.0f) + noise() : -1.0f;
+@@ -5215,4 +5271,56 @@ bool World::BountyPlace(uint32 guid, uint32& map, float& x, float& y, std::strin
+     return true;
+ }
+ 
++// ---------------------------------------------------------------------------------------------------------------------
++// adventurers talking within earshot of the player (templated, filled with what the sim knows about them)
++std::string World::AdventurerChatter(uint32 agentId, uint32 otherAgentId)
++{
++    std::lock_guard<std::mutex> guard(sBodyLock);
++    SimAgent const* a = AgentById(agentId);
++    if (!a || a->role != ROLE_ADVENTURER) return "";
++    Rng r(_seed, agentId, _clock * 7 + otherAgentId, P_SOCIAL + 950);
++    auto pick = [&r](std::initializer_list<char const*> l) { return std::string(*(l.begin() + r.Range(0, uint32(l.size()) - 1))); };
++    if (SimAgent const* o = otherAgentId ? AgentById(otherAgentId) : nullptr)
++    {
++        int8 kind = 0;
++        for (SimRelation const& rel : _relations)
++            if ((rel.a == a->id && rel.b == o->id) || (rel.b == a->id && rel.a == o->id)) { kind = int8(rel.kind); break; }
++        bool foe = IsHordeRace(a->race) != IsHordeRace(o->race);
++        bool grudge = a->ambition == AmbitionType::Revenge && a->avengeFor == o->id;
++        if (grudge) return Acore::StringFormat("{}. I haven't forgotten.", o->given);
++        if (foe) return pick({ "Keep walking.", "Not here. Not today.", "Your lot shouldn't be this far out." });
++        if (kind == 2) return Acore::StringFormat(pick({ "Oh. {}.", "Still breathing, {}? Pity.", "Find your own spot, {}." }), o->given);
++        if (kind == 1 || kind == 3)
++            return Acore::StringFormat(pick({ "{}! Still alive, I see.", "Drinks later, {}? You're buying.", "Watch my back out there, {}.",
++                "{} - you look terrible. Good hunting?" }), o->given);
++        if (o->role == ROLE_CIVILIAN) return pick({ "Morning.", "Anything need doing round here?", "Fine day for it." });
++        return pick({ "Good hunting.", "Heading out too?", "Mind the road - it's been bad.", "Seen any bounties worth the walk?" });
++    }
++    if (a->ambition == AmbitionType::Revenge)
++        if (SimAgent const* f = AgentById(a->avengeFor))
++            return Acore::StringFormat(pick({ "I'll find {}. Sooner or later.", "Somewhere out there, {} is laughing. Not for long." }), f->FullName());
++    if (a->ambition == AmbitionType::Avenge)
++        if (SimAgent const* f = AgentById(a->avengeFor))
++            return Acore::StringFormat(pick({ "This one's for {}.", "{} would've laughed at me for being this careful." }), f->given);
++    if (a->wounds >= 60) return pick({ "I need a healer. Or a bed. Either.", "Just a scratch. A deep one.", "Remind me why I do this." });
++    if (a->bounty) return pick({ "That bounty's mine. Don't even think about it.", "One more and the board pays out.", "Bounty work. It's honest. Mostly." });
++    if (a->ambition == AmbitionType::SaveGold) return pick({ "Every copper counts.", "Another few days of this and I'll have it.", "Don't touch my coin purse." });
++    if (a->ambition == AmbitionType::SeePlace)
++        return Acore::StringFormat(pick({ "One day I'll see {}.", "They say {} is something to see." }), SiteName(a->ambitionTarget));
++    if (a->doing == Verb::Fight)
++        if (SimSite const* s = SiteById(a->site); s && s->type == SiteType::Hunt)
++            return Acore::StringFormat(pick({ "{} everywhere. Bring more arrows next time.", "Another {}. They just keep coming.", "Careful - the {} hit harder than they look." }), s->creatureName);
++    if (Rainy(a->site)) return pick({ "Rain again. Lovely.", "My boots will never dry.", "Good weather for staying in." });
++    static char const* const byClass[12][2] = {
++        { "", "" }, { "Could use a whetstone.", "Shield's seen better days." }, { "Light keep us.", "Someone needs patching up? No?" },
++        { "Quiet. The game's spooked.", "Where's that pet got to now..." }, { "Didn't see me. Nobody does.", "Pockets are lighter than I'd like." },
++        { "Bless this road, I suppose.", "I can mend the body. The rest is up to you." }, { "", "" },
++        { "The spirits are restless today.", "Storm's coming. I can feel it." }, { "Anyone seen my spare robes?", "Don't stand too close - I'm practising." },
++        { "Don't mind the smell. It's the imp.", "Power has a price. I'm paying in instalments." }, { "", "" },
++        { "The woods are uneasy.", "Hush. Listen to the trees." } };
++    uint8 c = std::min<uint8>(a->cls, 11);
++    if (byClass[c][0][0] && r.Chance(0.5f)) return byClass[c][r.Range(0, 1)];
++    return pick({ "Long road today.", "Could eat a horse. Not mine, though.", "Somewhere out there's a bed with my name on it.", "Quiet. I don't trust quiet." });
++}
++
+ } // namespace SoloSim
+diff --git a/src/server/game/SoloSim/solosim.h b/src/server/game/SoloSim/solosim.h
+index 69ba138..19b2594 100644
+--- a/src/server/game/SoloSim/solosim.h
++++ b/src/server/game/SoloSim/solosim.h
+@@ -290,6 +290,9 @@ namespace SoloSim
+         std::string Advice(uint32 agentId);                  // a townsperson's word about the road: where people have been dying; old hands know more       // "have you seen...?": where someone is, or what became of them
+         // world thread, from the bubble: the player came within reach of an adventurer (message) / a place (missing person)
+         std::string ReachedPerson(uint32 guid, uint32 agentId);
++        // an embodied adventurer says something near the player (/say): to someone beside them (other, 0 = nobody) by name
++        // and by how they get on, or about their own life - the hunt, wounds, a bounty, an ambition, a grudge (Nov 17)
++        std::string AdventurerChatter(uint32 agentId, uint32 otherAgentId);
+         std::string ReachedPlace(uint32 guid, uint32 map, float x, float y);
+         void HelpedBy(uint32 agentId, uint32 guid, std::string const& name);
+         void SetHired(uint32 agentId, uint32 guid, std::string const& name, bool hired);
+@@ -425,6 +428,8 @@ namespace SoloSim
+         uint32 AdventurerTarget(SimSite const& h) const;   // how many adventurers call a town home
+         SimAgent MakeSettler(SimSite const& h, uint32 id, uint32 salt);   // an adventurer at the land's level
+         uint32 FillAdventurers();                      // every town up to its adventurers
++        void RebuildDanger();                          // the danger map: camps, threats, recent deaths, the other side
++        float DangerFor(SimAgent const& a, uint32 site) const;
+         void FileCapitals();                           // towns inside the Horde's capitals belong to the city
+         uint32 DockTown(uint32 map, float x, float y, SimAgent const& a) const;   // the town serving a boat or zeppelin dock
+         bool HasFittingHunt(SimAgent const& a, uint32 nearHub, float radius) const;
+@@ -445,6 +450,8 @@ namespace SoloSim
+         std::vector<SimEvent> _pending;            // events not yet saved/written
+         std::map<std::pair<uint32, uint32>, SimTime> _socialChronicled; // a pair makes the chronicle at most every 5 days
+         uint32 _lastDailyTick = 0;
++        std::unordered_map<uint32, float> _danger;        // site -> danger (RebuildDanger)
++        std::unordered_map<uint64, uint32> _enemyNear;    // (site << 1 | horde) -> that side's adventurers hunting there
+         std::unordered_map<uint32, SimTime> _lastClash;   // at most one clash a day each (not saved: a restart forgives)
+         std::vector<uint32> _requeue;              // agents whose wakeAt changed outside their own wake (party members)
+         uint32 _nextParty = 1, _nextBounty = 1, _nextNews = 1;
+diff --git a/src/server/game/SoloSim/solosim_civilians.cpp b/src/server/game/SoloSim/solosim_civilians.cpp
+index 27055a3..aaa4ffb 100644
+--- a/src/server/game/SoloSim/solosim_civilians.cpp
++++ b/src/server/game/SoloSim/solosim_civilians.cpp
+@@ -9,6 +9,7 @@
+ #include "botbubble.h"
+ #include "CellImpl.h"
+ #include "Creature.h"
++#include "GameObject.h"
+ #include "CreatureAI.h"
+ #include "DBCStores.h"
+ #include "GridNotifiers.h"
+@@ -236,6 +237,52 @@ namespace
+         Unit const* _me; float _x, _y;
+     };
+ 
++    // the things in a town people use (Nov 17): benches and chairs, mailboxes, the bounty board, anvils and forges, fires
++    enum Thing : uint8 { THING_SEAT = 1, THING_MAILBOX, THING_BOARD, THING_ANVIL, THING_FIRE };
++    constexpr uint32 BOARD_ENTRY = 9100000;                 // solosim_boards.cpp
++    bool IsThing(GameObject const* g, uint8 kind)
++    {
++        GameObjectTemplate const* t = g ? g->GetGOInfo() : nullptr;
++        if (!t || !g->isSpawned()) return false;
++        switch (kind)
++        {
++            case THING_SEAT:    return t->type == GAMEOBJECT_TYPE_CHAIR;
++            case THING_MAILBOX: return t->type == GAMEOBJECT_TYPE_MAILBOX;
++            case THING_BOARD:   return g->GetEntry() == BOARD_ENTRY;
++            case THING_ANVIL:   return t->type == GAMEOBJECT_TYPE_SPELL_FOCUS && (t->spellFocus.focusId == 1 || t->spellFocus.focusId == 3);
++            case THING_FIRE:    return t->type == GAMEOBJECT_TYPE_SPELL_FOCUS && t->spellFocus.focusId == 4;
++        }
++        return false;
++    }
++    class ThingNear
++    {
++    public:
++        ThingNear(float x, float y, float range, uint8 kind) : _x(x), _y(y), _range(range), _kind(kind) { }
++        bool operator()(GameObject* g) const { return g && g->GetExactDist2d(_x, _y) <= _range && IsThing(g, _kind); }
++    private:
++        float _x, _y, _range; uint8 _kind;
++    };
++    // one person per seat on a bench (a bench has several), one at an anvil: who has which
++    std::mutex claimLock;
++    std::unordered_map<uint64, ObjectGuid> claims;           // (object guid low << 3 | slot) -> the person using it
++    void ReleaseClaims(ObjectGuid who)
++    {
++        std::lock_guard<std::mutex> g(claimLock);
++        std::erase_if(claims, [who](auto const& kv) { return kv.second == who; });
++    }
++    bool Claim(GameObject const* g, uint32 slot, Creature const* who)
++    {
++        std::lock_guard<std::mutex> lk(claimLock);
++        uint64 key = (uint64(g->GetSpawnId() ? g->GetSpawnId() : g->GetGUID().GetCounter()) << 3) | (slot & 7);
++        if (auto it = claims.find(key); it != claims.end() && it->second != who->GetGUID())
++        {
++            Creature const* other = ObjectAccessor::GetCreature(*who, it->second);
++            if (other && other->IsAlive() && other->GetExactDist2d(g) < 6.0f) return false;   // still there
++        }
++        claims[key] = who->GetGUID();
++        return true;
++    }
++
+     // ------------------------------------------------------------------------------------------------- the body
+     class TownsfolkAI : public CreatureAI
+     {
+@@ -335,6 +382,7 @@ namespace
+         void Go(Position const& p, uint32 stay, uint8 stand = UNIT_STAND_STATE_STAND, uint32 emoteState = 0, float face = -1.0f, ObjectGuid npc = ObjectGuid::Empty)
+         {
+             BotBubble::ReleaseInnSeat(me->GetEntry());
++            ReleaseClaims(me->GetGUID());
+             me->SetStandState(UNIT_STAND_STATE_STAND);
+             me->SetEmoteState(EMOTE_ONESHOT_NONE);
+             me->SetWalk(true);
+@@ -459,6 +507,49 @@ namespace
+             return z - low > 0.5f;
+         }
+ 
++        // walk to a thing nearby and use it: sit on a free bench seat, read the board, post a letter, hammer at the anvil,
++        // tend the fire. False if there's none free within reach.
++        bool UseThing(float cx, float cy, uint8 kind)
++        {
++            std::list<GameObject*> found;
++            ThingNear check(cx, cy, 45.0f, kind);
++            Acore::GameObjectListSearcher<ThingNear> searcher(me, found, check);
++            Cell::VisitObjects(me, searcher, 45.0f + me->GetExactDist2d(cx, cy));
++            std::vector<GameObject*> things(found.begin(), found.end());
++            for (uint32 n = 0; n < things.size() && n < 6; ++n)
++            {
++                GameObject* g = things[urand(0, uint32(things.size()) - 1)];
++                float o = g->GetOrientation();
++                if (kind == THING_SEAT)
++                {
++                    GameObjectTemplate const* t = g->GetGOInfo();
++                    uint32 slots = std::max<uint32>(1, std::min<uint32>(t->chair.slots, 6));
++                    uint32 slot = urand(0, slots - 1);
++                    float off = (float(slot) - float(slots - 1) / 2.0f) * 0.9f * g->GetObjectScale();
++                    float x = g->GetPositionX() + std::cos(o + float(M_PI) / 2.0f) * off, y = g->GetPositionY() + std::sin(o + float(M_PI) / 2.0f) * off;
++                    if (Taken(x, y) || !Claim(g, slot, me)) continue;
++                    Go(Position(x, y, g->GetPositionZ(), o), urand(60000, 150000), uint8(UNIT_STAND_STATE_SIT_LOW_CHAIR + std::min<uint32>(t->chair.height, 2)), 0, o);
++                    return true;
++                }
++                // stand in front of it (the board faces out from its wall; the rest from where you come), facing it
++                float ang = kind == THING_BOARD ? o : g->GetAngle(me) + frand(-0.5f, 0.5f);
++                float d = kind == THING_FIRE ? 1.8f : kind == THING_BOARD ? 2.0f : 1.4f;
++                float x = g->GetPositionX() + std::cos(ang) * d, y = g->GetPositionY() + std::sin(ang) * d, z = g->GetPositionZ();
++                if (!me->GetMap()->CheckCollisionAndGetValidCoords(me, g->GetPositionX(), g->GetPositionY(), g->GetPositionZ(), x, y, z)) continue;
++                if (Taken(x, y) || ((kind == THING_ANVIL || kind == THING_FIRE) && !Claim(g, 0, me))) continue;
++                float face = std::atan2(g->GetPositionY() - y, g->GetPositionX() - x);
++                switch (kind)
++                {
++                    case THING_BOARD:   Go(Position(x, y, z, face), urand(10000, 22000), UNIT_STAND_STATE_STAND, 0, face); break;
++                    case THING_MAILBOX: Go(Position(x, y, z, face), urand(6000, 12000), UNIT_STAND_STATE_STAND, EMOTE_STATE_USE_STANDING, face); break;
++                    case THING_ANVIL:   Go(Position(x, y, z, face), urand(40000, 90000), UNIT_STAND_STATE_STAND, EMOTE_STATE_WORK, face); break;
++                    case THING_FIRE:    Go(Position(x, y, z, face), urand(20000, 45000), UNIT_STAND_STATE_STAND, EMOTE_STATE_KNEEL, face); break;
++                }
++                return true;
++            }
++            return false;
++        }
++
+         Position InFrontOf(Creature* npc)
+         {
+             float base = npc->GetAngle(me);
+@@ -498,6 +589,7 @@ namespace
+                 case Verb::Work:
+                     if (in.job == SoloSim::JOB_FARMHAND && RandomNear(cx, cy, cz, 35.0f, 80.0f, p))
+                         return Go(p, urand(40000, 90000), UNIT_STAND_STATE_STAND, urand(0, 1) ? EMOTE_STATE_WORK : EMOTE_STATE_USE_STANDING);
++                    if (in.job == SoloSim::JOB_LABORER && urand(0, 99) < 35 && UseThing(cx, cy, THING_ANVIL)) return;   // at the forge
+                     if (in.job == SoloSim::JOB_LABORER && RandomNear(cx, cy, cz, 15.0f, 55.0f, p))
+                         return Go(p, urand(40000, 90000), UNIT_STAND_STATE_STAND, urand(0, 1) ? EMOTE_STATE_WORK_CHOPWOOD : EMOTE_STATE_WORK);
+                     if (Creature* npc = SomeNpc(cx, cy, UNIT_NPC_FLAG_VENDOR | UNIT_NPC_FLAG_REPAIR))
+@@ -509,13 +601,22 @@ namespace
+                     uint8 stand = UNIT_STAND_STATE_SIT;
+                     if (BotBubble::ClaimInnSeat(me, _agent, in.x, in.y, p, stand))     // the town's inn, wherever they live
+                         return Go(p, urand(60000, 180000), stand, 0, p.GetOrientation());
++                    if (UseThing(in.x, in.y, THING_SEAT) || UseThing(cx, cy, THING_SEAT)) return;   // the inn is full: a bench
+                     break;
+                 }
+                 case Verb::Trade:
++                    if (urand(0, 99) < 25 && UseThing(cx, cy, THING_MAILBOX)) return;    // a letter to post
+                     if (Creature* npc = SomeNpc(cx, cy, UNIT_NPC_FLAG_VENDOR))
+                         return Go(InFrontOf(npc), urand(15000, 35000), UNIT_STAND_STATE_STAND, 0, -1.0f, npc->GetGUID());
+                     break;
+                 default:
++                {
++                    uint32 roll = urand(0, 99);                                            // a bench, the board, the post, a fire
++                    if (roll < 18 && UseThing(cx, cy, THING_SEAT)) return;
++                    if (roll >= 18 && roll < 28 && UseThing(cx, cy, THING_BOARD)) return;
++                    if (roll >= 28 && roll < 34 && UseThing(cx, cy, THING_MAILBOX)) return;
++                    if (roll >= 34 && roll < 40 && UseThing(cx, cy, THING_FIRE)) return;
++                }
+                     if (urand(0, 99) < 35)
+                         if (Creature* npc = SomeNpc(cx, cy, 0xFFFFFFFF))
+                             return Go(InFrontOf(npc), urand(10000, 25000), UNIT_STAND_STATE_STAND, 0, -1.0f, npc->GetGUID());
+-- 
+2.56.0.windows.2
+
