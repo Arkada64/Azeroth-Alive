@@ -1,0 +1,978 @@
+From 4e8eec78344775b98b5b6dc3c83b7eb4886dc011 Mon Sep 17 00:00:00 2001
+From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 06:55:25 -0600
+Subject: [PATCH 23/23] Requests in the quest log (a runtime-filled quest
+ pool), more townsfolk and adventurer talk, adventurers use the town, starting
+ camps populated; walkable-only townsfolk moves and boards, murloc login
+ repair and drawn weapons
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01JU37XfnHTvru3VVz2sNN7z
+---
+ src/server/game/AI/NpcBots/botbubble.cpp      |  59 ++++++
+ src/server/game/Globals/ObjectMgr.h           |   1 +
+ src/server/game/Quests/QuestDef.h             |   1 +
+ src/server/game/SoloSim/solosim.cpp           | 172 ++++++++++++++-
+ src/server/game/SoloSim/solosim.h             |  13 ++
+ src/server/game/SoloSim/solosim_boards.cpp    |  25 ++-
+ src/server/game/SoloSim/solosim_civilians.cpp |  92 ++++++++-
+ src/server/game/SoloSim/solosim_commands.cpp  |   2 +
+ src/server/game/SoloSim/solosim_quests.cpp    | 195 ++++++++++++++++++
+ src/server/game/SoloSim/solosim_quests.h      |  24 +++
+ src/server/game/SoloSim/solosim_races.cpp     |  34 ++-
+ 11 files changed, 586 insertions(+), 32 deletions(-)
+ create mode 100644 src/server/game/SoloSim/solosim_quests.cpp
+ create mode 100644 src/server/game/SoloSim/solosim_quests.h
+
+diff --git a/src/server/game/AI/NpcBots/botbubble.cpp b/src/server/game/AI/NpcBots/botbubble.cpp
+index 5d63a93..58a13f1 100644
+--- a/src/server/game/AI/NpcBots/botbubble.cpp
++++ b/src/server/game/AI/NpcBots/botbubble.cpp
+@@ -1,5 +1,6 @@
+ // SoloWoW: "bubble" wandering bots. See botbubble.h.
+ #include "botbubble.h"
++#include "solosim_quests.h"
+ #include "botcommon.h"
+ #include <cstdio>
+ #include <sstream>
+@@ -60,6 +61,28 @@ namespace
+     };
+ 
+     BubbleConfig cfg;
++
++    // a town's things a sim body can use (kind 1 the bounty board, 2 a mailbox, 3 a bench or chair, 4 a cooking fire)
++    class ThingCheck
++    {
++    public:
++        ThingCheck(float x, float y, float range, uint32 kind) : _x(x), _y(y), _range(range), _kind(kind) { }
++        bool operator()(GameObject* g) const
++        {
++            if (!g || !g->isSpawned() || g->GetExactDist2d(_x, _y) > _range) return false;
++            GameObjectTemplate const* t = g->GetGOInfo();
++            switch (_kind)
++            {
++                case 1: return g->GetEntry() == 9100000;
++                case 2: return t->type == GAMEOBJECT_TYPE_MAILBOX;
++                case 3: return t->type == GAMEOBJECT_TYPE_CHAIR;
++                case 4: return t->type == GAMEOBJECT_TYPE_SPELL_FOCUS && t->spellFocus.focusId == 4;
++            }
++            return false;
++        }
++    private:
++        float _x, _y, _range; uint32 _kind;
++    };
+     bool cfgLoaded = false;
+     uint32 checkTimer = 0;
+     uint32 lastZone = 0;
+@@ -247,6 +270,7 @@ namespace
+             ChatHandler(player->GetSession()).SendSysMessage(found);
+ 
+         sSoloSim->NotePlayerSide(guid, player->GetTeamId() == TEAM_HORDE);
++        SoloQuests::Sync(player);                    // requests in the quest log: events the sim saw, requests that lapsed
+ 
+         // adventurers talking within earshot: now and then one of them says something, to whoever is beside them or about
+         // their own day (templated; at most one line every few seconds, a minute between lines for each)
+@@ -679,6 +703,41 @@ bool BotBubble::SimLife(Creature* me, WanderNode const* cur, Position& target, W
+                 return go(spot, 1.5f, v == Verb::Sleep ? 60000 : urand(40000, 120000), stand, frand(0.0f, 2.0f * float(M_PI)));
+             }
+         }
++        // the town's things, like the townsfolk (Nov 17): the bounty board, the mailbox, a bench outside, a fire
++        if ((v == Verb::Idle || v == Verb::Socialize || v == Verb::Trade) && urand(0, 99) < 35)
++        {
++            uint32 roll = urand(0, 99);
++            uint32 kind = roll < 35 ? 1 : roll < 60 ? 2 : roll < 85 ? 3 : 4;          // board, mailbox, bench, fire
++            std::list<GameObject*> found;
++            ThingCheck check(in.x, in.y, 60.0f, kind);
++            Acore::GameObjectListSearcher<ThingCheck> searcher(me, found, check);
++            Cell::VisitObjects(me, searcher, 60.0f + me->GetExactDist2d(in.x, in.y));
++            for (GameObject* g : found)
++            {
++                float o = g->GetOrientation();
++                if (kind == 3)                                                         // a free seat on a bench
++                {
++                    uint32 slots = std::max<uint32>(1, std::min<uint32>(g->GetGOInfo()->chair.slots, 6)), slot = urand(0, slots - 1);
++                    uint64 key = (uint64(g->GetSpawnId() ? g->GetSpawnId() : g->GetGUID().GetCounter()) << 4 | slot) | (uint64(1) << 62);
++                    if (auto it = spotTaken.find(key); it != spotTaken.end() && it->second != me->GetEntry())
++                        if (Creature const* other = BotDataMgr::FindBot(it->second); other && other->IsAlive() && other->GetExactDist2d(g) < 5.0f) continue;
++                    float off = (float(slot) - float(slots - 1) / 2.0f) * 0.9f * g->GetObjectScale();
++                    float x = g->GetPositionX() + std::cos(o + float(M_PI) / 2.0f) * off, y = g->GetPositionY() + std::sin(o + float(M_PI) / 2.0f) * off;
++                    go(Position(x, y, g->GetPositionZ(), o), 1.5f, urand(40000, 100000),
++                        uint8(UNIT_STAND_STATE_SIT_LOW_CHAIR + std::min<uint32>(g->GetGOInfo()->chair.height, 2)), o);
++                    spotTaken[key] = me->GetEntry(); life.spot = key; life.snap = true;
++                    life.sx = x; life.sy = y; life.sz = g->GetPositionZ(); life.so = o;
++                    return true;
++                }
++                float ang = kind == 1 ? o : g->GetAngle(me) + frand(-0.5f, 0.5f);       // in front of the board; from your side of the rest
++                float d = kind == 4 ? 2.2f : kind == 1 ? 2.2f : 1.5f;
++                float x = g->GetPositionX() + std::cos(ang) * d, y = g->GetPositionY() + std::sin(ang) * d, z = g->GetPositionZ();
++                if (!me->GetMap()->CheckCollisionAndGetValidCoords(me, g->GetPositionX(), g->GetPositionY(), g->GetPositionZ(), x, y, z)) continue;
++                float face = std::atan2(g->GetPositionY() - y, g->GetPositionX() - x);
++                return go(Position(x, y, z, face), 1.5f, kind == 1 ? urand(10000, 20000) : kind == 2 ? urand(5000, 10000) : urand(20000, 45000),
++                    UNIT_STAND_STATE_STAND, face);
++            }
++        }
+         // errands and idling: walk up to someone useful (playerbots' wander-npc), or mill about the square
+         uint32 flags = 0; char const* title = nullptr;
+         if (v == Verb::Trade)      flags = UNIT_NPC_FLAG_VENDOR | UNIT_NPC_FLAG_REPAIR;
+diff --git a/src/server/game/Globals/ObjectMgr.h b/src/server/game/Globals/ObjectMgr.h
+index c8dda09..1dccf6d 100644
+--- a/src/server/game/Globals/ObjectMgr.h
++++ b/src/server/game/Globals/ObjectMgr.h
+@@ -955,6 +955,7 @@ public:
+         return nullptr;
+     }
+ 
++    QuestPOIVector& SoloQuestPOI(uint32 questId) { return _questPOIStore[questId]; }   // SoloWoW: map areas for generated requests
+     QuestPOIVector const* GetQuestPOIVector(uint32 questId)
+     {
+         QuestPOIContainer::const_iterator itr = _questPOIStore.find(questId);
+diff --git a/src/server/game/Quests/QuestDef.h b/src/server/game/Quests/QuestDef.h
+index 9f08d6b..1661fe0 100644
+--- a/src/server/game/Quests/QuestDef.h
++++ b/src/server/game/Quests/QuestDef.h
+@@ -209,6 +209,7 @@ struct QuestOfferRewardLocale
+ class Quest
+ {
+     friend class ObjectMgr;
++    friend class SoloQuestWriter;   // SoloWoW: townsfolk requests fill reserved quests at runtime (solosim_quests.cpp)
+ public:
+     Quest(Field* questRecord);
+     void LoadQuestDetails(Field* fields);
+diff --git a/src/server/game/SoloSim/solosim.cpp b/src/server/game/SoloSim/solosim.cpp
+index d89fa53..6493191 100644
+--- a/src/server/game/SoloSim/solosim.cpp
++++ b/src/server/game/SoloSim/solosim.cpp
+@@ -1281,8 +1281,20 @@ void World::Socialize(SimAgent& a)
+ }
+ 
+ // how many adventurers call a town home: by its size, and a capital's shared between its inns (Nov 17)
++// the starting camps (Northshire, Coldridge, Aldrassil, the Valley of Trials, Camp Narache, Deathknell...): trainers
++// and a vendor, no inn, in level 1-10 land. Every new adventurer's life begins in one (Nov 17 - they stood empty).
++bool World::IsStartCamp(SimSite const& h) const
++{
++    if (h.type != SiteType::Hub || (h.services & SVC_INN) || !h.regionLevel) return false;
++    static char const* const camps[] = { "Northshire Valley", "Coldridge Valley", "Aldrassil", "Shadowglen", "Valley of Trials", "Camp Narache", "Deathknell" };
++    std::string base = h.name;
++    if (size_t p = base.rfind(" ("); p != std::string::npos && base.back() == ')') base = base.substr(0, p);
++    return std::ranges::any_of(camps, [&](char const* c) { return base == c; });
++}
++
+ uint32 World::AdventurerTarget(SimSite const& h) const
+ {
++    if (IsStartCamp(h)) return 8;                         // young people learning the ropes, as on any new realm
+     if (h.type != SiteType::Hub || !(h.services & SVC_INN) || !h.regionLevel) return 0;
+     for (Capital const& c : CAPITALS)
+         if (c.zone == h.zone)
+@@ -1303,6 +1315,7 @@ SimAgent World::MakeSettler(SimSite const& h, uint32 id, uint32 salt)
+     Rng r(_seed, id, h.id ^ salt, P_GEN + 210);
+     int32 lvl = int32(h.regionLevel) + int32(r.Range(0, 10)) - 5;
+     if (r.Chance(0.15f)) lvl += int32(r.Range(0, 16)) - 8;        // a few far from the land's level, either way
++    if (IsStartCamp(h)) lvl = int32(r.Range(1, 6));                // a starting camp: the youngest
+     uint8 level = uint8(std::clamp<int32>(lvl, 1, 60));
+     uint8 race = NativeRace(h, r, false);
+     if (!race && h.side == SIDE_NEUTRAL && r.Chance(0.5f)) race = r.Chance(0.5f) ? 2 : 6;
+@@ -1361,9 +1374,13 @@ void World::SpawnNewcomer(uint32 minDelay, uint32 maxDelay)
+             return;
+         }
+     }
+-    std::vector<uint32> starts;
++    std::vector<uint32> starts, camps;
+     for (SimSite const& s : _sites)
+-        if (s.type == SiteType::Hub && (s.services & SVC_INN) && s.regionLevel && s.regionLevel <= 12 && s.side != SIDE_NEUTRAL) starts.push_back(s.id);
++    {
++        if (IsStartCamp(s)) camps.push_back(s.id);
++        else if (s.type == SiteType::Hub && (s.services & SVC_INN) && s.regionLevel && s.regionLevel <= 12 && s.side != SIDE_NEUTRAL) starts.push_back(s.id);
++    }
++    if (!camps.empty() && (starts.empty() || r.Chance(0.7f))) starts = camps;   // most lives begin in a starting camp
+     if (starts.empty()) return;
+     uint8 level = uint8(r.Range(1, 6));
+     SimTime arrive = _clock + r.Range(minDelay, maxDelay);
+@@ -5123,8 +5140,9 @@ std::string World::Rumor(uint32 agentId)
+         return quiet[(a->id + _clock / 60) % 3];
+     }
+     std::string const& news = it->second[(a->id + _clock / 30) % it->second.size()];
+-    static char const* const lead[] = { "Did you hear? ", "They were saying at the inn: ", "Word is: " };
+-    return lead[a->id % 3] + news;
++    static char const* const lead[] = { "Did you hear? ", "They were saying at the inn: ", "Word is: ", "You'll not believe this. ",
++        "Heard it from the innkeeper: ", "Don't spread it about, but ", "Old news by now, maybe - ", "Everyone's talking about it: " };
++    return lead[(a->id + _clock / 45) % 8] + news;
+ }
+ 
+ std::vector<SimSite> World::InnTowns(uint32 map) const
+@@ -5342,8 +5360,11 @@ std::string World::AdventurerChatter(uint32 agentId, uint32 otherAgentId)
+         if (kind == 1 || kind == 3)
+             return Acore::StringFormat(pick({ "{}! Still alive, I see.", "Drinks later, {}? You're buying.", "Watch my back out there, {}.",
+                 "{} - you look terrible. Good hunting?" }), o->given);
+-        if (o->role == ROLE_CIVILIAN) return pick({ "Morning.", "Anything need doing round here?", "Fine day for it." });
+-        return pick({ "Good hunting.", "Heading out too?", "Mind the road - it's been bad.", "Seen any bounties worth the walk?" });
++        if (o->role == ROLE_CIVILIAN) return pick({ "Morning.", "Anything need doing round here?", "Fine day for it.", "Don't mind me, just passing through.",
++            "Any work going? I'm cheap. Ish.", "Where's a body get a decent meal round here?" });
++        return pick({ "Good hunting.", "Heading out too?", "Mind the road - it's been bad.", "Seen any bounties worth the walk?",
++            "You look like you've had a day of it.", "Safe travels.", "Watch the treeline on the way out.", "Room at the inn, do you know?",
++            "Nice blade. Where'd you get it?", "Don't take the north road. Trust me." });
+     }
+     if (a->ambition == AmbitionType::Revenge)
+         if (SimAgent const* f = AgentById(a->avengeFor))
+@@ -5351,9 +5372,12 @@ std::string World::AdventurerChatter(uint32 agentId, uint32 otherAgentId)
+     if (a->ambition == AmbitionType::Avenge)
+         if (SimAgent const* f = AgentById(a->avengeFor))
+             return Acore::StringFormat(pick({ "This one's for {}.", "{} would've laughed at me for being this careful." }), f->given);
+-    if (a->wounds >= 60) return pick({ "I need a healer. Or a bed. Either.", "Just a scratch. A deep one.", "Remind me why I do this." });
+-    if (a->bounty) return pick({ "That bounty's mine. Don't even think about it.", "One more and the board pays out.", "Bounty work. It's honest. Mostly." });
+-    if (a->ambition == AmbitionType::SaveGold) return pick({ "Every copper counts.", "Another few days of this and I'll have it.", "Don't touch my coin purse." });
++    if (a->wounds >= 60) return pick({ "I need a healer. Or a bed. Either.", "Just a scratch. A deep one.", "Remind me why I do this.",
++        "That last one nearly had me.", "Anyone got a bandage? A clean one?", "I've been worse. Not often." });
++    if (a->bounty) return pick({ "That bounty's mine. Don't even think about it.", "One more and the board pays out.", "Bounty work. It's honest. Mostly.",
++        "The board doesn't pay for trying.", "Halfway there. Maybe." });
++    if (a->ambition == AmbitionType::SaveGold) return pick({ "Every copper counts.", "Another few days of this and I'll have it.", "Don't touch my coin purse.",
++        "One day I'll buy a proper horse.", "Saving up. Don't ask what for." });
+     if (a->ambition == AmbitionType::SeePlace)
+         return Acore::StringFormat(pick({ "One day I'll see {}.", "They say {} is something to see." }), SiteName(a->ambitionTarget));
+     if (a->doing == Verb::Fight)
+@@ -5369,7 +5393,135 @@ std::string World::AdventurerChatter(uint32 agentId, uint32 otherAgentId)
+         { "The woods are uneasy.", "Hush. Listen to the trees." } };
+     uint8 c = std::min<uint8>(a->cls, 11);
+     if (byClass[c][0][0] && r.Chance(0.5f)) return byClass[c][r.Range(0, 1)];
+-    return pick({ "Long road today.", "Could eat a horse. Not mine, though.", "Somewhere out there's a bed with my name on it.", "Quiet. I don't trust quiet." });
++    if (a->fatigue >= 70) return pick({ "I could sleep for a week.", "My eyes keep closing on their own.", "Bed. Now. Please." });
++    if (a->level < 6) return pick({ "Still getting the hang of this.", "My trainer says I'm a natural. I think he says that to everyone.",
++        "First proper fight today. I won! Mostly.", "Is it always this hard?" });
++    if (a->level >= 50) return pick({ "I remember when wolves were the worst of it.", "Seen too much to be scared of much.",
++        "The young ones get bolder every year.", "Another day, another dragon. Well. Nearly." });
++    return pick({ "Long road today.", "Could eat a horse. Not mine, though.", "Somewhere out there's a bed with my name on it.", "Quiet. I don't trust quiet.",
++        "Where did I leave my map...", "Gold's not going to find itself.", "Smells like rain.", "Someone owes me a drink. Lots of someones.",
++        "Could do with a new pair of boots.", "Never trust a road that's too quiet." });
++}
++
++// ---------------------------------------------------------------------------------------------------------------------
++// requests as quests in the player's log (Nov 17): the title, the townsperson's own words, what to do, the reward
++bool World::ErrandQuestInfo(uint32 errandId, uint32 guid, ErrandQuest& out)
++{
++    std::lock_guard<std::mutex> guard(sBodyLock);
++    SimErrand const* e = nullptr;
++    for (SimErrand const& x : _errands) if (x.id == errandId && !x.done) e = &x;
++    if (!e) return false;
++    SimAgent const* a = AgentById(e->agent);
++    SimSite const* home = a ? SiteById(a->home) : nullptr;
++    if (!a || !home) return false;
++    out = {};
++    out.errand = e->id; out.agent = a->id; out.kind = e->kind; out.reward = e->reward; out.count = e->count; out.item = e->item;
++    out.level = std::max<uint32>(1, home->regionLevel);
++    out.giverMap = home->map; out.giverZone = home->zone; out.giverX = home->x; out.giverY = home->y;
++    out.details = ErrandText(*e);
++    SimSite const* s = SiteById(e->site);
++    std::string who = a->FullName(), town = SiteName(a->home);
++    switch (e->kind)
++    {
++        case ERRAND_CULL:
++            if (!s) return false;
++            out.title = Acore::StringFormat("{} Trouble", s->creatureName); out.creatureName = s->creatureName;
++            out.minLevel = s->minLevel; out.maxLevel = s->maxLevel; out.level = (s->minLevel + s->maxLevel) / 2;
++            out.objective = Acore::StringFormat("Kill {} {} near {}, then return to {} in {}.", e->count, s->creatureName, AreaOf(SiteName(s->id)), who, town);
++            out.request = "Did you thin them out?"; out.offer = "That'll keep them off us for a while. Thank you.";
++            break;
++        case ERRAND_STOLEN:
++            if (!s) return false;
++            out.title = Acore::StringFormat("Stolen: {}", StolenThing(e->id)); out.creatureName = s->creatureName;
++            out.minLevel = s->minLevel; out.maxLevel = s->maxLevel; out.level = (s->minLevel + s->maxLevel) / 2;
++            out.objective = Acore::StringFormat("One of the {} near {} has {}'s {}. Kill them until it turns up ({}), then bring it back to {}.",
++                s->creatureName, AreaOf(SiteName(s->id)), a->given, StolenThing(e->id), e->count, town);
++            out.request = "Any sign of it?"; out.offer = "That's it! I never thought I'd see it again.";
++            break;
++        case ERRAND_OLDFOE:
++            out.title = Acore::StringFormat("An Old Score: {}", RareName(e->target)); out.level = s ? (s->minLevel + s->maxLevel) / 2 + 2 : out.level;
++            out.objective = Acore::StringFormat("Kill {}{}, then tell {} in {}.", RareName(e->target), s ? " near " + AreaOf(SiteName(s->id)) : std::string(), who, town);
++            out.request = "Well? Is it done?"; out.offer = "After all these years. Thank you.";
++            break;
++        case ERRAND_ESCORT:
++            out.title = Acore::StringFormat("The Road to {}", SiteName(e->site));
++            out.objective = Acore::StringFormat("Walk {} safely to {}.", who, SiteName(e->site));
++            out.request = "Are we there yet?"; out.offer = Acore::StringFormat("{} at last. I'd not have made it alone.", SiteName(e->site));
++            break;
++        case ERRAND_MESSAGE:
++            if (SimAgent const* t = AgentById(e->target))
++            {
++                out.title = Acore::StringFormat("Word for {}", t->given);
++                out.objective = Acore::StringFormat("Find {} and give them word from home, then tell {} in {}.", t->FullName(), who, town);
++            }
++            out.request = "Did you find them?"; out.offer = "Thank you. It means more than you know.";
++            break;
++        case ERRAND_MISSING:
++            if (SimAgent const* t = AgentById(e->target))
++            {
++                out.title = Acore::StringFormat("Missing: {}", t->FullName());
++                out.objective = Acore::StringFormat("Find out what became of {}, then tell {} in {}.", t->FullName(), who, town);
++            }
++            out.request = "Any news?"; out.offer = "I'd rather know than wonder.";
++            break;
++        case ERRAND_FETCH:
++        {
++            ItemTemplate const* it = sObjectMgr->GetItemTemplate(e->item);
++            out.title = Acore::StringFormat("{} for {}", it ? it->Name1 : std::string("Supplies"), a->given);
++            out.objective = Acore::StringFormat("Bring {} {} to {} in {}.", e->count, it ? it->Name1 : std::string("of them"), who, town);
++            out.request = "Have you got them?"; out.offer = "Just what I needed.";
++            break;
++        }
++        default: return false;
++    }
++    if (out.title.empty()) return false;
++    // where to go: the same rough place the map flag points at
++    if (s && e->kind != ERRAND_FETCH) { out.hasPlace = true; out.map = s->map; out.zone = s->zone; out.x = s->x; out.y = s->y; }
++    if ((e->kind == ERRAND_MESSAGE || e->kind == ERRAND_MISSING))
++        if (SimAgent const* t = AgentById(e->target))
++            if (SimSite const* ts = SiteById(t->site)) { out.hasPlace = true; out.map = ts->map; out.zone = ts->zone; out.x = ts->x; out.y = ts->y; }
++    return true;
++}
++
++bool World::ErrandBySlot(uint32 guid, uint32 slot, uint32 pool, SimErrand& out)
++{
++    std::lock_guard<std::mutex> guard(sBodyLock);
++    for (SimErrand const& e : _errands)
++        if (!e.done && e.player == guid && e.id % pool == slot) { out = e; return true; }
++    return false;
++}
++
++void World::ForceErrandProgress(uint32 errandId)
++{
++    std::lock_guard<std::mutex> guard(sBodyLock);
++    for (SimErrand& e : _errands) if (e.id == errandId && !e.done) e.progress = std::max(e.progress, e.count);
++}
++
++// what worries a town right now, said plainly (Nov 17): the nearest bandit camp, pack or roaming threat - or nothing
++std::string World::TownWorry(uint32 agentId)
++{
++    std::lock_guard<std::mutex> guard(sBodyLock);
++    SimAgent const* a = AgentById(agentId);
++    SimSite const* home = a ? SiteById(a->home) : nullptr;
++    if (!home) return "";
++    SimCamp const* closest = nullptr; float best = 1500.0f;
++    for (SimCamp const& k : _camps)
++        if (!k.done && k.kind != CAMP_HERD && k.map == home->map)
++            if (float d = Dist2d(k.x, k.y, home->x, home->y); d < best) { best = d; closest = &k; }
++    Rng r(_seed, agentId, _clock / 60, P_SOCIAL + 960);
++    for (auto const& [id, o] : _agents)
++        if (o.role == ROLE_THREAT && o.status == AgentStatus::Active)
++            if (SimSite const* s = SiteById(o.site); s && s->map == home->map && Dist2d(s->x, s->y, home->x, home->y) < 2000.0f)
++                return Acore::StringFormat(r.Chance(0.5f) ? "They say {} has been seen closest {}. Nobody's going that way." : "{} - closest {}, they say. Lock your door tonight.",
++                    o.FullName(), AreaOf(SiteName(o.site)));
++    if (!closest) return "";
++    std::string where = AreaOf(SiteName(closest->site));
++    if (closest->kind == CAMP_PACK)
++        return Acore::StringFormat(closest->alive <= 2 ? "Something's been taking sheep closest {}. A {}, maybe two." : "{} about closest {}. Keep the little ones in after dark.",
++            closest->alive <= 2 ? where : Plural(closest->name), closest->alive <= 2 ? closest->name : where);
++    static char const* const band[] = { "There's a {} camp off the road closest {}. Nobody goes that way after dark.",
++        "{} - a whole camp of them, closest {}. Someone ought to do something.", "My cousin saw a {} camp by the road closest {}. Bold as anything." };
++    return Acore::StringFormat(band[r.Range(0, 2)], closest->name, where);
+ }
+ 
+ } // namespace SoloSim
+diff --git a/src/server/game/SoloSim/solosim.h b/src/server/game/SoloSim/solosim.h
+index 6f64de8..e4ae94a 100644
+--- a/src/server/game/SoloSim/solosim.h
++++ b/src/server/game/SoloSim/solosim.h
+@@ -281,12 +281,24 @@ namespace SoloSim
+         // townsfolk: talking, news and their requests (map threads; locked)
+         bool ErrandFor(uint32 agentId, SimErrand& out);
+         std::string ErrandText(SimErrand const& e);
++        // a request as a quest in the player's log (Nov 17): what it says and what it asks
++        struct ErrandQuest
++        {
++            uint32 errand = 0, agent = 0; uint8 kind = 0; uint32 reward = 0, count = 0, item = 0, level = 1;
++            std::string title, details, objective, request, offer, creatureName; uint8 minLevel = 0, maxLevel = 0;
++            uint32 map = 0, zone = 0; float x = 0, y = 0; bool hasPlace = false;
++            uint32 giverMap = 0, giverZone = 0; float giverX = 0, giverY = 0;
++        };
++        bool ErrandQuestInfo(uint32 errandId, uint32 guid, ErrandQuest& out);
++        bool ErrandBySlot(uint32 guid, uint32 slot, uint32 pool, SimErrand& out);   // the player's open request in this pool slot
++        void ForceErrandProgress(uint32 errandId);                                  // the quest log says it's done
+         // where to go for what you took on, roughly (a map flag; Nov 17): an errand from a townsperson, or your newest bounty
+         bool ErrandPlace(uint32 agentId, uint32 guid, uint32& map, float& x, float& y, std::string& name);
+         bool BountyPlace(uint32 guid, uint32& map, float& x, float& y, std::string& name);
+         std::string TakeErrand(uint32 agentId, uint32 guid, std::string const& name);
+         bool FinishErrand(uint32 agentId, uint32 guid, std::string const& name, uint32& reward, std::string& thanks);
+         std::string Rumor(uint32 agentId);
++        std::string TownWorry(uint32 agentId);             // a camp, pack or threat near their town, in their words (or "")
+         std::string Notices(uint32 map, float x, float y);   // the bounty board's notices: recent happenings near this town
+         std::string AskAfter(std::string const& name);
+         std::string Advice(uint32 agentId);                  // a townsperson's word about the road: where people have been dying; old hands know more       // "have you seen...?": where someone is, or what became of them
+@@ -427,6 +439,7 @@ namespace SoloSim
+         bool Clash(SimAgent& a, SimSite const& site);
+         bool RoadClash(SimAgent& a, SimSite const& from, SimSite const& to);   // the other side on a road close to yours
+         bool Duel(SimAgent& a, SimAgent& foe, SimSite const& site, uint32 ground, bool sought, Rng& r, std::string const& over, std::string const& seen);   // the other side hunting the same ground: blows, or distance kept
++        bool IsStartCamp(SimSite const& h) const;      // a race's starting camp (trainers, no inn, level 1-10 land)
+         uint32 AdventurerTarget(SimSite const& h) const;   // how many adventurers call a town home
+         SimAgent MakeSettler(SimSite const& h, uint32 id, uint32 salt);   // an adventurer at the land's level
+         uint32 FillAdventurers();                      // every town up to its adventurers
+diff --git a/src/server/game/SoloSim/solosim_boards.cpp b/src/server/game/SoloSim/solosim_boards.cpp
+index 752302b..f37795e 100644
+--- a/src/server/game/SoloSim/solosim_boards.cpp
++++ b/src/server/game/SoloSim/solosim_boards.cpp
+@@ -11,6 +11,7 @@
+ #include "ObjectMgr.h"
+ #include "Player.h"
+ #include "ScriptedGossip.h"
++#include "PathGenerator.h"
+ #include "GossipDef.h"
+ #include "WorldPacket.h"
+ #include "WorldSession.h"
+@@ -48,8 +49,17 @@ namespace
+     // The Wanted Board is a wall board: hung on a wall near the town centre, flat against it and facing out (Nov 17 - in
+     // the open it floated). Candidates spiral out to 30 yd; a wall is something solid within 1.5 yd at chest height in
+     // one direction with open ground behind the spot. The same spot every time. No wall: the old open spot.
+-    bool WallSpot(Map* map, SoloSim::SimSite const& town, Position& out)
++    bool WallSpot(Map* map, Player* walker, SoloSim::SimSite const& town, Position& out)
+     {
++        // you have to be able to walk there from the town square (Nov 17 - Goldshire's went up somewhere in the upper
++        // floors, out of reach)
++        auto reachable = [&](float x, float y, float z) {
++            PathGenerator path(walker);
++            if (!path.CalculatePath(town.x, town.y, town.z, x, y, z, false)) return false;
++            if (path.GetPathType() & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE | PATHFIND_SHORTCUT | PATHFIND_SHORT)) return false;
++            G3D::Vector3 const& end = path.GetActualEndPosition();
++            return std::fabs(end.z - z) < 2.0f && std::hypot(end.x - x, end.y - y) < 2.5f;
++        };
+         auto blocked = [map](float x, float y, float z, float ang, float dist) {
+             return !map->isInLineOfSight(x, y, z, x + std::cos(ang) * dist, y + std::sin(ang) * dist, z, PHASEMASK_NORMAL,
+                 LINEOFSIGHT_CHECK_VMAP, VMAP::ModelIgnoreFlags::Nothing);
+@@ -59,9 +69,10 @@ namespace
+             float ang = float(k) * 2.399f + float(town.id);
+             float r = 4.0f + float(k) * 0.45f;
+             float x = town.x + r * std::cos(ang), y = town.y + r * std::sin(ang);
+-            float z = map->GetHeight(PHASEMASK_NORMAL, x, y, town.z + 6.0f, true, 20.0f);
+-            if (z <= INVALID_HEIGHT || std::fabs(z - town.z) > 6.0f) continue;
++            float z = map->GetHeight(PHASEMASK_NORMAL, x, y, town.z + 2.0f, true, 8.0f);     // street level, not the floors above
++            if (z <= INVALID_HEIGHT || std::fabs(z - town.z) > 4.0f) continue;
+             if (map->GetLiquidData(PHASEMASK_NORMAL, x, y, z, 2.0f, {}).Status != LIQUID_MAP_NO_WATER) continue;
++            if (!reachable(x, y, z)) continue;
+             float chest = z + 1.4f;
+             for (uint32 d = 0; d < 16; ++d)
+             {
+@@ -83,15 +94,15 @@ namespace
+     }
+ 
+     // a spot in the open near the town centre, the same one every time (fallback when no wall is found)
+-    bool BoardSpot(Map* map, SoloSim::SimSite const& town, Position& out)
++    bool BoardSpot(Map* map, Player* walker, SoloSim::SimSite const& town, Position& out)
+     {
+-        if (WallSpot(map, town, out)) return true;
++        if (WallSpot(map, walker, town, out)) return true;
+         for (uint32 k = 0; k < 24; ++k)
+         {
+             float ang = float(k) * 2.399f + float(town.id);
+             float r = 5.0f + float(k % 6) * 2.5f;
+             float x = town.x + r * std::cos(ang), y = town.y + r * std::sin(ang);
+-            float z = map->GetHeight(PHASEMASK_NORMAL, x, y, town.z + 6.0f, true, 20.0f);
++            float z = map->GetHeight(PHASEMASK_NORMAL, x, y, town.z + 2.0f, true, 8.0f);
+             if (z <= INVALID_HEIGHT || std::fabs(z - town.z) > 5.0f) continue;
+             PositionFullTerrainStatus terrain;
+             map->GetFullTerrainStatusForPosition(PHASEMASK_NORMAL, x, y, z, 2.0f, terrain);
+@@ -243,7 +254,7 @@ namespace SoloBoards
+                 boards.erase(it);
+             }
+             Position spot;
+-            if (!BoardSpot(map, town, spot)) continue;
++            if (!BoardSpot(map, player, town, spot)) continue;
+             if (GameObject* go = map->SummonGameObject(BOARD_ENTRY, spot.GetPositionX(), spot.GetPositionY(), spot.GetPositionZ(), spot.GetOrientation(), 0, 0, 0, 0, 0))
+             {
+                 boards[town.id] = go->GetGUID();
+diff --git a/src/server/game/SoloSim/solosim_civilians.cpp b/src/server/game/SoloSim/solosim_civilians.cpp
+index 4589a2d..218e9d7 100644
+--- a/src/server/game/SoloSim/solosim_civilians.cpp
++++ b/src/server/game/SoloSim/solosim_civilians.cpp
+@@ -6,10 +6,12 @@
+ #include "solosim_civilians.h"
+ #include "solosim.h"
+ #include "solosim_boards.h"
++#include "solosim_quests.h"
+ #include "botbubble.h"
+ #include "CellImpl.h"
+ #include "Creature.h"
+ #include "GameObject.h"
++#include "PathGenerator.h"
+ #include "CreatureAI.h"
+ #include "DBCStores.h"
+ #include "GridNotifiers.h"
+@@ -283,6 +285,8 @@ namespace
+         return true;
+     }
+ 
++    uint32 AgentOf(Creature const* c);
++
+     // ------------------------------------------------------------------------------------------------- the body
+     class TownsfolkAI : public CreatureAI
+     {
+@@ -379,8 +383,25 @@ namespace
+         }
+ 
+     private:
++        // somewhere they can walk to: a real path that ends where it should (Nov 17 - with none, they went in a straight
++        // line through the air: townsfolk "flying" to seats upstairs or to a board stuck in a wall)
++        bool Walkable(Position const& p)
++        {
++            if (me->GetExactDist2d(p.GetPositionX(), p.GetPositionY()) < 2.0f) return true;
++            PathGenerator path(me);
++            bool ok = path.CalculatePath(p.GetPositionX(), p.GetPositionY(), p.GetPositionZ());
++            if (!ok || (path.GetPathType() & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE | PATHFIND_SHORT | PATHFIND_SHORTCUT))) return false;
++            G3D::Vector3 const& end = path.GetActualEndPosition();
++            return std::fabs(end.z - p.GetPositionZ()) < 2.5f && std::hypot(end.x - p.GetPositionX(), end.y - p.GetPositionY()) < 3.0f;
++        }
++
+         void Go(Position const& p, uint32 stay, uint8 stand = UNIT_STAND_STATE_STAND, uint32 emoteState = 0, float face = -1.0f, ObjectGuid npc = ObjectGuid::Empty)
+         {
++            if (!Walkable(p))
++            {
++                if (_home) { me->DespawnOrUnsummon(1s); return; }      // their door is out of reach: in they go all the same
++                _timer = urand(2000, 5000); return;                       // somewhere else, in a moment
++            }
+             BotBubble::ReleaseInnSeat(me->GetEntry());
+             ReleaseClaims(me->GetGUID());
+             me->SetStandState(UNIT_STAND_STATE_STAND);
+@@ -428,31 +449,73 @@ namespace
+             if (urand(1, 100) <= 35)
+             {
+                 std::string news = sSoloSim->Rumor(agent);
+-                if (!news.empty()) { me->Say(news, Tongue()); return; }
++                if (!news.empty()) { me->Say(news, Tongue()); Reply(npc); return; }
++            }
++            if (urand(1, 100) <= 30)
++            {
++                std::string worry = sSoloSim->TownWorry(agent);
++                if (!worry.empty()) { me->Say(worry, Tongue()); Reply(npc); return; }
+             }
+             static char const* const any[] = {
+                 "Morning. Or is it afternoon already? Days run together.", "Prices are up again. Don't ask me why.",
+                 "Keep an eye on the road out of town. That's all I'm saying.", "You look like you've not slept either.",
+                 "Same as yesterday, please. And the day before.", "Have you heard from anyone out east? No? Nor me.",
+-                "Quiet today. I don't trust quiet.", "If the weather holds, it'll be a good week." };
++                "Quiet today. I don't trust quiet.", "If the weather holds, it'll be a good week.",
++                "My knees say it'll rain. My knees are never wrong.", "Did you see the state of the well? Someone ought to fix it.",
++                "The adventurers are back in town. Lock up the ale.", "I keep meaning to visit my sister. Next week, maybe.",
++                "That dog's been barking all night again.", "Have you tried the stew at the inn? Don't.",
++                "Busy, busy. Never enough hours.", "Funny how nobody ever asks how *I'm* doing." };
++            static char const* const morning[] = { "Early start today.", "Is that bread I smell? Please let it be bread.",
++                "Up before the birds again.", "First cup of the day. Don't talk to me yet." };
++            static char const* const evening[] = { "Long day. My feet are done.", "Heading to the inn after this. You?",
++                "Light's going. Best get home soon.", "That's enough work for one day." };
++            static char const* const night[] = { "Shouldn't you be in bed?", "Can't sleep. Too quiet out there.",
++                "Mind how you go - it's dark on those roads.", "Just checking the doors are shut." };
++            static char const* const wet[] = { "Rain again. Lovely.", "I'm soaked through.", "At least the fields will be happy.",
++                "Get under cover, you'll catch your death." };
+             static char const* const farm[] = {
+                 "The fields won't wait, and neither will the crows.", "Lost another chicken last night. Something's about.",
+-                "Hard ground this year. We'll see what comes up.", "Need a new handle for the hoe - this one's had it." };
++                "Hard ground this year. We'll see what comes up.", "Need a new handle for the hoe - this one's had it.",
++                "If the pumpkins come in, we'll eat well this winter.", "Kobolds in the lower field again. Little thieves.",
++                "Sheep got out. Sheep always get out.", "Hay's in. Mostly." };
+             static char const* const labor[] = {
+                 "My back's not what it was. Don't get old.", "Three loads before noon, and they want three more.",
+-                "Got any rope? Proper rope, not that frayed stuff.", "They pay by the day and work you by the hour." };
++                "Got any rope? Proper rope, not that frayed stuff.", "They pay by the day and work you by the hour.",
++                "Timber's late again. Always late.", "Mind your toes - that crate's heavier than it looks.",
++                "Swing, haul, stack. Swing, haul, stack.", "One day I'll own the yard. One day." };
+             static char const* const market[] = {
+                 "Slow morning at the stall. Picks up after noon, usually.", "Somebody tried to pay me in buttons. Buttons!",
+-                "If you see anyone selling cheaper than me, they're lying.", "Fresh in this morning - well, fresh enough." };
++                "If you see anyone selling cheaper than me, they're lying.", "Fresh in this morning - well, fresh enough.",
++                "Best prices this side of the river, I swear it.", "No haggling before I've had breakfast.",
++                "The gatherers didn't bring much in this week.", "Everything must go! Well. Most things." };
+             static char const* const loafer[] = {
+                 "Can't a body sit for five minutes?", "Spare a copper? No? Worth asking.", "I'm thinking. It's a kind of work.",
+-                "Seen it all, me. Twice, some of it." };
++                "Seen it all, me. Twice, some of it.", "Back in my day, the roads were safe. Mostly.", "Shh. I'm resting my eyes.",
++                "Work? I've heard of it.", "Someone's got to keep this bench warm." };
+             auto pick = [](auto const& arr) { return arr[urand(0, uint32(std::size(arr)) - 1)]; };
+-            char const* line = urand(0, 1) ? pick(any)
++            uint32 hour = 0;
++            { time_t now = time(nullptr); tm lt{}; localtime_s(&lt, &now); hour = uint32(lt.tm_hour); }
++            uint32 roll = urand(0, 99);
++            (void)wet;                                                             // rain talk: only when it rains (to do)
++            char const* line = roll < 22 ? (hour < 10 ? pick(morning) : hour >= 21 || hour < 5 ? pick(night) : hour >= 17 ? pick(evening) : pick(any))
++                : roll < 55 ? pick(any)
+                 : job == SoloSim::JOB_FARMHAND ? pick(farm) : job == SoloSim::JOB_LABORER ? pick(labor)
+                 : job == SoloSim::JOB_MARKET ? pick(market) : job == SoloSim::JOB_LOAFER ? pick(loafer) : pick(any);
+             me->Say(line, Tongue());
+-            (void)npc;
++            Reply(npc);
++        }
++
++        // the one they spoke to answers, if it's another townsperson (a moment later, in the same tongue)
++        void Reply(Creature* npc)
++        {
++            if (!npc || !AgentOf(npc) || urand(0, 99) >= 70) return;
++            static char const* const replies[] = { "Aye.", "If you say so.", "Don't I know it.", "Hah! True enough.", "Mm.",
++                "You're not wrong.", "Is that so?", "Tell me about it.", "Don't get me started.", "Well, that's something.",
++                "Light preserve us.", "I heard the same.", "Nonsense. ...Probably.", "Hush, someone'll hear you." };
++            std::string text = replies[urand(0, uint32(std::size(replies)) - 1)];
++            Language tongue = Tongue();
++            npc->m_Events.AddEventAtOffset([npc, text, tongue]() { if (npc->IsAlive()) { npc->HandleEmoteCommand(EMOTE_ONESHOT_TALK); npc->Say(text, tongue); } },
++                std::chrono::milliseconds(urand(1800, 3200)));
+         }
+ 
+         bool RandomNear(float cx, float cy, float cz, float minR, float maxR, Position& out)
+@@ -658,6 +721,7 @@ namespace
+             {
+                 if (sSoloSim->EscortArrived(_agent, in.escort))
+                 {
++                    SoloQuests::Sync(p);                                  // the quest log: arrived
+                     me->GetMotionMaster()->Clear(); me->GetMotionMaster()->MoveIdle(); _following = false;
+                     me->SetFacingToObject(p);
+                     me->Say("We made it. Come and see me before you go.", LANG_UNIVERSAL, p);
+@@ -699,6 +763,7 @@ namespace
+     // a request is ready to hand in: cull progress done, or the goods are in the player's bags
+     bool Ready(Player* player, SoloSim::SimErrand const& e)
+     {
++        if (player->GetQuestStatus(SoloQuests::QuestId(e.id)) == QUEST_STATUS_COMPLETE) return true;   // the quest log says so
+         if (e.kind != SoloSim::ERRAND_FETCH) return e.progress >= e.count;
+         return player->GetItemCount(e.item) >= e.count;
+     }
+@@ -786,18 +851,23 @@ namespace
+                         if (TownsfolkAI* ai = dynamic_cast<TownsfolkAI*>(c->AI())) ai->Wake();
+                     uint32 m = 0; float px = 0, py = 0; std::string where;
+                     if (sSoloSim->ErrandPlace(agent, guid, m, px, py, where)) SoloBoards::SendMarker(player, m, px, py, where);
++                    SoloSim::SimErrand taken;
++                    if (sSoloSim->ErrandFor(agent, taken) && taken.player == guid) SoloQuests::Offer(player, c, taken.id);   // into the quest log
+                     break;
+                 }
+                 case ACT_FINISH:
+                 {
+                     SoloSim::SimErrand e;
+                     if (!sSoloSim->ErrandFor(agent, e) || e.player != guid || !Ready(player, e)) break;
+-                    if (e.kind == SoloSim::ERRAND_FETCH)
++                    // a quest in the log: the game hands over the items, the money and the experience
++                    bool viaQuest = SoloQuests::InLog(player, e.id) && SoloQuests::TurnIn(player, c, e.id);
++                    if (!viaQuest && SoloQuests::InLog(player, e.id)) break;              // not done yet by the log's count
++                    if (!viaQuest && e.kind == SoloSim::ERRAND_FETCH)
+                         player->DestroyItemCount(e.item, e.count, true);
+                     uint32 reward = 0; std::string thanks;
+                     if (sSoloSim->FinishErrand(agent, guid, player->GetName(), reward, thanks))
+                     {
+-                        if (reward) player->ModifyMoney(int32(reward));
++                        if (reward && !viaQuest) player->ModifyMoney(int32(reward));
+                         c->Say(thanks, LANG_UNIVERSAL, player);
+                         c->HandleEmoteCommand(EMOTE_ONESHOT_BOW);
+ 
+@@ -809,6 +879,8 @@ namespace
+                     c->Say("No rush. Well - a little rush.", LANG_UNIVERSAL, player);
+                     uint32 m = 0; float px = 0, py = 0; std::string where;      // and where it was again
+                     if (sSoloSim->ErrandPlace(agent, guid, m, px, py, where)) SoloBoards::SendMarker(player, m, px, py, where);
++                    SoloSim::SimErrand open;
++                    if (sSoloSim->ErrandFor(agent, open) && open.player == guid && !SoloQuests::InLog(player, open.id)) SoloQuests::Offer(player, c, open.id);
+                 }
+                     break;
+                 default:
+diff --git a/src/server/game/SoloSim/solosim_commands.cpp b/src/server/game/SoloSim/solosim_commands.cpp
+index ba33fdd..ca6631c 100644
+--- a/src/server/game/SoloSim/solosim_commands.cpp
++++ b/src/server/game/SoloSim/solosim_commands.cpp
+@@ -284,12 +284,14 @@ public:
+ namespace SoloPlainsrunning { void AddScripts(); }
+ namespace SoloRaces { void AddScripts(); }
+ void AddSC_solosim_xp();
++void AddSC_solosim_quests();
+ 
+ void AddSC_solosim_commands()
+ {
+     SoloRaces::AddScripts();
+     SoloPlainsrunning::AddScripts();
+     AddSC_solosim_xp();
++    AddSC_solosim_quests();
+     new solosim_commands();
+     new solosim_bounty_commands();
+     new solosim_player();
+diff --git a/src/server/game/SoloSim/solosim_quests.cpp b/src/server/game/SoloSim/solosim_quests.cpp
+new file mode 100644
+index 0000000..13de5d9
+--- /dev/null
++++ b/src/server/game/SoloSim/solosim_quests.cpp
+@@ -0,0 +1,195 @@
++// SoloWoW: townsfolk requests as real quests (Nov 17). A pool of reserved quest ids (95000-95999, plain rows added by
++// scripts/sim_quests.sql) is filled at runtime from the sim: title, the townsperson's own words, objectives the game
++// tracks itself (kills of the creature, items to bring, or an "event" the sim marks: an escort arriving, word given,
++// the missing found), the reward (the request's money, a little XP) and a rough area on the map. Taking a request puts
++// it in the log; finishing it with the townsperson completes and rewards the quest. Ids follow the request's own id,
++// so nothing extra is saved: at login the player's open pool quests are filled again from their requests. The client's
++// quest cache is cleared at every launch (launcher, manager), so a slot reused in a later session shows its new text.
++#include "solosim_quests.h"
++#include "solosim.h"
++#include "Chat.h"
++#include "Creature.h"
++#include "DBCStores.h"
++#include "Log.h"
++#include "ObjectMgr.h"
++#include "Player.h"
++#include "PlayerScript.h"
++#include "QuestDef.h"
++#include "ScriptMgr.h"
++#include <algorithm>
++#include <cmath>
++#include <mutex>
++#include <unordered_map>
++
++// the friend of Quest (QuestDef.h) that rewrites a pool quest
++class SoloQuestWriter
++{
++public:
++    static void Write(Quest* q, SoloSim::World::ErrandQuest const& in, uint32 creatureEntry)
++    {
++        q->Title = in.title; q->Details = in.details; q->Objectives = in.objective;
++        q->RequestItemsText = in.request; q->OfferRewardText = in.offer; q->AreaDescription = ""; q->CompletedText = "";
++        q->Level = int32(in.level); q->MinLevel = 1; q->MaxLevel = 0; q->Type = 0; q->ZoneOrSort = int32(in.giverZone);
++        q->Flags = 0; q->SpecialFlags = 0; q->AllowableRaces = 0; q->SuggestedPlayers = 0; q->TimeAllowed = 0;
++        q->RewardMoney = int32(in.reward); q->RewardXPDifficulty = in.kind == SoloSim::ERRAND_OLDFOE ? 4 : in.kind == SoloSim::ERRAND_FETCH ? 1 : 2;
++        q->RewardNextQuest = 0; q->PrevQuestId = 0; q->NextQuestId = 0; q->ExclusiveGroup = 0; q->BreadcrumbForQuestId = 0;
++        for (uint32 i = 0; i < QUEST_OBJECTIVES_COUNT; ++i) { q->RequiredNpcOrGo[i] = 0; q->RequiredNpcOrGoCount[i] = 0; q->ObjectiveText[i] = ""; }
++        for (uint32 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i) { q->RequiredItemId[i] = 0; q->RequiredItemCount[i] = 0; }
++        q->_reqItemsCount = 0; q->_reqCreatureOrGOcount = 0;
++        switch (in.kind)
++        {
++            case SoloSim::ERRAND_CULL: case SoloSim::ERRAND_STOLEN: case SoloSim::ERRAND_OLDFOE:
++                if (creatureEntry)
++                {
++                    q->RequiredNpcOrGo[0] = int32(creatureEntry);
++                    q->RequiredNpcOrGoCount[0] = in.kind == SoloSim::ERRAND_OLDFOE ? 1 : in.count;
++                    if (in.kind == SoloSim::ERRAND_STOLEN) q->ObjectiveText[0] = in.creatureName + " searched";
++                    q->_reqCreatureOrGOcount = 1;
++                    break;
++                }
++                q->SpecialFlags |= QUEST_SPECIAL_FLAGS_EXPLORATION_OR_EVENT;     // no creature to count: the sim says when
++                break;
++            case SoloSim::ERRAND_FETCH:
++                q->RequiredItemId[0] = in.item; q->RequiredItemCount[0] = in.count; q->_reqItemsCount = 1;
++                break;
++            default:                                                              // escorts, word, the missing
++                q->SpecialFlags |= QUEST_SPECIAL_FLAGS_EXPLORATION_OR_EVENT;
++                break;
++        }
++        q->InitializeQueryData();
++    }
++};
++
++namespace SoloQuests
++{
++namespace
++{
++    // creature entry by name and level (the hunting ground's creature): built once
++    std::mutex nameLock;
++    std::unordered_multimap<std::string, uint32> byName;
++    uint32 CreatureFor(std::string const& name, uint8 lo, uint8 hi)
++    {
++        std::lock_guard<std::mutex> g(nameLock);
++        if (byName.empty())
++            for (auto const& [entry, t] : *sObjectMgr->GetCreatureTemplates())
++                byName.emplace(t.Name, entry);
++        uint32 best = 0; int32 bestD = 1000;
++        auto [b, e] = byName.equal_range(name);
++        for (auto it = b; it != e; ++it)
++            if (CreatureTemplate const* t = sObjectMgr->GetCreatureTemplate(it->second))
++            {
++                int32 mid = int32(t->minlevel + t->maxlevel) / 2, want = int32(lo + hi) / 2;
++                if (int32 d = std::abs(mid - want); d < bestD) { bestD = d; best = it->second; }
++            }
++        return best;
++    }
++
++    // a rough area on the map, the way real quests show where to go (and where to come back to)
++    void SetArea(uint32 questId, SoloSim::World::ErrandQuest const& in)
++    {
++        QuestPOIVector& v = sObjectMgr->SoloQuestPOI(questId);
++        v.clear();
++        auto blob = [&](uint32 id, int32 objective, uint32 map, uint32 zone, float x, float y, float r) {
++            QuestPOI poi(id, objective, map, zone, 0, 0, 1);
++            for (int k = 0; k < 8; ++k)
++            {
++                float a = float(k) * float(M_PI) / 4.0f + 0.3f;
++                QuestPOIPoint p; p.x = int32(x + r * std::cos(a)); p.y = int32(y + r * std::sin(a));
++                poi.points.push_back(p);
++            }
++            v.push_back(poi);
++        };
++        if (in.hasPlace) blob(0, 0, in.map, in.zone, in.x, in.y, 90.0f);
++        blob(1, -1, in.giverMap, in.giverZone, in.giverX, in.giverY, 30.0f);        // turn in: back in town
++    }
++
++    bool Fill(uint32 errandId, uint32 guid)
++    {
++        SoloSim::World::ErrandQuest in;
++        if (!sSoloSim->ErrandQuestInfo(errandId, guid, in)) return false;
++        Quest const* q = sObjectMgr->GetQuestTemplate(QuestId(errandId));
++        if (!q) { LOG_ERROR("server.loading", "SoloWoW: quest pool row {} is missing - apply scripts/sim_quests.sql", QuestId(errandId)); return false; }
++        uint32 entry = in.creatureName.empty() ? 0 : CreatureFor(in.creatureName, in.minLevel, in.maxLevel);
++        SoloQuestWriter::Write(const_cast<Quest*>(q), in, entry);
++        SetArea(q->GetQuestId(), in);
++        return true;
++    }
++}
++
++bool InLog(Player* player, uint32 errandId)
++{
++    QuestStatus st = player->GetQuestStatus(QuestId(errandId));
++    return st == QUEST_STATUS_INCOMPLETE || st == QUEST_STATUS_COMPLETE;
++}
++
++bool Offer(Player* player, Creature* giver, uint32 errandId)
++{
++    if (!player || !Fill(errandId, player->GetGUID().GetCounter())) return false;
++    Quest const* q = sObjectMgr->GetQuestTemplate(QuestId(errandId));
++    if (InLog(player, errandId)) return true;
++    if (player->GetQuestStatus(q->GetQuestId()) == QUEST_STATUS_REWARDED)    // the slot was used before: clear it for the new one
++        player->RemoveRewardedQuest(q->GetQuestId());
++    if (!player->CanAddQuest(q, true)) return false;
++    player->AddQuestAndCheckCompletion(q, giver);
++    ChatHandler(player->GetSession()).PSendSysMessage("Quest accepted: {}", q->GetTitle());
++    return true;
++}
++
++bool TurnIn(Player* player, Creature* giver, uint32 errandId)
++{
++    uint32 id = QuestId(errandId);
++    Quest const* q = sObjectMgr->GetQuestTemplate(id);
++    if (!q || player->GetQuestStatus(id) != QUEST_STATUS_COMPLETE) return false;
++    if (!player->CanRewardQuest(q, true)) return false;
++    sSoloSim->ForceErrandProgress(errandId);
++    player->RewardQuest(q, 0, giver);
++    return true;
++}
++
++void Sync(Player* player)
++{
++    if (!player) return;
++    uint32 guid = player->GetGUID().GetCounter();
++    std::vector<uint32> ours;
++    for (auto const& [qid, st] : player->getQuestStatusMap())
++        if (IsOurs(qid) && (st.Status == QUEST_STATUS_INCOMPLETE || st.Status == QUEST_STATUS_COMPLETE)) ours.push_back(qid);
++    for (uint32 qid : ours)
++    {
++        SoloSim::SimErrand e;
++        if (!sSoloSim->ErrandBySlot(guid, qid - QUEST_BASE, QUEST_POOL, e))
++        {
++            // the request is gone (they gave up waiting, or it was settled another way): off the log
++            player->RemoveActiveQuest(qid);
++            ChatHandler(player->GetSession()).SendSysMessage("A request you took on is no longer needed.");
++            continue;
++        }
++        Quest const* q = sObjectMgr->GetQuestTemplate(qid);
++        if (q && q->GetTitle().empty()) Fill(e.id, guid);                        // after a restart: its words again
++        if (q && q->HasSpecialFlag(QUEST_SPECIAL_FLAGS_EXPLORATION_OR_EVENT) && e.kind != SoloSim::ERRAND_FETCH
++            && e.progress >= e.count && player->GetQuestStatus(qid) == QUEST_STATUS_INCOMPLETE)
++            player->AreaExploredOrEventHappens(qid);                             // the sim saw it done
++    }
++}
++
++namespace
++{
++    class solosim_quest_login : public PlayerScript
++    {
++    public:
++        solosim_quest_login() : PlayerScript("solosim_quest_login", { PLAYERHOOK_ON_LOGIN }) { }
++        void OnPlayerLogin(Player* player) override
++        {
++            // the open requests' quests get their words and objectives again before the client asks for them
++            uint32 guid = player->GetGUID().GetCounter();
++            for (auto const& [qid, st] : player->getQuestStatusMap())
++                if (IsOurs(qid) && (st.Status == QUEST_STATUS_INCOMPLETE || st.Status == QUEST_STATUS_COMPLETE))
++                {
++                    SoloSim::SimErrand e;
++                    if (sSoloSim->ErrandBySlot(guid, qid - QUEST_BASE, QUEST_POOL, e)) Fill(e.id, guid);
++                }
++        }
++    };
++}
++}
++
++void AddSC_solosim_quests() { new SoloQuests::solosim_quest_login(); }
+diff --git a/src/server/game/SoloSim/solosim_quests.h b/src/server/game/SoloSim/solosim_quests.h
+new file mode 100644
+index 0000000..616a2d7
+--- /dev/null
++++ b/src/server/game/SoloSim/solosim_quests.h
+@@ -0,0 +1,24 @@
++// SoloWoW: townsfolk requests as real quests in the player's log (Nov 17).
++#ifndef SOLOWOW_SOLOSIM_QUESTS_H
++#define SOLOWOW_SOLOSIM_QUESTS_H
++
++#include "Define.h"
++
++class Player;
++class Creature;
++
++namespace SoloQuests
++{
++    constexpr uint32 QUEST_BASE = 95000, QUEST_POOL = 1000;   // reserved ids 95000-95999 (scripts/sim_quests.sql)
++    inline uint32 QuestId(uint32 errandId) { return QUEST_BASE + errandId % QUEST_POOL; }
++    inline bool IsOurs(uint32 questId) { return questId >= QUEST_BASE && questId < QUEST_BASE + QUEST_POOL; }
++
++    bool Offer(Player* player, Creature* giver, uint32 errandId);    // fill the quest and put it in the log
++    bool TurnIn(Player* player, Creature* giver, uint32 errandId);   // complete + reward if the log says it's done
++    bool InLog(Player* player, uint32 errandId);
++    void Sync(Player* player);                                       // event objectives, expired requests, restore texts
++}
++
++void AddSC_solosim_quests();
++
++#endif
+diff --git a/src/server/game/SoloSim/solosim_races.cpp b/src/server/game/SoloSim/solosim_races.cpp
+index ea91e81..a2fb459 100644
+--- a/src/server/game/SoloSim/solosim_races.cpp
++++ b/src/server/game/SoloSim/solosim_races.cpp
+@@ -5,6 +5,7 @@
+ #include "Player.h"
+ #include "PlayerScript.h"
+ #include "ScriptMgr.h"
++#include <unordered_map>
+ 
+ namespace SoloRaces
+ {
+@@ -15,15 +16,36 @@ namespace
+     class solosim_race_looks : public PlayerScript
+     {
+     public:
+-        solosim_race_looks() : PlayerScript("solosim_race_looks", { PLAYERHOOK_ON_AFTER_SET_VISIBLE_ITEM_SLOT, PLAYERHOOK_ON_UPDATE }) { }
++        solosim_race_looks() : PlayerScript("solosim_race_looks", { PLAYERHOOK_ON_AFTER_SET_VISIBLE_ITEM_SLOT, PLAYERHOOK_ON_UPDATE, PLAYERHOOK_ON_LOGIN }) { }
++
++        // murlocs made before their race was finished (Nov 17) lack languages, armour skills and what comes with them:
++        // whatever their race and class should start with and they don't have, they get on logging in
++        void OnPlayerLogin(Player* player) override
++        {
++            if (player->getRace() != RACE_MURLOC) return;
++            player->LearnDefaultSkills();
++            player->LearnCustomSpells();                     // the racials (playercreateinfo_spell_custom)
++        }
+ 
+         // the creature body has no sheathe/draw animations and no proper back or hip points: murlocs keep their weapons
+         // in hand, like every murloc you've ever met (Nov 17). Ranged stays ranged while shooting.
+-        void OnPlayerUpdate(Player* player, uint32 /*diff*/) override
++        void OnPlayerUpdate(Player* player, uint32 diff) override
+         {
+-            if (player->getRace() != RACE_MURLOC || player->GetSheath() != SHEATH_STATE_UNARMED) return;
+-            if (player->GetWeaponForAttack(BASE_ATTACK, true) || player->GetWeaponForAttack(OFF_ATTACK, true))
+-                player->SetSheath(SHEATH_STATE_MELEE);
++            if (player->getRace() != RACE_MURLOC) return;
++            if (player->GetSheath() == SHEATH_STATE_UNARMED)
++            {
++                if (player->GetWeaponForAttack(BASE_ATTACK, true) || player->GetWeaponForAttack(OFF_ATTACK, true))
++                    player->SetSheath(SHEATH_STATE_MELEE);
++                return;
++            }
++            // talking to someone, the client puts the weapons away on its own without telling the server: remind it every
++            // second (Nov 17 - murlocs sheathed when they spoke to NPCs)
++            _remind[player->GetGUID().GetCounter()] += diff;
++            if (_remind[player->GetGUID().GetCounter()] >= 1000)
++            {
++                _remind[player->GetGUID().GetCounter()] = 0;
++                player->ForceValuesUpdateAtIndex(UNIT_FIELD_BYTES_2);
++            }
+         }
+ 
+         void OnPlayerAfterSetVisibleItemSlot(Player* player, uint8 slot, Item* /*item*/) override
+@@ -33,6 +55,8 @@ namespace
+             player->SetUInt32Value(PLAYER_VISIBLE_ITEM_1_ENTRYID + (slot * 2), 0);
+             player->SetUInt32Value(PLAYER_VISIBLE_ITEM_1_ENCHANTMENT + (slot * 2), 0);
+         }
++    private:
++        std::unordered_map<uint32, uint32> _remind;
+     };
+ }
+ 
+-- 
+2.56.0.windows.2
+

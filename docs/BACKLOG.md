@@ -12,7 +12,28 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
   pinned trickerer/AzerothCore-wotlk-with-NPCBots commit.
 
 ## 1. Correctness (now)
-- **Playtest feedback, Nov 17 (06:13) - the user's list:**
+- **The last batch, Nov 17 (06:55), not yet seen in game:**
+  - Requests in the quest log: a pool of 1000 reserved quests (95000-95999, scripts/sim_quests.sql) filled at runtime
+    (solosim_quests.cpp): the title ("Rockhide Boar Trouble", "The Road to Goldshire", "Word for Kela", "Missing: ...",
+    "An Old Score: ...", "Stolen: ..."), the townsperson's own words, objectives the game counts (kills of the
+    creature - found by name and level -, items to bring, or an event the sim marks: an escort arriving, word given,
+    the missing found), a rough area on the world map and the way back, the request's money plus a little XP.
+    Taking a request adds it; "remind me" adds it again if abandoned; finishing it with the townsperson completes and
+    rewards it (items and money through the quest); a request that lapses leaves the log with a note. The quest id
+    follows the request's id, so open ones are refilled at login. Board bounties are not quests yet.
+  - Text: townsfolk talk ~3x the lines, by time of day, and about what really threatens their town (the nearest bandit
+    camp, pack or roaming threat, by name and place); the townsperson spoken to answers; rumours open 8 ways;
+    adventurers have more lines for every case plus the tired, the new (under 6) and the old hands (50+).
+  - Adventurers using the world: idle in town, a third of the time they read the board, check the mailbox, sit on a
+    free bench seat (one each) or stand by a fire - as the townsfolk do.
+  - Fixes from the 06:32 playtest: boards only where you can walk from the town square, at street level (Goldshire's
+    was up in the floors); townsfolk never move where there's no walking path (they "flew" to seats upstairs and
+    such; a door out of reach just takes them in); murlocs: skills/languages/armour they lack are given at login (Roro
+    had no Orcish or armour skills - made before the fix), weapons re-shown every second while talking to NPCs;
+    starting camps (Northshire, Coldridge, Aldrassil, Shadowglen, the Valley of Trials, Camp Narache, Deathknell) have
+    8 young adventurers each (1-6) and most newcomers begin there (they stood empty: only inn towns had adventurers);
+    the innkeepers' 153 letters were deleted (with the user's OK).
+
   - Requests/quests from NPCs into the real quest log, tracking progress and saying what to do - **next batch**: a pool
     of reserved quest ids filled at runtime from the sim (text, kill/item/event objectives, quest-log map points);
     taking a request adds the quest, finishing completes it (WDB cache is cleared at launch; ids are never reused in a
