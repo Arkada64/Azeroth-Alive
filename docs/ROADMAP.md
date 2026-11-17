@@ -6,8 +6,8 @@
 ## Folder layout (moved to C:\SoloWoW on 2026-11-15)
 ```
 C:\SoloWoW\
-  Play.bat           start the world + open the stock client (D:\WOTLK Client, not moved)
-  Stop.bat           save and stop everything
+  SoloWoW.exe        the launcher (play, settings)
+  SoloWoW Manager.bat  server manager: start/stop/restart database, login and world; logs; clean shutdown
   docs\              DESIGN.md, ROADMAP.md, MILESTONE1.md
   core\              AzerothCore + NPCBots source (our edits: botbubble.*, botdatamgr.*)
   build\             CMake build of core\ (not relocatable - rebuild if moved)
@@ -59,9 +59,9 @@ Three tracks, in this priority:
    `.sim run 30d` chronicle for ~60 adventurers around Elwynn/Westfall/Redridge/Duskwood. See DESIGN.md.
 3. **Launcher, slowly in between**: Rust, logic crate separate from UI (reused on Android). Owns the settings we now
    set by script: saves, bot count, bubble on/off, Era preset (configure.ps1 + era-db.ps1), client path, graphics
-   preset, and PC vs mobile profiles. Replaces Play.bat/Stop.bat.
+   preset, and PC vs mobile profiles. Replaced Play.bat/Stop.bat (removed Nov 17).
 
-Current state to pick up from: server builds/boots (`scripts\build.ps1`, `Play.bat`), bubble working (40/40 in
+Current state to pick up from: server builds/boots (`scripts\build.ps1`, the launcher or SoloWoW Manager), bubble working (40/40 in
 Elwynn, recycles on zone change), WC3 hero classes off for wanderers, Era preset on by default.
 
 Milestones 1-7 are in the handoff doc. Ideas and decisions added since, in rough order:
