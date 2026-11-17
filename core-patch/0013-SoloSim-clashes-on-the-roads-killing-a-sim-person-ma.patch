@@ -1,7 +1,7 @@
 From 894ac72c2fa68601f0ad9f5a46b80cf9a07ecd2a Mon Sep 17 00:00:00 2001
 From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
 Date: Tue, 17 Nov 2026 01:09:48 -0600
-Subject: [PATCH 13/30] SoloSim: clashes on the roads; killing a sim person
+Subject: [PATCH 13/31] SoloSim: clashes on the roads; killing a sim person
  marks you (memory, war news); /invite never reaches the other side
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

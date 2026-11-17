@@ -1,7 +1,7 @@
 From 123b38cd20b91ca20a26c121d7f0092eb65869f9 Mon Sep 17 00:00:00 2001
 From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
 Date: Mon, 16 Nov 2026 21:35:57 -0600
-Subject: [PATCH 03/30] Persistent gear for sim bodies; removing a companion
+Subject: [PATCH 03/31] Persistent gear for sim bodies; removing a companion
  from the party dismisses them
 
 - sim_agent.kit / kit_due: a body wears the kit it had last time; levels gained mark pieces due, the weakest due pieces are rerolled at the next spawn; anything equipped on a sim body is recorded

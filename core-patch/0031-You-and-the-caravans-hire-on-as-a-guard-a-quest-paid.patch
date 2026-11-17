@@ -1,0 +1,415 @@
+From 668b8e9382a899c5405c5db9164fdb2491a1bdfc Mon Sep 17 00:00:00 2001
+From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 14:04:37 -0600
+Subject: [PATCH 31/31] You and the caravans: hire on as a guard (a quest, paid
+ at the far end if you rode with them), ambushes come at you for real, plunder
+ an enemy caravan
+
+ERRAND_CARAVAN; CaravanCompany/TakeAmbush/CaravanReport/CaravanPlunder; a report option for townsfolk at the destination.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01JU37XfnHTvru3VVz2sNN7z
+---
+ src/server/game/AI/NpcBots/botbubble.cpp      |  41 +++++
+ src/server/game/SoloSim/solosim.cpp           | 145 +++++++++++++++++-
+ src/server/game/SoloSim/solosim.h             |  13 +-
+ src/server/game/SoloSim/solosim_civilians.cpp |  24 ++-
+ 4 files changed, 218 insertions(+), 5 deletions(-)
+
+diff --git a/src/server/game/AI/NpcBots/botbubble.cpp b/src/server/game/AI/NpcBots/botbubble.cpp
+index 7ef035c..a2383fc 100644
+--- a/src/server/game/AI/NpcBots/botbubble.cpp
++++ b/src/server/game/AI/NpcBots/botbubble.cpp
+@@ -148,7 +148,24 @@ namespace
+                 deaths.swap(fallen);
+             }
+             for (auto const& [agent, killer, dungeon, pguid, phorde] : deaths)
++            {
+                 sSoloSim->BodyFell(agent, killer, dungeon, pguid, phorde);
++                // the last guard of an enemy caravan, by this player's hand: the wagons are theirs (Nov 17)
++                uint32 copper = 0; std::vector<std::pair<uint32, uint32>> loot; std::string text;
++                if (pguid && pguid == player->GetGUID().GetCounter() && sSoloSim->CaravanPlunder(pguid, agent, copper, loot, text))
++                {
++                    player->ModifyMoney(int32(copper));
++                    for (auto const& [item, count] : loot)
++                    {
++                        ItemPosCountVec dest;
++                        if (player->CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, item, count) == EQUIP_ERR_OK)
++                            if (Item* it = player->StoreNewItem(dest, item, true))
++                                player->SendNewItem(it, count, true, false);
++                    }
++                    std::string coin = copper >= 10000 ? Acore::StringFormat("{}g {}s", copper / 10000, copper / 100 % 100) : Acore::StringFormat("{}s {}c", copper / 100, copper % 100);
++                    ChatHandler(player->GetSession()).PSendSysMessage("{} ({} in coin)", text, coin);
++                }
++            }
+         }
+ 
+         // 0. hiring: a body that got an owner is hired in the sim; free again (dismissed) -> back to their own life
+@@ -276,6 +293,30 @@ namespace
+         SoloQuests::Sync(player);                    // requests in the quest log: events the sim saw, requests that lapsed
+         SoloCamp::Tick(player);                      // by a campfire: resting, and an hour of Cozy Fire after a sit (Nov 17)
+ 
++        // riding guard on a caravan (Nov 17): which sim people are close to you now (the sim counts the road you share
++        // with the wagons), and bandits who fall on them while you're there come at you for real
++        {
++            std::vector<uint32> close;
++            for (auto const& [entry, agent] : simEntryToAgent)
++                if (Creature const* bot = BotDataMgr::FindBot(entry); bot && bot->IsInWorld() && bot->IsAlive() && bot->GetMapId() == mapId && bot->GetExactDist(player) < 60.0f)
++                    close.push_back(agent);
++            sSoloSim->CaravanCompany(guid, uint8(player->GetLevel()), close);
++            SoloSim::SimAmbush amb;
++            while (sSoloSim->TakeAmbush(guid, amb))
++                for (uint8 i = 0; i < amb.count; ++i)
++                {
++                    float ang = frand(0.0f, 2.0f * float(M_PI)), d = frand(14.0f, 20.0f);
++                    float x = player->GetPositionX() + std::cos(ang) * d, y = player->GetPositionY() + std::sin(ang) * d, z = player->GetPositionZ();
++                    float ground = player->GetMap()->GetHeight(player->GetPhaseMask(), x, y, z + 5.0f);
++                    if (ground > INVALID_HEIGHT && std::fabs(ground - z) < 10.0f) z = ground;
++                    if (TempSummon* s = player->SummonCreature(amb.entry, x, y, z, std::atan2(player->GetPositionY() - y, player->GetPositionX() - x), TEMPSUMMON_TIMED_OR_DEAD_DESPAWN, 5 * MINUTE * IN_MILLISECONDS))
++                    {
++                        s->SetLevel(amb.level);
++                        if (s->AI()) s->AI()->AttackStart(player);
++                    }
++                }
++        }
++
+         // adventurers talking within earshot: now and then one of them says something, to whoever is beside them or about
+         // their own day (templated; at most one line every few seconds, a minute between lines for each)
+         if (urand(1, 100) <= 30 && GetMSTimeDiffToNow(lastChatter) > 4000)
+diff --git a/src/server/game/SoloSim/solosim.cpp b/src/server/game/SoloSim/solosim.cpp
+index 52ca376..2b4d48d 100644
+--- a/src/server/game/SoloSim/solosim.cpp
++++ b/src/server/game/SoloSim/solosim.cpp
+@@ -1791,6 +1791,7 @@ void World::PostBounties()
+ }
+ 
+ namespace { std::string Plural(std::string const& n); }   // with the camps, below
++namespace { std::string Cargo(SimCaravan const& c); }      // with the caravans, below
+ 
+ std::string World::RareName(uint32 entry) const
+ {
+@@ -5053,7 +5054,7 @@ void World::PostErrands()
+         for (auto const& [id, a] : _agents) if (a.role == ROLE_CIVILIAN && a.status == AgentStatus::Active) ++folk;
+         for (SimErrand const& e : _errands) if (!e.done && !e.player) ++open;
+         for (SimErrand& e : _errands)
+-            if (open > folk / 7 && !e.done && !e.player) { e.done = true; e.expires = _clock; --open; }
++            if (open > folk / 7 && !e.done && !e.player && e.kind != ERRAND_CARAVAN) { e.done = true; e.expires = _clock; --open; }
+     }
+     for (auto& [id, a] : _agents)
+     {
+@@ -5222,6 +5223,13 @@ std::string World::ErrandText(SimErrand const& e)
+         return Acore::StringFormat("Someone went through the house while I was {} and took {}. The tracks went off toward {} - {}, I'd wager. "
+             "One of them has it. Get it back for me? I'll pay {}.", when, StolenThing(e.id), AreaOf(SiteName(s->id)), s->creatureName, Money(e.reward));
+     }
++    if (e.kind == ERRAND_CARAVAN)
++    {
++        SimCaravan const* c = nullptr;
++        for (SimCaravan const& x : _caravans) if (x.id == e.target) c = &x;
++        return Acore::StringFormat("Our wagons are off to {} with {}, and the roads aren't what they were. I've guards, but I'd sleep easier with one more. "
++            "Ride with them all the way and I'll pay {}. Report to anyone in {} when you're in.", SiteName(s->id), c ? Cargo(*c) : std::string("goods"), Money(e.reward), SiteName(s->id));
++    }
+     if (e.kind == ERRAND_ESCORT)
+     {
+         static char const* const why[] = { "My sister's near her time and I promised I'd be there.", "There's a buyer waiting on our wool, and he won't wait long.",
+@@ -5244,6 +5252,11 @@ std::string World::TakeErrand(uint32 agentId, uint32 guid, std::string const& na
+         if (SimAgent* a = AgentById(agentId)) RememberPlayer(*a, guid, 10, 30, EventType::PlayerHelped);
+         (void)name;
+         if (e.kind == ERRAND_ESCORT) return "Thank you. Lead on - I'll keep close.";
++        if (e.kind == ERRAND_CARAVAN)
++        {
++            for (SimCaravan& c : _caravans) if (c.id == e.target) { c.player = guid; c.with = c.away = 0; c.playerName = name; }
++            return "Good. They're gathering now - stay close to the wagons on the road, and don't let them out of your sight.";
++        }
+         return "Thank you. You'll find me about town.";
+     }
+     return "";
+@@ -5265,6 +5278,7 @@ bool World::FinishErrand(uint32 agentId, uint32 guid, std::string const& name, u
+             RememberPlayer(*a, guid, 50, 70, EventType::PlayerHelped);
+             std::string what = e.kind == ERRAND_FETCH ? "a delivery" : e.kind == ERRAND_CULL ? "the pests at their work"
+                 : e.kind == ERRAND_STOLEN ? "getting back what thieves took" : e.kind == ERRAND_OLDFOE ? "an old score with " + RareName(e.target) : e.kind == ERRAND_ESCORT ? "the road to " + SiteName(e.site)
++                : e.kind == ERRAND_CARAVAN ? "guarding a caravan to " + SiteName(e.site)
+                 : e.kind == ERRAND_MESSAGE ? "word for family" : "news of the missing";
+             Log(EventType::PlayerHelped, *a, a->home, Acore::StringFormat("{} helped {} of {} with {}.", name, a->FullName(), SiteName(a->home), what), true);
+         }
+@@ -5275,6 +5289,8 @@ bool World::FinishErrand(uint32 agentId, uint32 guid, std::string const& name, u
+             thanks = Acore::StringFormat("That's it - that's {}! I never thought I'd see it again. Here, you've earned this.", StolenThing(e.id));
+         if (e.kind == ERRAND_OLDFOE)
+             thanks = Acore::StringFormat("{} is dead? ...Good. I've been saving this for whoever did it.", RareName(e.target));
++        if (e.kind == ERRAND_CARAVAN)
++            thanks = Acore::StringFormat("You came in with the wagons from {}? The trader left your pay with us. Here.", a ? SiteName(a->home) : std::string("the road"));
+         if (e.kind == ERRAND_ESCORT)
+         {
+             thanks = Acore::StringFormat("{} at last. I'd not have made it alone. Here - as promised.", SiteName(e.site));
+@@ -5788,6 +5804,11 @@ bool World::ErrandQuestInfo(uint32 errandId, uint32 guid, ErrandQuest& out)
+             out.objective = Acore::StringFormat("Kill {}{}, then tell {} in {}.", RareName(e->target), s ? " near " + AreaOf(SiteName(s->id)) : std::string(), who, town);
+             out.request = "Well? Is it done?"; out.offer = "After all these years. Thank you.";
+             break;
++        case ERRAND_CARAVAN:
++            out.title = Acore::StringFormat("Wagons for {}", SiteName(e->site));
++            out.objective = Acore::StringFormat("Ride guard with the caravan from {} all the way to {}, then report to anyone in {}.", town, SiteName(e->site), SiteName(e->site));
++            out.request = "You came in with the wagons?"; out.offer = "The trader left your pay with us.";
++            break;
+         case ERRAND_ESCORT:
+             out.title = Acore::StringFormat("The Road to {}", SiteName(e->site));
+             out.objective = Acore::StringFormat("Walk {} safely to {}.", who, SiteName(e->site));
+@@ -6015,6 +6036,14 @@ void World::CaravanTick()
+             if (c.state == 0)
+                 Log(EventType::Caravan, Nobody(), c.to, Acore::StringFormat("The caravan from {} to {} never arrived. Its guards fell on the road, and its {} with them.",
+                     SiteName(c.from), SiteName(c.to), Cargo(c)), true);
++            for (SimErrand& e : _errands)
++                if (e.id == c.errand && !e.done)
++                {
++                    e.done = true; e.expires = _clock;
++                    if (e.player)
++                        _mail.push_back({ e.player, c.from, "The caravan to " + SiteName(c.to), Acore::StringFormat("The wagons you were to ride with never reached {}. "
++                            "Their guards fell on the road. There's nothing left to pay you with - I'm sorry.", SiteName(c.to)), 0 });
++                }
+             it = _caravans.erase(it);
+         }
+         else ++it;
+@@ -6112,6 +6141,23 @@ void World::CaravanTick()
+                 a->caravan = c.id; a->doing = a->plan.front().verb; a->wakeAt = _clock + std::max<uint32>(1, a->plan.front().minutes);   // the first step is under way
+                 _requeue.push_back(a->id);
+             }
++        // the trader asks about town for one more guard - a job a passing adventurer (the player) can take (Nov 17)
++        {
++            SimAgent* trader = nullptr;
++            for (auto& [id, a] : _agents)
++                if (a.role == ROLE_CIVILIAN && a.status == AgentStatus::Active && a.home == from
++                    && !std::ranges::any_of(_errands, [&](SimErrand const& e) { return e.agent == id && !e.done; }))
++                    if (!trader || (a.job == JOB_MARKET && trader->job != JOB_MARKET)) trader = &a;
++            if (trader)
++            {
++                uint32 rl = std::max<uint32>(1, f.regionLevel);
++                SimErrand e; e.id = _nextErrand++; e.agent = trader->id; e.kind = ERRAND_CARAVAN; e.site = to; e.target = c.id; e.count = 1;
++                e.reward = rl * rl * 6 + minutes * rl + 200;
++                e.expires = _clock + gather + minutes + 6 * MIN_PER_HOUR;
++                _errands.push_back(e);
++                c.errand = e.id;
++            }
++        }
+         _caravans.push_back(c);
+         Log(EventType::Caravan, lead, from, Acore::StringFormat("A trader's caravan set out from {} for {} with {}, {} guarding it.", SiteName(from), SiteName(to), Cargo(c),
+             names(_caravans.back())), true, 0, int32(minutes));
+@@ -6139,6 +6185,15 @@ void World::CaravanLeg(SimAgent& lead, uint32 from, uint32 to)
+         for (size_t i = 0; i < gs.size(); ++i) who += (i == 0 ? "" : i + 1 == gs.size() ? " and " : ", ") + gs[i]->FullName();
+         float band = float(k.level) * float(k.alive) * 0.9f;
+         std::string place = AreaOf(SiteName(k.site));
++        // riding with them: the player's blade counts, and the bandits come for real - out of the trees at the player
++        bool withPlayer = c->player && c->lastWith && _clock - c->lastWith <= 5;
++        if (withPlayer)
++        {
++            guard += float(c->playerLevel) * 2.0f;
++            _ambushes.push_back({ c->player, k.entry, k.level, uint8(std::clamp<uint32>(k.alive, 2, 4)) });
++            std::string sword = c->playerName.empty() ? std::string("their hired sword") : c->playerName;
++            who = gs.empty() ? sword : who + " and " + sword;
++        }
+         if (r.Chance(guard / std::max(1.0f, guard + band)))
+         {
+             uint32 n = std::min<uint32>(k.alive, r.Range(1, 3));
+@@ -6183,9 +6238,97 @@ void World::CaravanArrive(SimAgent& a)
+         Log(EventType::Caravan, a, c->to, Acore::StringFormat("What was left of the caravan from {} limped into {} with nothing to sell.", SiteName(c->from), SiteName(c->to)), true);
+         c->state = 3;
+     }
++    // the player who signed on: with the wagons for most of the road, the job's done (report to anyone in town); hardly
++    // there, and the trader's people say so
++    if (c->errand && (c->state == 2 || c->state == 3))
++        for (SimErrand& e : _errands)
++            if (e.id == c->errand && !e.done)
++            {
++                if (!e.player) { e.done = true; e.expires = _clock; break; }   // nobody took it
++                uint32 seen = c->with + c->away;
++                if (seen >= 5 && c->with * 2 >= seen)
++                {
++                    e.progress = e.count;
++                    if (c->state == 3) e.reward /= 3;            // robbed on the way: what's left
++                }
++                else
++                {
++                    e.done = true; e.expires = _clock;
++                    _mail.push_back({ e.player, c->to, "The caravan from " + SiteName(c->from), Acore::StringFormat("The wagons from {} came into {} - without you. "
++                        "The guards say they hardly saw you on the road. The trader won't pay for a guard who wasn't there.", SiteName(c->from), SiteName(c->to)), 0 });
++                }
++                break;
++            }
+     std::erase(c->guards, a.id);
+     if (c->guards.empty())
+         std::erase_if(_caravans, [id = c->id](SimCaravan const& x) { return x.id == id; });
+ }
+ 
++void World::CaravanCompany(uint32 guid, uint8 level, std::vector<uint32> const& nearAgents)
++{
++    std::lock_guard<std::mutex> guard(sBodyLock);
++    for (SimCaravan& c : _caravans)
++    {
++        if (!c.player && c.errand)                              // after a restart: who signed on is in the job itself
++            for (SimErrand const& e : _errands) if (e.id == c.errand && e.player) c.player = e.player;
++        if (c.player != guid || c.state > 1 || c.guards.empty()) continue;
++        SimAgent const* lead = AgentById(c.guards.front());
++        if (!lead || lead->doing != Verb::Goto) continue;          // counted on the road only
++        c.playerLevel = level;
++        bool with = std::ranges::any_of(c.guards, [&](uint32 g) { return std::ranges::find(nearAgents, g) != nearAgents.end(); });
++        if (with) { ++c.with; c.lastWith = _clock; } else ++c.away;
++    }
++}
++
++bool World::TakeAmbush(uint32 guid, SimAmbush& out)
++{
++    std::lock_guard<std::mutex> guard(sBodyLock);
++    for (auto it = _ambushes.begin(); it != _ambushes.end(); ++it)
++        if (it->guid == guid) { out = *it; _ambushes.erase(it); return true; }
++    return false;
++}
++
++bool World::CaravanReport(uint32 guid, uint32 agentId, SimErrand& out)
++{
++    std::lock_guard<std::mutex> guard(sBodyLock);
++    SimAgent const* a = AgentById(agentId);
++    if (!a || a->role != ROLE_CIVILIAN) return false;
++    for (SimErrand const& e : _errands)
++        if (!e.done && e.kind == ERRAND_CARAVAN && e.player == guid && e.site == a->home && e.progress >= e.count) { out = e; return true; }
++    return false;
++}
++
++// the player brought down the last of an enemy caravan's guards: the wagons are theirs to go through
++bool World::CaravanPlunder(uint32 guid, uint32 fallenAgent, uint32& copper, std::vector<std::pair<uint32, uint32>>& items, std::string& text)
++{
++    std::lock_guard<std::mutex> guard(sBodyLock);
++    copper = 0; items.clear();
++    SimAgent* g = AgentById(fallenAgent);
++    if (!guid || !g || !g->caravan) return false;
++    SimCaravan* c = CaravanOf(*g);
++    if (!c || c->state != 0) return false;
++    if (std::ranges::any_of(c->guards, [&](uint32 id) { SimAgent const* x = AgentById(id); return x && x->status == AgentStatus::Active; })) return false;   // someone still stands
++    SimSite const* f = SiteById(c->from);
++    uint32 lvl = std::max<uint32>(1, f ? f->regionLevel : g->level);
++    uint32 tier = lvl < 15 ? 0 : lvl < 25 ? 1 : lvl < 35 ? 2 : lvl < 45 ? 3 : 4;
++    static uint32 const goods[5][5] = { { 0, 0, 0, 0, 0 }, { 2770, 2771, 2772, 3858, 10620 }, { 765, 2450, 3355, 8831, 13464 },
++                                        { 2318, 2319, 4234, 4304, 8170 }, { 6291, 6308, 6362, 4603, 13754 } };
++    static uint32 const made[2][5] = { { 118, 858, 929, 1710, 3928 }, { 2680, 2684, 3220, 3666, 12210 } };   // potions, food
++    for (uint8 p = 1; p < 5; ++p)
++    {
++        copper += c->goods[p] * (4 + lvl);
++        if (uint32 n = std::min<uint32>(c->goods[p] / 4, 20)) items.emplace_back(goods[p][tier], n);
++    }
++    for (uint8 k = 0; k < 4; ++k) copper += c->made[k] * (10 + lvl * 2);
++    if (uint32 n = std::min<uint32>(c->made[CRAFT_POTION] / 2, 5)) items.emplace_back(made[0][tier], n);
++    if (uint32 n = std::min<uint32>(c->made[CRAFT_FOOD] / 2, 10)) items.emplace_back(made[1][tier], n);
++    copper = copper / 3 + lvl * lvl * 4;                      // most of a wagon's worth is in the goods themselves
++    text = Acore::StringFormat("The wagons from {} are yours. You go through them: {}.", SiteName(c->from), Cargo(*c));
++    Log(EventType::Caravan, *g, c->to, Acore::StringFormat("The caravan from {} to {} was waylaid, its guards cut down and its wagons emptied - by an enemy of {}'s people.",
++        SiteName(c->from), SiteName(c->to), SiteName(c->from)), true);
++    c->state = 4; c->goods.fill(0); c->made.fill(0);
++    for (SimErrand& e : _errands) if (e.id == c->errand && !e.done) { e.done = true; e.expires = _clock; }
++    return true;
++}
++
+ } // namespace SoloSim
+diff --git a/src/server/game/SoloSim/solosim.h b/src/server/game/SoloSim/solosim.h
+index 4a2778e..c39c71f 100644
+--- a/src/server/game/SoloSim/solosim.h
++++ b/src/server/game/SoloSim/solosim.h
+@@ -82,7 +82,9 @@ namespace SoloSim
+     // adventurers hired to guard it. Its guards travel as one (the same legs, the same nights); bandits by the road may
+     // fall on it. state: 0 on the road, 1 robbed (going on empty)
+     struct SimCaravan { uint32 id = 0, from = 0, to = 0; std::vector<uint32> guards; std::array<uint32, 5> goods{}; std::array<uint32, 4> made{};
+-                        uint32 pay = 0; SimTime left = 0; uint8 state = 0; };
++                        uint32 pay = 0; SimTime left = 0; uint8 state = 0;
++                        uint32 errand = 0, player = 0, with = 0, away = 0; uint8 playerLevel = 0; SimTime lastWith = 0; std::string playerName; };   // a player riding guard (runtime)
++    struct SimAmbush { uint32 guid = 0, entry = 0; uint8 level = 1, count = 1; };   // bandits falling on a caravan the player rides with
+     struct SimCamp { uint32 id = 0, map = 0, entry = 0, town = 0, site = 0; float x = 0, y = 0, z = 0; std::string name; uint8 level = 1, size = 0, alive = 0; SimTime made = 0, until = 0; bool done = false; uint8 kind = CAMP_BAND; uint32 home = 0; };   // a bounty target with this bit is a threat's agent id, not a creature entry
+     enum Job : uint8 { JOB_NONE = 0, JOB_FARMHAND = 1, JOB_LABORER = 2, JOB_MARKET = 3, JOB_LOAFER = 4,
+                        JOB_SMITH = 5, JOB_ALCHEMIST = 6, JOB_COOK = 7, JOB_LEATHERWORKER = 8 };   // crafters (Nov 17)
+@@ -187,7 +189,8 @@ namespace SoloSim
+     struct SimRare { uint32 entry = 0, site = 0; std::string name; uint8 level = 1; bool elite = false; };
+     struct SimNews { uint32 id = 0, subject = 0, site = 0; SimTime at = 0; };   // a death, spreading town to town
+     // A townsperson's request: bring goods, or thin out the creatures pestering their work. Shown with a blue '!'.
+-    enum ErrandKind : uint8 { ERRAND_FETCH = 1, ERRAND_CULL = 2, ERRAND_MESSAGE = 3, ERRAND_MISSING = 4, ERRAND_STOLEN = 5, ERRAND_ESCORT = 6, ERRAND_OLDFOE = 7 };
++    enum ErrandKind : uint8 { ERRAND_FETCH = 1, ERRAND_CULL = 2, ERRAND_MESSAGE = 3, ERRAND_MISSING = 4, ERRAND_STOLEN = 5, ERRAND_ESCORT = 6, ERRAND_OLDFOE = 7,
++                            ERRAND_CARAVAN = 8 };   // ride guard on a caravan (Nov 17)
+     char const* StolenThing(uint32 errandId);   // what the thieves took (stolen errands)
+     struct SimErrand { uint32 id = 0, agent = 0; uint8 kind = 0; uint32 item = 0, site = 0, count = 0, reward = 0, player = 0, progress = 0; SimTime expires = 0; bool done = false; uint32 target = 0; };
+     struct SimMail { uint32 guid = 0, hub = 0; std::string subject, body; uint32 money = 0; };  // a letter to a player from a town
+@@ -314,6 +317,11 @@ namespace SoloSim
+         bool ErrandPlace(uint32 agentId, uint32 guid, uint32& map, float& x, float& y, std::string& name);
+         bool BountyPlace(uint32 guid, uint32& map, float& x, float& y, std::string& name);
+         std::string TakeErrand(uint32 agentId, uint32 guid, std::string const& name);
++        // caravans and the player (Nov 17): riding with one, the bandits it meets, reporting in at the end, robbing one
++        void CaravanCompany(uint32 guid, uint8 level, std::vector<uint32> const& nearAgents);   // the sim bodies close to the player now
++        bool TakeAmbush(uint32 guid, SimAmbush& out);
++        bool CaravanReport(uint32 guid, uint32 agentId, SimErrand& out);    // this townsperson's town is where the player's caravan was bound
++        bool CaravanPlunder(uint32 guid, uint32 fallenAgent, uint32& copper, std::vector<std::pair<uint32, uint32>>& items, std::string& text);
+         bool FinishErrand(uint32 agentId, uint32 guid, std::string const& name, uint32& reward, std::string& thanks);
+         std::string Rumor(uint32 agentId);
+         bool RainingFor(uint32 agentId);                   // is it raining where they live right now (Nov 17)
+@@ -474,6 +482,7 @@ namespace SoloSim
+         void CaravanArrive(SimAgent& a);                          // a guard reached the end of the road
+         SimCaravan* CaravanOf(SimAgent const& a);
+         std::vector<SimCaravan> _caravans; uint32 _nextCaravan = 1;
++        std::vector<SimAmbush> _ambushes;
+         bool IsCapital(SimSite const& s) const;
+         void FileCapitals();                           // towns inside the Horde's capitals belong to the city
+         uint32 DockTown(uint32 map, float x, float y, SimAgent const& a) const;   // the town serving a boat or zeppelin dock
+diff --git a/src/server/game/SoloSim/solosim_civilians.cpp b/src/server/game/SoloSim/solosim_civilians.cpp
+index 61b3aa9..904f75d 100644
+--- a/src/server/game/SoloSim/solosim_civilians.cpp
++++ b/src/server/game/SoloSim/solosim_civilians.cpp
+@@ -780,7 +780,7 @@ namespace
+ // ----------------------------------------------------------------------------------------------- talking to them
+ namespace
+ {
+-    enum : uint32 { ACT_NEWS = 1, ACT_TAKE = 2, ACT_FINISH = 3, ACT_REMIND = 4, ACT_BYE = 5, ACT_ASK = 6, ACT_ADVICE = 7, ACT_BOARD = 8 };
++    enum : uint32 { ACT_NEWS = 1, ACT_TAKE = 2, ACT_FINISH = 3, ACT_REMIND = 4, ACT_BYE = 5, ACT_ASK = 6, ACT_ADVICE = 7, ACT_BOARD = 8, ACT_CARAVAN = 9 };
+ 
+     uint32 AgentOf(Creature const* c) { return c && c->GetEntry() >= ENTRY_BASE && c->GetEntry() < ENTRY_BASE + 100000 ? c->GetEntry() - ENTRY_BASE : 0; }
+ 
+@@ -810,18 +810,23 @@ namespace
+             {
+                 if (Ready(player, e))
+                     AddGossipItemFor(player, GOSSIP_ICON_INTERACT_1, e.kind == SoloSim::ERRAND_MISSING ? "I found where they fell." : e.kind == SoloSim::ERRAND_MESSAGE ? "I passed on your message."
+-                        : e.kind == SoloSim::ERRAND_STOLEN ? "I got it back." : e.kind == SoloSim::ERRAND_OLDFOE ? "It's dead." : e.kind == SoloSim::ERRAND_ESCORT ? "Here we are." : "Here's what you asked for.", GOSSIP_SENDER_MAIN, ACT_FINISH);
++                        : e.kind == SoloSim::ERRAND_STOLEN ? "I got it back." : e.kind == SoloSim::ERRAND_OLDFOE ? "It's dead." : e.kind == SoloSim::ERRAND_ESCORT ? "Here we are." : e.kind == SoloSim::ERRAND_CARAVAN ? "The wagons got through." : "Here's what you asked for.", GOSSIP_SENDER_MAIN, ACT_FINISH);
+                 else
+                     AddGossipItemFor(player, GOSSIP_ICON_CHAT, e.kind == SoloSim::ERRAND_MESSAGE ? std::string("I haven't found them yet.") :
+                         e.kind == SoloSim::ERRAND_MISSING ? std::string("I'm still looking.") :
+                         e.kind == SoloSim::ERRAND_STOLEN ? Acore::StringFormat("I'm still after {}.", SoloSim::StolenThing(e.id)) :
+                         e.kind == SoloSim::ERRAND_ESCORT ? std::string("Stay close. We'll get there.") :
++                        e.kind == SoloSim::ERRAND_CARAVAN ? std::string("I'm riding with your wagons.") :
+                         e.kind == SoloSim::ERRAND_OLDFOE ? std::string("I'm still hunting it.") : e.kind == SoloSim::ERRAND_CULL
+                         ? Acore::StringFormat("About those pests... ({}/{})", e.progress, e.count)
+                         : Acore::StringFormat("About what you asked for... ({}/{})", std::min<uint32>(player->GetItemCount(e.item), e.count), e.count),
+                         GOSSIP_SENDER_MAIN, ACT_REMIND);
+             }
+         }
++        // the end of a caravan's road: anyone in the town it was bound for will settle up with its hired guard (Nov 17)
++        SoloSim::SimErrand ce;
++        if (sSoloSim->CaravanReport(player->GetGUID().GetCounter(), agent, ce))
++            AddGossipItemFor(player, GOSSIP_ICON_INTERACT_1, "I rode guard on the wagons that just came in.", GOSSIP_SENDER_MAIN, ACT_CARAVAN);
+         AddGossipItemFor(player, GOSSIP_ICON_CHAT, "Good day.", GOSSIP_SENDER_MAIN, ACT_BYE);
+         SendGossipMenuFor(player, DEFAULT_GOSSIP_MESSAGE, c->GetGUID());
+     }
+@@ -898,6 +903,21 @@ namespace
+                     }
+                     break;
+                 }
++                case ACT_CARAVAN:
++                {
++                    SoloSim::SimErrand ce;
++                    if (!sSoloSim->CaravanReport(guid, agent, ce)) break;
++                    bool viaQuest = SoloQuests::InLog(player, ce.id) && SoloQuests::TurnIn(player, c, ce.id);
++                    if (!viaQuest && SoloQuests::InLog(player, ce.id)) break;
++                    uint32 reward = 0; std::string thanks;
++                    if (sSoloSim->FinishErrand(ce.agent, guid, player->GetName(), reward, thanks))
++                    {
++                        if (reward && !viaQuest) player->ModifyMoney(int32(reward));
++                        c->Say(thanks, LANG_UNIVERSAL, player);
++                        c->HandleEmoteCommand(EMOTE_ONESHOT_BOW);
++                    }
++                    break;
++                }
+                 case ACT_REMIND:
+                 {
+                     c->Say("No rush. Well - a little rush.", LANG_UNIVERSAL, player);
+-- 
+2.56.0.windows.2
+

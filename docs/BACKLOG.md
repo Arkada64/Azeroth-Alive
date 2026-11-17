@@ -155,7 +155,16 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
     emptied, guards hurt, the price on that camp up half again). At the end: goods into the market and shelves, guards
     paid (lvl^2 x 3 + road minutes x lvl / 2 + 1 s; a third if robbed). Caravans are news (rumours, boards). sim_caravan.
     48 h test: 18 set out, 17 arrived, 1 fought off, 1 robbed. The restless now move home further too (any fitting town
-    up to four times as far). Next: you as a guard (an errand at the trader), robbing them yourself, caravans at sea.
+    up to four times as far).
+  - **You and the caravans, Nov 17 (14:10), not yet seen in game:** when a caravan forms, a townsperson of the town
+    (a trader if there is one) asks for one more guard - "Wagons for <town>", in your quest log, paid by the town's
+    level and the road's length. Ride with them: the sim counts the road you share (any guard within 60 yd while the
+    wagons roll); with them for at least half of it, the job's done - report to anyone in the town they were bound for
+    (a third of the pay if they were robbed anyway). Hardly there: a letter says the trader won't pay. Bandits that
+    fall on the wagons while you're with them come at you for real (2-4 of the camp's kind, at its level), your blade
+    counts in the fight, and the camp's losses are credited to you. An enemy caravan: cut down every guard and the
+    wagons are yours - coin and some of the goods (ore, herbs, leather, fish, potions, food at the region's tier); the
+    road hears of it. Next: caravans at sea, the robbed side's revenge (a price on you), your own wagon.
   - Dialogue: "might be time to consider a text generator" for natural talk about world events, life and rumours,
     with you and between NPCs. NOTE: the standing rule so far is templated NPC text only, no AI-generated text - the
     user is reopening that; options when we get there: a bigger procedural grammar (combinatorial templates fed by the
