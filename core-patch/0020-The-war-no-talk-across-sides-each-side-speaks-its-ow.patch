@@ -1,0 +1,148 @@
+From d8f72ae0980298dd9da8272476cc436f6ec987e2 Mon Sep 17 00:00:00 2001
+From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 06:02:13 -0600
+Subject: [PATCH 20/20] The war: no talk across sides, each side speaks its own
+ tongue, no goodwill from the other side's people
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01JU37XfnHTvru3VVz2sNN7z
+---
+ src/server/game/AI/NpcBots/botbubble.cpp      |  5 ++-
+ src/server/game/SoloSim/solosim.cpp           | 31 +++++++++++++++++--
+ src/server/game/SoloSim/solosim.h             |  3 ++
+ src/server/game/SoloSim/solosim_civilians.cpp |  7 +++--
+ 4 files changed, 41 insertions(+), 5 deletions(-)
+
+diff --git a/src/server/game/AI/NpcBots/botbubble.cpp b/src/server/game/AI/NpcBots/botbubble.cpp
+index ebea5e4..b56aef3 100644
+--- a/src/server/game/AI/NpcBots/botbubble.cpp
++++ b/src/server/game/AI/NpcBots/botbubble.cpp
+@@ -246,6 +246,8 @@ namespace
+         if (std::string found = sSoloSim->ReachedPlace(guid, mapId, player->GetPositionX(), player->GetPositionY()); !found.empty())
+             ChatHandler(player->GetSession()).SendSysMessage(found);
+ 
++        sSoloSim->NotePlayerSide(guid, player->GetTeamId() == TEAM_HORDE);
++
+         // adventurers talking within earshot: now and then one of them says something, to whoever is beside them or about
+         // their own day (templated; at most one line every few seconds, a minute between lines for each)
+         if (urand(1, 100) <= 30 && GetMSTimeDiffToNow(lastChatter) > 4000)
+@@ -264,7 +266,8 @@ namespace
+                     if (ob != bot) if (float d = ob->GetExactDist(bot); d < best) { best = d; other = oa; }
+                 if (std::string line = sSoloSim->AdventurerChatter(agent, other); !line.empty())
+                 {
+-                    bot->Say(line, LANG_UNIVERSAL);
++                    // in their own side's tongue: the other side hears gibberish, as in the game (Nov 17)
++                    bot->Say(line, sSoloSim->AgentIsHorde(agent) ? LANG_ORCISH : LANG_COMMON);
+                     saidAt[bot->GetEntry()] = getMSTime();
+                     lastChatter = getMSTime();
+                 }
+diff --git a/src/server/game/SoloSim/solosim.cpp b/src/server/game/SoloSim/solosim.cpp
+index bc367ba..01709ff 100644
+--- a/src/server/game/SoloSim/solosim.cpp
++++ b/src/server/game/SoloSim/solosim.cpp
+@@ -3950,9 +3950,36 @@ uint32 World::HubNear(uint32 map, float x, float y, float range) const
+ 
+ void World::RememberPlayer(SimAgent& a, uint32 guid, int8 valence, uint8 intensity, EventType why)
+ {
++    // the Alliance and the Horde are at war: the other side's people never warm to you, whatever you did near them
++    // (Nov 17). Neutral goblins and the like count as their race's side; only hostile memories cross the line.
++    if (valence > 0)
++    {
++        std::lock_guard<std::mutex> g(_sideLock);
++        if (auto it = _playerHorde.find(guid); it != _playerHorde.end() && it->second != IsHordeRace(a.race)) return;
++    }
+     _memories.push_back({ a.id, 4, guid, uint8(why), valence, intensity, _clock });
+ }
+ 
++void World::NotePlayerSide(uint32 guid, bool horde)
++{
++    {
++        std::lock_guard<std::mutex> g(_sideLock);
++        auto it = _playerHorde.find(guid);
++        if (it != _playerHorde.end() && it->second == horde) return;
++        _playerHorde[guid] = horde;
++    }
++    // first sight of this player (or a side change): goodwill the other side's people held from before is forgotten
++    std::lock_guard<std::mutex> guard(sBodyLock);
++    size_t before = _memories.size();
++    std::erase_if(_memories, [&](SimMemory const& m) {
++        if (m.subjectType != 4 || m.subject != guid || m.valence <= 0) return false;
++        SimAgent const* a = AgentById(m.agent);
++        return a && IsHordeRace(a->race) != horde;
++    });
++    if (before != _memories.size())
++        LOG_INFO("server.loading", "SoloWoW sim: {} kind memories of player {} held by the other side's people forgotten (the war)", before - _memories.size(), guid);
++}
++
+ std::string World::Regard(uint32 agentId, uint32 guid) const
+ {
+     int32 sum = 0; bool met = false;
+@@ -5285,10 +5312,10 @@ std::string World::AdventurerChatter(uint32 agentId, uint32 otherAgentId)
+         int8 kind = 0;
+         for (SimRelation const& rel : _relations)
+             if ((rel.a == a->id && rel.b == o->id) || (rel.b == a->id && rel.a == o->id)) { kind = int8(rel.kind); break; }
+-        bool foe = IsHordeRace(a->race) != IsHordeRace(o->race);
++        // the other side: at war, and no common tongue - nothing to say to each other (Nov 17)
++        if (IsHordeRace(a->race) != IsHordeRace(o->race)) return "";
+         bool grudge = a->ambition == AmbitionType::Revenge && a->avengeFor == o->id;
+         if (grudge) return Acore::StringFormat("{}. I haven't forgotten.", o->given);
+-        if (foe) return pick({ "Keep walking.", "Not here. Not today.", "Your lot shouldn't be this far out." });
+         if (kind == 2) return Acore::StringFormat(pick({ "Oh. {}.", "Still breathing, {}? Pity.", "Find your own spot, {}." }), o->given);
+         if (kind == 1 || kind == 3)
+             return Acore::StringFormat(pick({ "{}! Still alive, I see.", "Drinks later, {}? You're buying.", "Watch my back out there, {}.",
+diff --git a/src/server/game/SoloSim/solosim.h b/src/server/game/SoloSim/solosim.h
+index 19b2594..0ddc349 100644
+--- a/src/server/game/SoloSim/solosim.h
++++ b/src/server/game/SoloSim/solosim.h
+@@ -243,6 +243,7 @@ namespace SoloSim
+         // an embodied person was killed in the game world (call on the world thread)
+         void BodyFell(uint32 agentId, std::string const& killer, bool dungeon = false, uint32 playerGuid = 0, bool playerHorde = false);   // dungeon: far less likely to be final; playerGuid: a player's hand
+         bool AgentIsHorde(uint32 agentId);                 // which side a sim person is on (for hiring)
++        void NotePlayerSide(uint32 guid, bool horde);      // the player's side (the war: no goodwill across it)
+         WanderNode const* StepToward(WanderNode const* cur, uint32 goalNodeId);
+         // who is out and about: nearest = the 12 nearest to (x, y) with what they're doing, else a count per zone
+         std::string People(uint32 mapId, float x, float y, bool nearest, uint32 guid = 0);
+@@ -452,6 +453,8 @@ namespace SoloSim
+         uint32 _lastDailyTick = 0;
+         std::unordered_map<uint32, float> _danger;        // site -> danger (RebuildDanger)
+         std::unordered_map<uint64, uint32> _enemyNear;    // (site << 1 | horde) -> that side's adventurers hunting there
++        std::mutex _sideLock;                              // guards _playerHorde (set from the bubble, read under sBodyLock)
++        std::unordered_map<uint32, bool> _playerHorde;    // player guid -> on the Horde's side
+         std::unordered_map<uint32, SimTime> _lastClash;   // at most one clash a day each (not saved: a restart forgives)
+         std::vector<uint32> _requeue;              // agents whose wakeAt changed outside their own wake (party members)
+         uint32 _nextParty = 1, _nextBounty = 1, _nextNews = 1;
+diff --git a/src/server/game/SoloSim/solosim_civilians.cpp b/src/server/game/SoloSim/solosim_civilians.cpp
+index aaa4ffb..3566795 100644
+--- a/src/server/game/SoloSim/solosim_civilians.cpp
++++ b/src/server/game/SoloSim/solosim_civilians.cpp
+@@ -415,6 +415,9 @@ namespace
+ 
+         // the talk animation with words to it: small talk for their work, or the town's news - only when someone is near
+         // enough to hear, at most once a minute each (templated lines; Nov 17)
++        // their side's tongue for talk among themselves (Common or Orcish): the other side hears gibberish (Nov 17)
++        Language Tongue() { return sSoloSim->AgentIsHorde(_agent) ? LANG_ORCISH : LANG_COMMON; }
++
+         void Chatter(Creature* npc)
+         {
+             if (GetMSTimeDiffToNow(_lastSaid) < 60000 && _lastSaid) return;
+@@ -425,7 +428,7 @@ namespace
+             if (urand(1, 100) <= 35)
+             {
+                 std::string news = sSoloSim->Rumor(agent);
+-                if (!news.empty()) { me->Say(news, LANG_UNIVERSAL); return; }
++                if (!news.empty()) { me->Say(news, Tongue()); return; }
+             }
+             static char const* const any[] = {
+                 "Morning. Or is it afternoon already? Days run together.", "Prices are up again. Don't ask me why.",
+@@ -448,7 +451,7 @@ namespace
+             char const* line = urand(0, 1) ? pick(any)
+                 : job == SoloSim::JOB_FARMHAND ? pick(farm) : job == SoloSim::JOB_LABORER ? pick(labor)
+                 : job == SoloSim::JOB_MARKET ? pick(market) : job == SoloSim::JOB_LOAFER ? pick(loafer) : pick(any);
+-            me->Say(line, LANG_UNIVERSAL);
++            me->Say(line, Tongue());
+             (void)npc;
+         }
+ 
+-- 
+2.56.0.windows.2
+

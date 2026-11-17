@@ -68,7 +68,11 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
     at most, a minute between lines each) an adventurer body speaks: to the sim person beside them by name - friends,
     rivals, the other side, the one they swore revenge on, townsfolk - or about their own day (revenge, avenging a
     friend, wounds, a bounty, saving gold, a place they want to see, the creatures they're hunting, rain, their class).
-    Templated, filled with sim facts. Still to do: adventurers using the world (board, mail, forge) - their bodies move
+    Templated, filled with sim facts. **The war (the user, Nov 17):** the Alliance and the Horde are at war and share no
+    tongue - the other side's people say nothing to each other; adventurers and townsfolk speak in their side's
+    language (Common / Orcish), so the other side hears gibberish; no goodwill across sides - the sim never records a
+    kind memory of a player from someone of the other side (only hostile ones), and older ones were forgotten the first
+    time the bubble saw that player. Still to do: adventurers using the world (board, mail, forge) - their bodies move
     through NPCBots' own AI and the inn-seat code, a bigger job.
   - NPCs using the world around them (the user, Nov 17) - **townsfolk, done Nov 17 (05:55), not yet seen in game:**
     benches and chairs outside (one person per seat, benches by their slots, the chair's height), the bounty board
