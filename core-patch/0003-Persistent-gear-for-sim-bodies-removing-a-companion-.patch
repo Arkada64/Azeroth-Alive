@@ -1,0 +1,291 @@
+From 123b38cd20b91ca20a26c121d7f0092eb65869f9 Mon Sep 17 00:00:00 2001
+From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 21:35:57 -0600
+Subject: [PATCH 3/3] Persistent gear for sim bodies; removing a companion from
+ the party dismisses them
+
+- sim_agent.kit / kit_due: a body wears the kit it had last time; levels gained mark pieces due, the weakest due pieces are rerolled at the next spawn; anything equipped on a sim body is recorded
+- GroupHandler: kicking a sim companion = dismiss
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01JU37XfnHTvru3VVz2sNN7z
+---
+ src/server/game/AI/NpcBots/bot_ai.cpp     | 32 ++++++++++++++++++
+ src/server/game/AI/NpcBots/botbubble.cpp  | 40 +++++++++++++++++++++++
+ src/server/game/AI/NpcBots/botbubble.h    |  8 +++++
+ src/server/game/Handlers/GroupHandler.cpp |  4 +++
+ src/server/game/SoloSim/solosim.cpp       | 27 ++++++++++++---
+ src/server/game/SoloSim/solosim.h         |  6 +++-
+ 6 files changed, 112 insertions(+), 5 deletions(-)
+
+diff --git a/src/server/game/AI/NpcBots/bot_ai.cpp b/src/server/game/AI/NpcBots/bot_ai.cpp
+index ca64d89..04311c1 100644
+--- a/src/server/game/AI/NpcBots/bot_ai.cpp
++++ b/src/server/game/AI/NpcBots/bot_ai.cpp
+@@ -5,6 +5,7 @@
+ #include "BattlegroundWS.h"
+ #include "bot_ai.h"
+ #include "botbubble.h" // SoloWoW
++#include <set>
+ #include "bot_Events.h"
+ #include "bot_InstanceEvents.h"
+ #include "bot_GridNotifiers.h"
+@@ -13336,6 +13337,9 @@ BotEquipResult bot_ai::_equip(uint8 slot, Item* newItem, ObjectGuid receiver, bo
+         }
+     }
+ 
++    if (BotBubble::SimAgentOf(me->GetEntry()))
++        BotBubble::SaveSimGear(me);                             // SoloWoW: a gift or a find - theirs to keep
++
+     return BotEquipResult::BOT_EQUIP_RESULT_OK;
+ }
+ 
+@@ -15156,10 +15160,36 @@ void bot_ai::InitEquips()
+             max_item_level = BotCfg::GetBotWandererMaxItemLevel(lvl);
+ 
+         GenerateRand();
++        // SoloWoW: a sim person wears the kit they had last time; only the pieces due a change (levels gained) are rerolled
++        uint32 simAgent = BotBubble::SimAgentOf(me->GetEntry());
++        std::vector<BotBubble::GearPiece> kept;
++        std::set<uint8> reroll;
++        if (simAgent)
++        {
++            uint8 due = 0;
++            BotBubble::SimGear(simAgent, kept, due);
++            std::vector<std::pair<uint32, uint8>> weakest;
++            for (BotBubble::GearPiece const& g : kept)
++                if (ItemTemplate const* p = sObjectMgr->GetItemTemplate(g.entry)) weakest.emplace_back(p->ItemLevel, g.slot);
++            std::ranges::sort(weakest);
++            for (uint32 k = 0; k < weakest.size() && k < due; ++k) reroll.insert(weakest[k].second);
++        }
+         std::ostringstream gss;
+         gss << "bot_ai::InitEquips(): Wanderer bot " << me->GetName() << " id " << me->GetEntry() << ' ' << "level " << uint32(lvl) << " generated gear:";
+         for (auto i : NPCBots::index_array<uint8, BOT_INVENTORY_SIZE>)
+         {
++            if (simAgent && !reroll.contains(i))                // SoloWoW: their own piece, as they left it
++            {
++                auto it = std::ranges::find_if(kept, [i](BotBubble::GearPiece const& g) { return g.slot == i; });
++                if (it != kept.end())
++                    if (Item* own = Item::CreateItem(it->entry, 1))
++                    {
++                        if (it->suffix) own->SetItemRandomProperties(it->suffix);
++                        if (it->enchant) own->SetEnchantment(PERM_ENCHANTMENT_SLOT, it->enchant, 0, 0);
++                        _equips[i] = own;
++                        continue;
++                    }
++            }
+             if (i == BOT_SLOT_OFFHAND && (!_canUseOffHand() || (lvl < 10 && BotDataMgr::IsCastingClass(_botclass))))
+                 continue;
+             if ((i == BOT_SLOT_FINGER1 || i == BOT_SLOT_FINGER2 || i == BOT_SLOT_NECK || i == BOT_SLOT_SHOULDERS) && lvl < 20)
+@@ -15189,6 +15219,8 @@ void bot_ai::InitEquips()
+             }
+         }
+         BOT_LOG_TRACE("npcbots", "{}", gss.str());
++        if (simAgent)
++            BotBubble::SaveSimGear(me);                         // SoloWoW: remember the kit (new pieces included)
+     }
+     else
+     {
+diff --git a/src/server/game/AI/NpcBots/botbubble.cpp b/src/server/game/AI/NpcBots/botbubble.cpp
+index c9436e7..56c7343 100644
+--- a/src/server/game/AI/NpcBots/botbubble.cpp
++++ b/src/server/game/AI/NpcBots/botbubble.cpp
+@@ -1,5 +1,9 @@
+ // SoloWoW: "bubble" wandering bots. See botbubble.h.
+ #include "botbubble.h"
++#include "botcommon.h"
++#include <cstdio>
++#include <sstream>
++#include "Item.h"
+ #include "WorldPacket.h"
+ #include "botconfig.h"
+ #include "botmgr.h"
+@@ -793,6 +797,42 @@ bool BotBubble::InviteByName(Player* player, std::string const& name)
+     return true;
+ }
+ 
++bool BotBubble::SimGear(uint32 agent, std::vector<GearPiece>& out, uint8& due)
++{
++    std::string gear;
++    if (!sSoloSim->GearOf(agent, gear, due)) return false;
++    std::istringstream in(gear);
++    std::string part;
++    while (std::getline(in, part, ','))
++    {
++        GearPiece g; uint32 slot = 0;
++        if (std::sscanf(part.c_str(), "%u:%u:%d:%u", &slot, &g.entry, &g.suffix, &g.enchant) == 4 && g.entry) { g.slot = uint8(slot); out.push_back(g); }
++    }
++    return true;
++}
++
++void BotBubble::SaveSimGear(Creature const* bot)
++{
++    uint32 agent = bot ? SimAgentOf(bot->GetEntry()) : 0;
++    bot_ai const* ai = bot ? bot->GetBotAI() : nullptr;
++    if (!agent || !ai) return;
++    std::string gear;
++    for (uint8 i = 0; i < BOT_INVENTORY_SIZE; ++i)
++        if (Item const* it = ai->GetEquips(i))
++            gear += Acore::StringFormat("{}{}:{}:{}:{}", gear.empty() ? "" : ",", uint32(i), it->GetEntry(), it->GetItemRandomPropertyId(), it->GetEnchantmentId(PERM_ENCHANTMENT_SLOT));
++    sSoloSim->SetGear(agent, gear);
++}
++
++bool BotBubble::DismissFromParty(Player* player, ObjectGuid guid)
++{
++    if (!player || !guid.IsCreature() || !player->GetBotMgr()) return false;
++    Creature* bot = player->GetBotMgr()->GetBot(guid);
++    if (!bot || !SimAgentOf(bot->GetEntry())) return false;
++    bot->Whisper("Safe travels. You know where to find me.", LANG_UNIVERSAL, player);
++    player->GetBotMgr()->RemoveBot(guid, BOT_REMOVE_DISMISS);
++    return true;
++}
++
+ std::string BotBubble::HireRefusal(Creature const* bot, Player const* player)
+ {
+     if (!bot || !player || !sSoloSim->IsLive()) return "";
+diff --git a/src/server/game/AI/NpcBots/botbubble.h b/src/server/game/AI/NpcBots/botbubble.h
+index d294fb6..d522e41 100644
+--- a/src/server/game/AI/NpcBots/botbubble.h
++++ b/src/server/game/AI/NpcBots/botbubble.h
+@@ -11,7 +11,9 @@
+ #define SOLOWOW_BOT_BUBBLE_H
+ 
+ #include "Define.h"
++#include "ObjectGuid.h"
+ #include <string>
++#include <vector>
+ 
+ class Creature;
+ class Unit;
+@@ -35,6 +37,12 @@ namespace BotBubble
+     std::string HireRefusal(Creature const* bot, Player const* player);
+     // /invite <name> for a sim adventurer: true if handled (they joined, said no, or answered from afar)
+     bool InviteByName(Player* player, std::string const& name);
++    // persistent gear: a sim person's kit as their body last wore it (World::GearOf / SetGear)
++    struct GearPiece { uint8 slot = 0; uint32 entry = 0; int32 suffix = 0; uint32 enchant = 0; };
++    bool SimGear(uint32 agent, std::vector<GearPiece>& out, uint8& due);
++    void SaveSimGear(Creature const* bot);
++    // removing a sim companion from your party sends them back to their own life
++    bool DismissFromParty(Player* player, ObjectGuid guid);
+     // Sim embodiment: called when an embodied body reached its last target. Fills where to go next (target,
+     // and nextNode when the step is along the roads), how long to wait first and how close counts as arrived.
+     // Returns false if this bot is not a sim body (wander normally).
+diff --git a/src/server/game/Handlers/GroupHandler.cpp b/src/server/game/Handlers/GroupHandler.cpp
+index 70262a4..03c6540 100644
+--- a/src/server/game/Handlers/GroupHandler.cpp
++++ b/src/server/game/Handlers/GroupHandler.cpp
+@@ -419,6 +419,10 @@ void WorldSession::HandleGroupUninviteGuidOpcode(WorldPacket& recvData)
+         return;
+     }
+ 
++    // SoloWoW: removing a sim companion from the party dismisses them (back to their own life)
++    if (BotBubble::DismissFromParty(GetPlayer(), guid))
++        return;
++
+     if (grp->IsMember(guid))
+     {
+         Player::RemoveFromGroup(grp, guid, GROUP_REMOVEMETHOD_KICK, GetPlayer()->GetGUID(), reason.c_str());
+diff --git a/src/server/game/SoloSim/solosim.cpp b/src/server/game/SoloSim/solosim.cpp
+index 41ad072..91dd628 100644
+--- a/src/server/game/SoloSim/solosim.cpp
++++ b/src/server/game/SoloSim/solosim.cpp
+@@ -188,6 +188,8 @@ void World::CreateTables()
+         CharacterDatabase.DirectExecute("ALTER TABLE sim_errand ADD COLUMN target INT UNSIGNED NOT NULL DEFAULT 0");
+     if (!CharacterDatabase.Query("SHOW COLUMNS FROM sim_agent LIKE 'role'"))
+         CharacterDatabase.DirectExecute("ALTER TABLE sim_agent ADD COLUMN role TINYINT UNSIGNED NOT NULL DEFAULT 0, ADD COLUMN job TINYINT UNSIGNED NOT NULL DEFAULT 0");
++    if (!CharacterDatabase.Query("SHOW COLUMNS FROM sim_agent LIKE 'kit'"))
++        CharacterDatabase.DirectExecute("ALTER TABLE sim_agent ADD COLUMN kit VARCHAR(600) NOT NULL DEFAULT '', ADD COLUMN kit_due TINYINT UNSIGNED NOT NULL DEFAULT 0");
+     if (!CharacterDatabase.Query("SHOW COLUMNS FROM sim_agent LIKE 'age0'"))
+         CharacterDatabase.DirectExecute("ALTER TABLE sim_agent ADD COLUMN age0 TINYINT UNSIGNED NOT NULL DEFAULT 0");
+     if (!CharacterDatabase.Query("SHOW COLUMNS FROM sim_bounty LIKE 'player'"))
+@@ -575,12 +577,12 @@ void World::Save()
+     CharacterDatabase.DirectExecute("DELETE FROM sim_agent");
+     rows.clear();
+     for (auto const& [id, a] : _agents)
+-        rows.push_back(Acore::StringFormat("({},'{}','{}',{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},'{}',{},{},{},{},{},{},{},{},'{}',{},{},{},{},{},{},{},'{}',{},{},{})",
++        rows.push_back(Acore::StringFormat("({},'{}','{}',{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},'{}',{},{},{},{},{},{},{},{},'{}',{},{},{},{},{},{},{},'{}',{},{},{},'{}',{})",
+             a.id, Esc(a.given), Esc(a.family), a.gender, a.race, a.cls, a.sourceEntry, a.level, a.xp, a.gearTier, a.money, a.lootValue,
+             a.wounds, a.fatigue, a.supplies, a.durability, a.bravery, a.greed, a.sociability, a.caution, a.wanderlust,
+             a.home, a.site, a.born, uint32(a.status), a.statusUntil, a.defeats, a.diedAt, Esc(a.deathCause), a.kills,
+             uint32(a.ambition), a.ambitionTarget, a.ambitionProgress, a.avengeFor, uint32(a.doing), a.wakeAt, a.lastSocial, EncodePlan(a.plan),
+-            a.bounty, a.bountyProgress, a.trainedLevel, a.prof[0], a.profSkill[0], a.prof[1], a.profSkill[1], JoinIds(a.knownNews), a.role, a.job, a.age0));
++            a.bounty, a.bountyProgress, a.trainedLevel, a.prof[0], a.profSkill[0], a.prof[1], a.profSkill[1], JoinIds(a.knownNews), a.role, a.job, a.age0, Esc(a.gear), a.gearDue));
+     Chunked("INSERT INTO sim_agent VALUES ", rows);
+ 
+     CharacterDatabase.DirectExecute("DELETE FROM sim_relation");
+@@ -672,7 +674,7 @@ bool World::Load()
+         } while (r->NextRow());
+     if (QueryResult r = CharacterDatabase.Query("SELECT id, given, family, gender, race, cls, src, level, xp, gear, money, loot, wounds, fatigue, supplies, durability, "
+         "bravery, greed, sociability, caution, wanderlust, home, site, born, status, status_until, defeats, died_at, death_cause, kills, amb, amb_target, amb_progress, "
+-        "avenge_for, doing, wake_at, last_social, plan, bounty, bounty_progress, trained_level, prof1, prof1_skill, prof2, prof2_skill, news, role, job, age0 FROM sim_agent ORDER BY id"))
++        "avenge_for, doing, wake_at, last_social, plan, bounty, bounty_progress, trained_level, prof1, prof1_skill, prof2, prof2_skill, news, role, job, age0, kit, kit_due FROM sim_agent ORDER BY id"))
+         do
+         {
+             Field* f = r->Fetch(); SimAgent a;
+@@ -687,7 +689,7 @@ bool World::Load()
+             a.bounty = f[38].Get<uint32>(); a.bountyProgress = f[39].Get<uint32>(); a.trainedLevel = f[40].Get<uint8>();
+             a.prof[0] = f[41].Get<uint8>(); a.profSkill[0] = f[42].Get<uint16>(); a.prof[1] = f[43].Get<uint8>(); a.profSkill[1] = f[44].Get<uint16>();
+             a.knownNews = SplitIds(f[45].Get<std::string>());
+-            a.role = f[46].Get<uint8>(); a.job = f[47].Get<uint8>(); a.age0 = f[48].Get<uint8>();
++            a.role = f[46].Get<uint8>(); a.job = f[47].Get<uint8>(); a.age0 = f[48].Get<uint8>(); a.gear = f[49].Get<std::string>(); a.gearDue = f[50].Get<uint8>();
+             _agents[a.id] = a;
+         } while (r->NextRow());
+     if (QueryResult r = CharacterDatabase.Query("SELECT a, b, kind, strength FROM sim_relation ORDER BY a, b"))
+@@ -1634,6 +1636,7 @@ void World::ResolveFight(SimAgent& a, SimSite const& site, uint32 minutes)
+                 a.xp -= sObjectMgr->GetXPForLevel(a.level);
+                 ++a.level;
+                 Log(EventType::LevelUp, a, site.id, Acore::StringFormat("{} grew stronger hunting {}: now level {}.", a.FullName(), site.creatureName, a.level), a.level % 10 == 0, 0, a.level);
++        a.gearDue = uint8(std::min<uint32>(6, a.gearDue + 1u));     // a piece or so of their kit gets replaced, next time they're seen
+             }
+         }
+         // humanoids carry coin; beasts and others leave hides, fangs and junk worth a little
+@@ -3498,6 +3501,22 @@ std::string World::SummonCamp(bool havePos, uint32 map, float x, float y)
+     return havePos ? "No camp could be placed near here (the nearest town may already have one)." : "No camp could be placed.";
+ }
+ 
++// an adventurer's kit as their body last wore it ("slot:entry:suffix:enchant,..."), and how many pieces are due a change
++bool World::GearOf(uint32 agentId, std::string& gear, uint8& due)
++{
++    std::lock_guard<std::mutex> guard(sBodyLock);
++    SimAgent const* a = AgentById(agentId);
++    if (!a) return false;
++    gear = a->gear; due = a->gearDue;
++    return true;
++}
++
++void World::SetGear(uint32 agentId, std::string const& gear)
++{
++    std::lock_guard<std::mutex> guard(sBodyLock);
++    if (SimAgent* a = AgentById(agentId)) { a->gear = gear; a->gearDue = 0; }
++}
++
+ std::string World::SummonThreats()
+ {
+     std::lock_guard<std::mutex> guard(sBodyLock);
+diff --git a/src/server/game/SoloSim/solosim.h b/src/server/game/SoloSim/solosim.h
+index 916be3f..68d451f 100644
+--- a/src/server/game/SoloSim/solosim.h
++++ b/src/server/game/SoloSim/solosim.h
+@@ -97,6 +97,8 @@ namespace SoloSim
+         uint32 home = 0;                  // hub site id
+         uint32 site = 0;                  // where they are now (site id)
+         SimTime born = 0;
++        std::string gear;                 // the kit their body wears: "slot:entry:suffix:enchant,..." (empty = not seen yet)
++        uint8 gearDue = 0;                // pieces due a change (levels gained since last seen)
+         uint8 age0 = 0;                   // age (years) when born was set; a year passes every game week (see Age())
+         AgentStatus status = AgentStatus::Active;
+         SimTime statusUntil = 0;          // recovering until
+@@ -249,7 +251,9 @@ namespace SoloSim
+         std::vector<SimCamp> CampsNear(uint32 map, float x, float y, float radius);   // world thread: camps to put in the world
+         void CampLoss(uint32 campId, std::string const& by);                       // one of a camp fell in the game world
+         std::string SummonCamp(bool havePos, uint32 map, float x, float y);         // GM: a camp now, by the town nearest (x, y)
+-        void SaveOnShutdown();          // the server is stopping: write the living world out now   // GM: raise a threat now on each continent that has none   // a townsperson's body won a fight in the game world
++        void SaveOnShutdown();
++        bool GearOf(uint32 agentId, std::string& gear, uint8& due);
++        void SetGear(uint32 agentId, std::string const& gear);          // the server is stopping: write the living world out now   // GM: raise a threat now on each continent that has none   // a townsperson's body won a fight in the game world
+         uint32 Age(SimAgent const& a) const;   // years; a year passes every game week
+         // the physical board: its menu items (text, action: 1000+n = take bounty n, 0 = one of yours) for the town at (x, y)
+         std::vector<std::pair<std::string, uint32>> PlayerBoardMenu(uint32 map, float x, float y, uint32 guid, uint32& hubOut);
+-- 
+2.56.0.windows.2
+

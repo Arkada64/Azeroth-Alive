@@ -66,7 +66,14 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
   (GroupHandler hook -> BotBubble::InviteByName): near you (60 yd) they join free (NpcBot.Cost.Hire = 0) or whisper why
   not (HireRefusal); far away, the one who knows you best whispers where they are; at the NPCBots cap they say so.
   Fighting beside you builds regard (SharedKill, once an hour); dying while with you costs it (-40, -15 in dungeons).
-  Still to do: kick = dismiss, neutral people coming when plans match, remove/keep the gossip hire option.
+  Removing a sim companion from the party dismisses them (GroupHandler -> BotBubble::DismissFromParty). Still to do:
+  neutral people coming when plans match, remove/keep the gossip hire option.
+- **Persistent gear, done Nov 16 (night), not yet seen in game:** NPCBots already generates wanderer gear by class and
+  level with level-gated slots (rings/neck/shoulders from 20, head/trinkets from 30) - correction to an earlier note.
+  Now a sim body wears the kit it had last time (sim_agent.kit "slot:entry:suffix:enchant,..."), each level gained
+  marks a piece due (kit_due, max 6) and the weakest due pieces are rerolled at the next spawn; anything equipped on a
+  sim body (your gifts, their finds) is recorded. Still to do: the sim's fight odds from the real kit (gear tier is
+  still abstract), quality curve and set coherence on top of NPCBots' generator, gear in the story (loss, heirlooms).
 - Party-invite hiring (like playerbots), no gold: the sim decides (regard, level gap, caution, own party); answers
   as whispers; neutral people come if your plans match theirs. Kicking = dismissing. Gossip hire removed or free.
 - Persistent gear: generated from class/level/luck/history, only exceptions stored (gifts, notable drops, heirlooms:
