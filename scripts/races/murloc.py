@@ -83,18 +83,28 @@ save(cb, "CharBaseInfo.dbc")
 cs = Dbc(SRC + r"\CharSections.dbc")
 cs.raw = [x for x in cs.raw if struct.unpack_from("<I", x, 4)[0] != RACE]
 nid = cs.max_id() + 1
+# The client crashed (Nov 17, twice, in its texture loader) with only one face/hair/facial-hair entry: switching races
+# carries the last race's choices over (face 3, hair colour 5...) and a missing entry is a null. So every section gets
+# a full 10 x 10 grid, every entry a real texture (the murloc skin - nothing is painted from these while the skin is
+# fixed in the model, they only have to exist).
+GRID = 10
+tex = [cs.add_string(rf"Creature\Murloc\{s}.blp") for s in SKINS]
 for sex in (0, 1):
-    for c, skin in enumerate(SKINS):
-        cs.add_row([nid, RACE, sex, 0, cs.add_string(rf"Creature\Murloc\{skin}.blp"), 0, 0, 17, 0, c]); nid += 1
+    for c in range(GRID):
+        cs.add_row([nid, RACE, sex, 0, tex[c % len(tex)], 0, 0, 17, 0, c]); nid += 1
     for section in (1, 2, 3, 4):
-        cs.add_row([nid, RACE, sex, section, 0, 0, 0, 17, 0, 0]); nid += 1
+        for v in range(GRID):
+            for c in range(GRID):
+                cs.add_row([nid, RACE, sex, section, tex[0], tex[0] if section == 1 else 0, 0, 17, v, c]); nid += 1
 save(cs, "CharSections.dbc")
 hg = Dbc(SRC + r"\CharHairGeosets.dbc")
 hid = hg.max_id() + 1
-for sex in (0, 1): hg.add_row([hid + sex, RACE, sex, 0, 0, 0])
+for sex in (0, 1):
+    for v in range(GRID): hg.add_row([hid, RACE, sex, v, 0, 0]); hid += 1
 save(hg, "CharHairGeosets.dbc")
 fh = Dbc(SRC + r"\CharacterFacialHairStyles.dbc")
-for sex in (0, 1): fh.add_row([RACE, sex, 0, 0, 0, 0, 0, 0])
+for sex in (0, 1):
+    for v in range(GRID): fh.add_row([RACE, sex, v, 0, 0, 0, 0, 0])
 save(fh, "CharacterFacialHairStyles.dbc")
 
 # ---- CharStartOutfit: the Undead class kits (byte 0 of field 1 is the race)
