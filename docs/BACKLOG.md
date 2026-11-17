@@ -1,4 +1,4 @@
-﻿# Azeroth Alive (SoloWoW) - backlog
+# Azeroth Alive (SoloWoW) - backlog
 
 **North star:** you aren't the hero, you're someone living in the world - you play WoW's content, but the sim always
 runs something new, so you feel small. A living fantasy world.
@@ -20,7 +20,18 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
 - A player who kills a threat/camp without taking its bounty is not paid (decide: pay anyway?).
 
 ## 2. Townsfolk
-- Races: gnome townsfolk (Tinker Town, Kharanos, Stormwind - Gnomeregan refugees); draenei (needs map 530).
+- **Done Nov 16 (night):** town sizes (Stormwind 220, Ironforge 160, Darnassus 100 - shared between a city's inns;
+  other towns 5/10/18/30 by the services across their districts) -> 746 townsfolk; districts = a town's own service
+  clusters within 450 yd (Stormwind has 14), weighted by activity - townsfolk live and work in theirs, evenings at the
+  town's inn; race mix (30% gnomes among dwarves, Stormwind ~85% human with dwarves/gnomes/night elves, a few humans in
+  Darnassus); looks drawn from every humanoid NPC model of their race and sex with its own face/hair/clothes, from
+  ordinary-people templates (whitelist + blacklist), 94-106% height; doors found indoors too (Ironforge); 70 townsfolk
+  bodies around you in capitals. Pool sizes are logged ("SoloWoW townsfolk looks") the first time someone spawns.
+  Immigration (daily, at most 5 a day): 0.2%/day base, pushed up to 3%/day by danger (recent deaths from the town,
+  camps within 1500 yd, threats within 2000 yd); destination = a town on the same continent with room, weighted by room,
+  their own people, safety and distance; they travel the road (no body on the way); veterans (kills) and people with
+  open requests stay. Not yet seen happening: towns were just filled to size, so moves start as room opens up.
+  Still open below: props by job, draenei, cross-continent moves, refugees in bulk after raids.- Races: gnome townsfolk (Tinker Town, Kharanos, Stormwind - Gnomeregan refugees); draenei (needs map 530).
 - Varied looks: every suitable humanoid NPC display in the client by race/gender (citizens, villagers, refugees,
   festival-goers...), no guards/soldiers/named characters. Props by job (pitchfork, hammer, broom, mug, lantern...),
   slight scale variation, idle habits. Later: a client patch with generated appearance combinations.
@@ -51,6 +62,11 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
   reclaiming cleared camps and emptied towns; untended dens escalating.
 
 ## 5. Adventurers and companions
+- **Done Nov 16 (night), not yet seen in game:** `/invite <name>` or inviting your target reaches sim adventurers
+  (GroupHandler hook -> BotBubble::InviteByName): near you (60 yd) they join free (NpcBot.Cost.Hire = 0) or whisper why
+  not (HireRefusal); far away, the one who knows you best whispers where they are; at the NPCBots cap they say so.
+  Fighting beside you builds regard (SharedKill, once an hour); dying while with you costs it (-40, -15 in dungeons).
+  Still to do: kick = dismiss, neutral people coming when plans match, remove/keep the gossip hire option.
 - Party-invite hiring (like playerbots), no gold: the sim decides (regard, level gap, caution, own party); answers
   as whispers; neutral people come if your plans match theirs. Kicking = dismissing. Gossip hire removed or free.
 - Persistent gear: generated from class/level/luck/history, only exceptions stored (gifts, notable drops, heirlooms:

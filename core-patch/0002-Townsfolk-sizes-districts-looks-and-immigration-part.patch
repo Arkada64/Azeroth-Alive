@@ -1,0 +1,607 @@
+From fe92200abbf0a22bfc65758f5ba1a8bcec55dc18 Mon Sep 17 00:00:00 2001
+From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 21:28:49 -0600
+Subject: [PATCH 2/2] Townsfolk sizes, districts, looks and immigration;
+ party-invite hiring; safer deaths and catch-up
+
+- Deaths by place (raids exempt, dungeons rarely final), SoloSim.Permadeath switch
+- One-week catch-up, quieter while away (fewer deaths, protected friends, capped major events, your bounties wait)
+- Town sizes (Stormwind 220, Ironforge 160, Darnassus 100...), districts, race mix with gnomes, looks from every ordinary-people NPC model, indoor doors, bigger body cap in capitals
+- Immigration between towns
+- /invite sim adventurers by name or target: free, regard decides; shared kills build regard
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01JU37XfnHTvru3VVz2sNN7z
+---
+ src/server/game/AI/NpcBots/botbubble.cpp      |  52 ++++-
+ src/server/game/AI/NpcBots/botbubble.h        |   2 +
+ src/server/game/Handlers/GroupHandler.cpp     |   5 +
+ src/server/game/SoloSim/solosim.cpp           | 215 +++++++++++++++++-
+ src/server/game/SoloSim/solosim.h             |  10 +
+ src/server/game/SoloSim/solosim_civilians.cpp |  61 ++++-
+ src/server/game/SoloSim/solosim_commands.cpp  |   7 +
+ 7 files changed, 336 insertions(+), 16 deletions(-)
+
+diff --git a/src/server/game/AI/NpcBots/botbubble.cpp b/src/server/game/AI/NpcBots/botbubble.cpp
+index ace9f5c..c9436e7 100644
+--- a/src/server/game/AI/NpcBots/botbubble.cpp
++++ b/src/server/game/AI/NpcBots/botbubble.cpp
+@@ -1,5 +1,8 @@
+ // SoloWoW: "bubble" wandering bots. See botbubble.h.
+ #include "botbubble.h"
++#include "WorldPacket.h"
++#include "botconfig.h"
++#include "botmgr.h"
+ #include <tuple>
+ #include "bot_ai.h"
+ #include "botdatamgr.h"
+@@ -161,7 +164,9 @@ namespace
+         std::vector<SoloSim::SimBody> bodies;
+         sSoloSim->Bodies(mapId, bodies);
+         // townsfolk are plain creatures with their own cap; adventurers are NPCBots
+-        SoloCivilians::Update(player, mapId, bubble, bodies, cfg.townsfolk, cfg.safeDistance);
++        // the capitals are crowded: more townsfolk around you there (they're plain creatures, much lighter than bots)
++        uint32 townCap = (zoneId == 1519 || zoneId == 1537 || zoneId == 1657) ? std::max<uint32>(cfg.townsfolk, 70) : cfg.townsfolk;
++        SoloCivilians::Update(player, mapId, bubble, bodies, townCap, cfg.safeDistance);
+         std::erase_if(bodies, [&](SoloSim::SimBody const& b) { return b.role == SoloSim::ROLE_CIVILIAN || !bubble.contains(b.zone); });
+         std::ranges::sort(bodies, [&](SoloSim::SimBody const& x, SoloSim::SimBody const& y) {
+             bool hx = x.zone == zoneId, hy = y.zone == zoneId;
+@@ -743,6 +748,51 @@ uint32 BotBubble::SimAgentOf(uint32 botEntry)
+     return it == simEntryToAgent.end() ? 0 : it->second;
+ }
+ 
++// "/invite Marrin" (or inviting your target): a sim adventurer by that name. Near you: they join you - no gold - or
++// whisper why not. Far away: the one who knows you best whispers where they are. Returns false if nobody has that name.
++bool BotBubble::InviteByName(Player* player, std::string const& name)
++{
++    if (!player || !sSoloSim->IsLive()) return false;
++    std::vector<uint32> agents = sSoloSim->AgentsNamed(name);
++    if (agents.empty()) return false;
++    Creature* body = nullptr; uint32 agent = 0; float bestD = 60.0f;
++    for (uint32 a : agents)
++        if (auto it = simAgentToEntry.find(a); it != simAgentToEntry.end())
++            if (Creature* c = const_cast<Creature*>(BotDataMgr::FindBot(it->second)); c && c->IsInWorld() && c->IsAlive() && c->GetMap() == player->GetMap())
++                if (float d = c->GetExactDist(player); d < bestD) { bestD = d; body = c; agent = a; }
++    if (!body)
++    {
++        std::string who;
++        std::string reply = sSoloSim->InviteFromAfar(agents, player->GetGUID().GetCounter(), who);
++        if (reply.empty()) return false;
++        WorldPacket data;
++        ChatHandler::BuildChatPacket(data, CHAT_MSG_MONSTER_WHISPER, LANG_UNIVERSAL, ObjectGuid::Empty, player->GetGUID(), reply, 0, who, player->GetName());
++        player->SendDirectMessage(&data);
++        return true;
++    }
++    bot_ai* ai = body->GetBotAI();
++    if (!ai || !body->IsFreeBot())
++    {
++        body->Whisper(body->GetBotOwner() == player ? "I'm right here." : "I'm travelling with someone already.", LANG_UNIVERSAL, player);
++        return true;
++    }
++    if (std::string no = sSoloSim->HireRefusal(agent, player->GetGUID().GetCounter(), player->GetLevel()); !no.empty())
++    {
++        body->Whisper(no, LANG_UNIVERSAL, player);
++        return true;
++    }
++    if (BotDataMgr::GetOwnedBotsCount(player->GetGUID()) >= BotCfg::GetMaxNpcBots(player->GetLevel()))
++    {
++        body->Whisper("You've got all the company you can lead right now.", LANG_UNIVERSAL, player);
++        return true;
++    }
++    if (ai->SetBotOwner(player))
++        body->Whisper(sSoloSim->HireYes(agent, player->GetGUID().GetCounter()), LANG_UNIVERSAL, player);
++    else
++        body->Whisper("...not right now.", LANG_UNIVERSAL, player);
++    return true;
++}
++
+ std::string BotBubble::HireRefusal(Creature const* bot, Player const* player)
+ {
+     if (!bot || !player || !sSoloSim->IsLive()) return "";
+diff --git a/src/server/game/AI/NpcBots/botbubble.h b/src/server/game/AI/NpcBots/botbubble.h
+index b956e83..d294fb6 100644
+--- a/src/server/game/AI/NpcBots/botbubble.h
++++ b/src/server/game/AI/NpcBots/botbubble.h
+@@ -33,6 +33,8 @@ namespace BotBubble
+     uint32 SimAgentOf(uint32 botEntry);
+     // a sim person asked to travel with the player: "" = yes, otherwise their answer
+     std::string HireRefusal(Creature const* bot, Player const* player);
++    // /invite <name> for a sim adventurer: true if handled (they joined, said no, or answered from afar)
++    bool InviteByName(Player* player, std::string const& name);
+     // Sim embodiment: called when an embodied body reached its last target. Fills where to go next (target,
+     // and nextNode when the step is along the roads), how long to wait first and how close counts as arrived.
+     // Returns false if this bot is not a sim body (wander normally).
+diff --git a/src/server/game/Handlers/GroupHandler.cpp b/src/server/game/Handlers/GroupHandler.cpp
+index 03adf7e..70262a4 100644
+--- a/src/server/game/Handlers/GroupHandler.cpp
++++ b/src/server/game/Handlers/GroupHandler.cpp
+@@ -19,6 +19,7 @@
+ #include "DatabaseEnv.h"
+ #include "Group.h"
+ #include "GroupMgr.h"
++#include "botbubble.h" // SoloWoW
+ #include "LFGMgr.h"
+ #include "Language.h"
+ #include "Log.h"
+@@ -85,6 +86,10 @@ void WorldSession::HandleGroupInviteOpcode(WorldPacket& recvData)
+     Player* invitingPlayer = GetPlayer();
+     Player* invitedPlayer = ObjectAccessor::FindPlayerByName(membername, false);
+ 
++    // SoloWoW: no player by that name - maybe one of the living world's adventurers (botbubble.cpp)
++    if (!invitedPlayer && BotBubble::InviteByName(invitingPlayer, membername))
++        return;
++
+     // no player or cheat self-invite
+     if (!invitedPlayer || invitedPlayer == invitingPlayer)
+     {
+diff --git a/src/server/game/SoloSim/solosim.cpp b/src/server/game/SoloSim/solosim.cpp
+index 3481804..41ad072 100644
+--- a/src/server/game/SoloSim/solosim.cpp
++++ b/src/server/game/SoloSim/solosim.cpp
+@@ -1083,6 +1083,7 @@ void World::DailyTick()
+         if ((a.status == AgentStatus::Active || a.status == AgentStatus::Recovering) && a.role == ROLE_ADVENTURER) ++alive;
+     AssignAges();
+     TownsfolkGenerations();
++    Immigration();
+     RetireAdventurers();
+     SpawnThreats();
+     PostCamps();
+@@ -1673,6 +1674,9 @@ void World::BodyFell(uint32 agentId, std::string const& killer, bool dungeon)
+     SimAgent* a = AgentById(agentId);
+     if (!a || (a->status != AgentStatus::Active && a->status != AgentStatus::Hired)) return;
+     if (a->role == ROLE_THREAT) { ThreatDown(*a, killer); return; }
++    if (a->status == AgentStatus::Hired)               // they fell while travelling with you: that's remembered
++        if (auto h = _hiredBy.find(agentId); h != _hiredBy.end())
++            RememberPlayer(*a, h->second, dungeon ? -15 : -40, 70, EventType::Defeated);
+     a->status = AgentStatus::Active;                   // a hireling falls like anyone else
+     for (SimErrand& e : _errands)                      // whatever they'd asked for dies with the asking
+         if (e.agent == agentId && !e.done)
+@@ -1802,10 +1806,19 @@ SimAgent World::MakeCivilian(SimSite const& h, uint32 id)
+     Rng r(_seed, id, h.id, P_GEN + 500);
+     SimAgent a;
+     a.id = id; a.role = ROLE_CIVILIAN; a.race = dwarven ? 3 : elven ? 4 : 1; a.cls = 1; a.level = uint8(r.Range(1, 6));
++    {
++        // a town is mostly its own people, never only: gnomes among the dwarves (Gnomeregan's refugees), and a mix in the cities
++        Rng mix(_seed, id, h.id, P_GEN + 510);
++        uint32 roll = mix.Range(1, 100);
++        if (dwarven) a.race = roll <= 30 ? 7 : 3;
++        else if (elven) a.race = (h.zone == 1657 && roll <= 10) ? 1 : 4;
++        else if (h.zone == 1519) a.race = roll <= 7 ? 3 : roll <= 13 ? 7 : roll <= 18 ? 4 : 1;
++        else a.race = roll <= 5 ? 3 : roll <= 8 ? 7 : roll <= 10 ? 4 : 1;
++    }
+     uint32 roll = r.Range(1, 100);
+     a.job = h.zone == 1519 ? (roll <= 45 ? JOB_MARKET : roll <= 75 ? JOB_LABORER : JOB_LOAFER)
+                            : (roll <= 45 ? JOB_FARMHAND : roll <= 70 ? JOB_LABORER : roll <= 90 ? JOB_MARKET : JOB_LOAFER);
+-    std::vector<uint32> const& looks = dwarven ? DWARF_BODIES : elven ? ELF_BODIES : CIVILIAN_BODIES[a.job];
++    std::vector<uint32> const& looks = (a.race == 3 || a.race == 7) ? DWARF_BODIES : a.race == 4 ? ELF_BODIES : CIVILIAN_BODIES[a.job];
+     a.sourceEntry = looks[r.Range(0, uint32(looks.size()) - 1)];
+     uint32 display = CivilianDisplay(_seed, a);
+     CreatureModelInfo const* mi = display ? sObjectMgr->GetCreatureModelInfo(display) : nullptr;
+@@ -1822,22 +1835,69 @@ SimAgent World::MakeCivilian(SimSite const& h, uint32 id)
+     return a;
+ }
+ 
++// A town's districts: its own service clusters (a city's sim sites - Stormwind has 14), within 450 yd and the same zone.
++std::vector<uint32> const& World::DistrictsOf(uint32 town) const
++{
++    if (auto it = _districts.find(town); it != _districts.end()) return it->second;
++    std::vector<uint32>& out = _districts[town];
++    if (SimSite const* t = SiteById(town))
++        for (SimSite const& s : _sites)
++            if (s.type == SiteType::Hub && s.map == t->map && s.zone == t->zone && Dist2d(s.x, s.y, t->x, t->y) < 450.0f)
++                out.push_back(s.id);
++    if (out.empty()) out.push_back(town);
++    return out;
++}
++
++// where in town a townsperson lives and works: a district, chosen by how much goes on there
++SimSite const* World::DistrictOf(SimAgent const& a) const
++{
++    SimSite const* home = SiteById(a.home);
++    std::vector<uint32> const& ds = DistrictsOf(a.home);
++    if (ds.size() < 2 || !home) return home;
++    uint32 total = 0;
++    for (uint32 d : ds) if (SimSite const* s = SiteById(d)) total += std::max<uint32>(1, s->spawns);
++    uint32 pick = uint32(Mix((uint64(a.id) << 20) ^ 0xD157) % std::max<uint32>(1, total));
++    for (uint32 d : ds)
++        if (SimSite const* s = SiteById(d))
++        {
++            uint32 w = std::max<uint32>(1, s->spawns);
++            if (pick < w) return s;
++            pick -= w;
++        }
++    return home;
++}
++
++// How many townsfolk a town holds: the capitals by hand, the rest by how much the town has (services across its districts)
++uint32 World::TownTarget(SimSite const& h) const
++{
++    uint32 capital = h.zone == 1519 ? 220 : h.zone == 1537 ? 160 : h.zone == 1657 ? 100 : 0;   // Stormwind, Ironforge, Darnassus
++    if (capital)
++    {
++        uint32 inns = 0;                                  // every inn in the city shares the city's people
++        for (SimSite const& s : _sites) if (s.type == SiteType::Hub && (s.services & SVC_INN) && s.zone == h.zone) ++inns;
++        return capital / std::max<uint32>(1, inns);
++    }
++    uint32 total = 0, inns = 0;
++    for (uint32 d : DistrictsOf(h.id)) if (SimSite const* s = SiteById(d)) { total += s->spawns; if (s->services & SVC_INN) ++inns; }
++    uint32 size = total >= 25 ? 30 : total >= 12 ? 18 : total >= 6 ? 10 : 5;
++    return std::max<uint32>(3, size / std::max<uint32>(1, inns));     // a town with two inns shares its people between them
++}
++
+ void World::EnsureCivilians()
+ {
+     // the first townsfolk wore the hunched Warcraft III peasant look: move them out, and move proper townsfolk in
+     static std::set<uint32> const oldLooks = { 11260, 11328, 842, 1975 };
+     if (std::erase_if(_agents, [](auto const& kv) { return kv.second.role == ROLE_CIVILIAN && oldLooks.contains(kv.second.sourceEntry); }))
+         LOG_INFO("server.loading", "SoloWoW sim: rebuilding the townsfolk with their new looks");
+-    // every inn town gets its townsfolk once (towns added with the wider world get theirs on the next load)
+-    std::set<uint32> settled;
+-    for (auto const& [id, ag] : _agents) if (ag.role == ROLE_CIVILIAN) settled.insert(ag.home);
++    // every inn town is filled up to its size (new towns, and towns that were sized smaller before)
++    std::map<uint32, uint32> living;
++    for (auto const& [id, ag] : _agents) if (ag.role == ROLE_CIVILIAN && ag.status != AgentStatus::Dead && ag.status != AgentStatus::Gone) ++living[ag.home];
+     uint32 made = 0;
+     for (SimSite const& h : _sites)
+     {
+-        if (h.type != SiteType::Hub || !(h.services & SVC_INN) || settled.contains(h.id)) continue;
+-        bool dwarven = DWARF_ZONES.contains(h.zone), elven = ELF_ZONES.contains(h.zone);
+-        uint32 count = (h.zone == 1519 || h.zone == 1537 || h.zone == 1657) ? 10 : 6;   // the cities have more people
+-        for (uint32 i = 0; i < count; ++i)
++        if (h.type != SiteType::Hub || !(h.services & SVC_INN)) continue;
++        uint32 count = TownTarget(h);                      // villages, towns, cities: sized by what is there
++        for (uint32 i = living[h.id]; i < count; ++i)
+         {
+             uint32 id = _nextAgent++;
+             _agents[id] = MakeCivilian(h, id);
+@@ -1911,7 +1971,7 @@ void World::TownsfolkGenerations()
+         if (h.type == SiteType::Hub && (h.services & SVC_INN) && h.regionLevel) towns.push_back(&h);
+     for (SimSite const* h : towns)
+     {
+-        uint32 target = (h->zone == 1519 || h->zone == 1537 || h->zone == 1657) ? 10 : 6;
++        uint32 target = TownTarget(*h);
+         Rng rr(_seed, h->id, _clock, P_GEN + 560);
+         if (living[h->id] >= target || !living[h->id] || !rr.Chance(0.25f)) continue;
+         uint32 id = _nextAgent++;
+@@ -2281,6 +2341,71 @@ void World::ThreatDown(SimAgent& t, std::string const& by)
+         }
+ }
+ 
++// Townsfolk move: danger nearby (deaths, a camp on the roads, a threat) pushes them out; a town with room pulls them
++// in - most of all one of their own people, a short road away. A handful a day across the world.
++void World::Immigration()
++{
++    std::map<uint32, uint32> living;
++    std::map<uint32, std::map<uint8, uint32>> races;
++    for (auto const& [id, a] : _agents)
++        if (a.role == ROLE_CIVILIAN && a.status == AgentStatus::Active) { ++living[a.home]; ++races[a.home][a.race]; }
++    std::vector<SimSite const*> towns;
++    for (SimSite const& h : _sites)
++        if (h.type == SiteType::Hub && (h.services & SVC_INN) && h.regionLevel) towns.push_back(&h);
++    auto danger = [&](SimSite const& h) {
++        uint32 d = 0;
++        for (auto const& [id, o] : _agents)
++            if (o.status == AgentStatus::Dead && _clock - o.diedAt < 30 * MIN_PER_DAY && o.home == h.id) ++d;
++        for (SimCamp const& k : _camps) if (!k.done && k.map == h.map && Dist2d(k.x, k.y, h.x, h.y) < 1500.0f) d += 2;
++        for (auto const& [id, t] : _agents)
++            if (t.role == ROLE_THREAT && t.status == AgentStatus::Active)
++                if (SimSite const* s = SiteById(t.site); s && s->map == h.map && Dist2d(s->x, s->y, h.x, h.y) < 2000.0f) d += 3;
++        return d;
++    };
++    std::map<uint32, uint32> dangerOf;
++    for (SimSite const* h : towns) dangerOf[h->id] = danger(*h);
++    uint32 moved = 0;
++    for (auto& [id, a] : _agents)
++    {
++        if (moved >= 5) break;
++        if (a.role != ROLE_CIVILIAN || a.status != AgentStatus::Active || a.doing == Verb::Goto || a.kills > 0) continue;   // old hands stay put
++        if (std::ranges::any_of(_errands, [&](SimErrand const& e) { return e.agent == id && !e.done; })) continue;
++        SimSite const* home = SiteById(a.home);
++        if (!home || Age(a) < 18 || Age(a) > 65) continue;
++        uint32 dz = dangerOf[home->id];
++        Rng r(_seed, id, _clock, P_GEN + 590);
++        float chance = 0.002f + std::min(0.03f, float(dz) * 0.004f);
++        if (!r.Chance(chance)) continue;
++        // where: room, safety, their own people, not too far
++        SimSite const* best = nullptr; float bestScore = 0.0f;
++        for (SimSite const* t : towns)
++        {
++            if (t->id == home->id || t->map != home->map) continue;
++            uint32 target = TownTarget(*t), have = living[t->id];
++            if (have >= target) continue;
++            float score = float(target - have) / float(target) * 10.0f;
++            uint32 total = 0; for (auto const& [rc, n] : races[t->id]) total += n;
++            float share = total ? float(races[t->id][a.race]) / float(total) : 0.5f;
++            score *= 0.3f + share * 2.0f;                                     // their own people, mostly
++            score /= 1.0f + float(dangerOf[t->id]);
++            score /= 1.0f + Dist2d(t->x, t->y, home->x, home->y) / 2000.0f;
++            score *= 0.75f + float(r.Range(0, 50)) / 100.0f;
++            if (score > bestScore) { bestScore = score; best = t; }
++        }
++        if (!best || bestScore < 1.0f) continue;
++        std::string why = dz >= 4 ? " after the troubles around " + SiteName(home->id)
++                        : dz >= 1 ? " - it hasn't felt safe lately" : r.Chance(0.5f) ? " for work" : " to start over";
++        Log(EventType::MovedHome, a, home->id, Acore::StringFormat("{} packed up and left {} for {}{}.", a.FullName(), SiteName(home->id), SiteName(best->id), why), true);
++        --living[home->id]; ++living[best->id]; ++races[best->id][a.race];
++        a.home = best->id;
++        a.plan.clear();
++        a.plan.push_back({ Verb::Goto, best->id, 0, false });
++        StartStep(a);                                      // on the road now; they arrive when the journey is done
++        _requeue.push_back(id);
++        ++moved;
++    }
++}
++
+ // Adventurers getting on in years (or who've been beaten once too often) hang up their gear and settle in their home
+ // town as townsfolk: same name, same friends and grudges, the level they reached. A few a day at most.
+ void World::RetireAdventurers()
+@@ -2901,8 +3026,9 @@ bool World::BodyOf(SimAgent const& a, SimBody& b) const
+     if (a.role == ROLE_CIVILIAN)
+     {
+         // townsfolk are out unless they're home asleep; they appear at their own door (the body finds it)
+-        if (a.doing == Verb::Sleep || hereIdx == UINT32_MAX) return false;
+-        b.x = here->x; b.y = here->y; b.z = here->z;
++        if (a.doing == Verb::Sleep || a.doing == Verb::Goto || hereIdx == UINT32_MAX) return false;   // asleep, or on the road to a new home
++        SimSite const* d = DistrictOf(a);                  // in a big town, their own quarter of it
++        b.x = d->x; b.y = d->y; b.z = d->z;
+         b.spawnNode = b.goalNode = _roads[hereIdx].id;
+         b.zone = _roads[hereIdx].zone;
+         return true;
+@@ -2991,7 +3117,7 @@ bool World::Intent(uint32 agentId, SimIntent& out)
+     if (!s) return false;
+     out.siteType = s->type; out.x = s->x; out.y = s->y; out.z = s->z; out.services = s->services;
+     out.verb = out.travelling ? Verb::Idle : a->doing;
+-    if (SimSite const* hs = SiteById(a->home)) { out.homeX = hs->x; out.homeY = hs->y; out.homeZ = hs->z; }
++    if (SimSite const* hs = a->role == ROLE_CIVILIAN ? DistrictOf(*a) : SiteById(a->home)) { out.homeX = hs->x; out.homeY = hs->y; out.homeZ = hs->z; }
+     if (a->role == ROLE_CIVILIAN)
+         for (SimErrand const& e : _errands)
+             if (e.agent == a->id && !e.done && e.kind == ERRAND_ESCORT && e.player)
+@@ -3455,6 +3581,70 @@ std::string World::HireRefusal(uint32 agentId, uint32 guid, uint8 playerLevel)
+     return "";
+ }
+ 
++// "/invite Marrin": the living adventurers by that name (full name if anyone has it, else the given name)
++std::vector<uint32> World::AgentsNamed(std::string const& asked)
++{
++    std::lock_guard<std::mutex> guard(sBodyLock);
++    auto lower = [](std::string s) { for (char& ch : s) ch = char(std::tolower(uint8(ch))); return s; };
++    std::string q = lower(asked);
++    std::vector<uint32> full, given;
++    for (auto const& [id, a] : _agents)
++    {
++        if (a.role != ROLE_ADVENTURER || a.status == AgentStatus::Dead || a.status == AgentStatus::Gone) continue;
++        if (lower(a.FullName()) == q) full.push_back(id);
++        else if (lower(a.given) == q) given.push_back(id);
++    }
++    return full.empty() ? given : full;
++}
++
++// invited from afar: the one of them who knows you best answers, saying where they are
++std::string World::InviteFromAfar(std::vector<uint32> const& ids, uint32 guid, std::string& who)
++{
++    std::lock_guard<std::mutex> guard(sBodyLock);
++    SimAgent const* best = nullptr; int32 bestRegard = INT32_MIN;
++    for (uint32 id : ids)
++        if (SimAgent const* a = AgentById(id))
++        {
++            int32 sum = 0;
++            for (SimMemory const& m : _memories) if (m.agent == id && m.subjectType == 4 && m.subject == guid) sum += int32(m.valence) * m.intensity / 100;
++            if (sum > bestRegard) { bestRegard = sum; best = a; }
++        }
++    if (!best) return "";
++    who = best->FullName();
++    SimSite const* s = SiteById(best->site);
++    std::string where = s ? AreaOf(SiteName(s->id)) : std::string("the road");
++    if (best->status == AgentStatus::Hired) return "I'm travelling with someone already. Another time.";
++    if (best->status == AgentStatus::Recovering) return Acore::StringFormat("I'm laid up near {}, getting over a beating. Give me a few days.", where);
++    if (bestRegard < 0) return "Not after last time.";
++    if (bestRegard >= 30) return Acore::StringFormat("I'm {} right now. Come find me and we'll go together.", Doing(*best));
++    return Acore::StringFormat("I'm {}. If you want company, come and ask me properly.", Doing(*best));
++}
++
++// they said yes
++std::string World::HireYes(uint32 agentId, uint32 guid)
++{
++    std::lock_guard<std::mutex> guard(sBodyLock);
++    int32 sum = 0; bool met = false;
++    for (SimMemory const& m : _memories)
++        if (m.agent == agentId && m.subjectType == 4 && m.subject == guid) { met = true; sum += int32(m.valence) * m.intensity / 100; }
++    static char const* const trusted[] = { "Always. Lead the way.", "I was hoping you'd ask.", "Together again, then." };
++    static char const* const known[] = { "All right - let's go.", "Sure. Where are we headed?", "Why not. It's been a while." };
++    static char const* const stranger[] = { "All right. Let's see how this goes.", "I'll come along - for now.", "Fine. Don't get me killed." };
++    uint32 i = (agentId + guid + _clock / MIN_PER_DAY) % 3;
++    return sum >= 60 ? trusted[i] : met ? known[i] : stranger[i];
++}
++
++// fighting side by side with someone you hired: they come to like you (a little per hour of it)
++void World::SharedKill(uint32 agentId, uint32 guid)
++{
++    std::lock_guard<std::mutex> guard(sBodyLock);
++    SimAgent* a = AgentById(agentId);
++    if (!a) return;
++    for (auto it = _memories.rbegin(); it != _memories.rend() && it->at + 60 > _clock; ++it)
++        if (it->agent == agentId && it->subjectType == 4 && it->subject == guid && it->eventType == uint8(EventType::Hunted)) return;
++    RememberPlayer(*a, guid, 20, 40, EventType::Hunted);
++}
++
+ void World::SetHired(uint32 agentId, uint32 guid, std::string const& name, bool hired)
+ {
+     std::lock_guard<std::mutex> guard(sBodyLock);
+@@ -3463,6 +3653,7 @@ void World::SetHired(uint32 agentId, uint32 guid, std::string const& name, bool
+     if (hired && a->status == AgentStatus::Active)
+     {
+         a->status = AgentStatus::Hired;
++        _hiredBy[agentId] = guid;
+         a->plan.clear(); a->doing = Verb::Idle; a->party = 0;
+         RememberPlayer(*a, guid, 30, 60, EventType::Hired);
+         Log(EventType::Hired, *a, a->site, Acore::StringFormat("{} agreed to travel with {}.", Who(*a), name), true);
+diff --git a/src/server/game/SoloSim/solosim.h b/src/server/game/SoloSim/solosim.h
+index 2bcab8f..916be3f 100644
+--- a/src/server/game/SoloSim/solosim.h
++++ b/src/server/game/SoloSim/solosim.h
+@@ -271,6 +271,10 @@ namespace SoloSim
+         void SetHired(uint32 agentId, uint32 guid, std::string const& name, bool hired);
+         std::string Regard(uint32 agentId, uint32 guid) const;   // how they feel about this player, "" = never met
+         std::string HireRefusal(uint32 agentId, uint32 guid, uint8 playerLevel);   // "" = they'd come; else their answer
++        std::vector<uint32> AgentsNamed(std::string const& name);                  // /invite by name
++        std::string InviteFromAfar(std::vector<uint32> const& ids, uint32 guid, std::string& who);
++        std::string HireYes(uint32 agentId, uint32 guid);
++        void SharedKill(uint32 agentId, uint32 guid);
+         // markets: town shops sell what the gatherers brought in (world thread); a buy draws down the stock (true = sold out)
+         void SyncMarkets();
+         bool MarketSoldOut(uint32 vendorEntry, uint32 item, uint32 count);
+@@ -287,6 +291,10 @@ namespace SoloSim
+         void TownsfolkGenerations();
+         void RebuildTownTalk();
+         void RetireAdventurers();
++        void Immigration();
++        std::vector<uint32> const& DistrictsOf(uint32 town) const;
++        SimSite const* DistrictOf(SimAgent const& a) const;
++        uint32 TownTarget(SimSite const& h) const;
+         bool CloseToAPlayer(uint32 agentId) const;
+         bool AwayAllows(uint32 salt);
+         void SpawnThreats(bool force = false);
+@@ -407,6 +415,8 @@ namespace SoloSim
+         std::vector<SimMail> _mail;
+         std::vector<SimErrand> _errands;
+         std::vector<SimCamp> _camps;
++        std::map<uint32, uint32> _hiredBy;           // agent -> who hired them (runtime)
++        mutable std::map<uint32, std::vector<uint32>> _districts;   // town -> its districts (sites), runtime
+         uint32 _nextCamp = 1;
+         uint32 _nextErrand = 1;
+         std::map<uint32, std::deque<std::pair<SimTime, std::string>>> _notices;   // town -> board notices (rebuilt from sim_event on load)
+diff --git a/src/server/game/SoloSim/solosim_civilians.cpp b/src/server/game/SoloSim/solosim_civilians.cpp
+index bc2c57e..db54ef4 100644
+--- a/src/server/game/SoloSim/solosim_civilians.cpp
++++ b/src/server/game/SoloSim/solosim_civilians.cpp
+@@ -25,6 +25,7 @@
+ #include "Random.h"
+ #include "TemporarySummon.h"
+ #include "Timer.h"
++#include <algorithm>
+ #include <cmath>
+ #include <list>
+ #include <mutex>
+@@ -60,6 +61,54 @@ namespace
+         }
+     }
+ 
++    // Every suitable townsperson look in the game, by race and sex: humanoid NPC models with their own face, hair and
++    // clothes (an "extra" display), from templates that sound like ordinary people - never guards, soldiers, nobles,
++    // villains or named characters. Built once.
++    std::map<std::pair<uint8, uint8>, std::vector<uint32>> const& Looks()
++    {
++        static std::map<std::pair<uint8, uint8>, std::vector<uint32>> pools;
++        static std::once_flag once;
++        std::call_once(once, [] {
++            static char const* const want[] = { "citizen", "commoner", "villager", "peasant", "farmer", "farmhand", "worker", "laborer", "labourer",
++                "refugee", "townsfolk", "reveler", "reveller", "celebrant", "spectator", "traveler", "traveller", "merchant", "trader", "shopkeeper",
++                "peddler", "fisherman", "miner", "lumberjack", "woodcutter", "barmaid", "bartender", "cook", "baker", "tailor", "patron", "drunk",
++                "beggar", "vagrant", "servant", "maid", "butler", "courier", "messenger", "stable", "apprentice", "settler", "pilgrim", "survivor",
++                "evacuee", "tourist", "visitor", "dockworker", "dock worker", "sailor", "deckhand", "porter", "mourner", "guest", "resident",
++                "homeless", "scribe", "clerk", "student", "worshipper", "parishioner", "townsperson", "local" };
++            static char const* const never[] = { "guard", "soldier", "captain", "commander", "lord", "lady", "king", "queen", "prince", "lieutenant",
++                "sergeant", "officer", "knight", "marshal", "general", "champion", "sentinel", "defender", "footman", "rifleman", "mountaineer",
++                "guardian", "peacekeeper", "militia", "grunt", "warden", "agent", "assassin", "bandit", "thug", "defias", "scarlet", "cult",
++                "ghost", "spirit", "zombie", "image", "illusion", "[", "(", "trigger", "test", "dummy", "credit", "unused", "child", "orphan",
++                "kid", "boy", "girl", "dead", "corpse", "possessed", "infected", "plagued", "costume", "disguise" };
++            for (auto const& [entry, t] : *sObjectMgr->GetCreatureTemplates())
++            {
++                if (t.type != 7 || t.rank != 0 || t.IsNPCBotOrPet() || entry >= ENTRY_BASE) continue;
++                std::string n = t.Name;
++                for (char& ch : n) ch = char(std::tolower(uint8(ch)));
++                auto has = [&n](char const* w) { return n.find(w) != std::string::npos; };
++                if (!std::ranges::any_of(want, has) || std::ranges::any_of(never, has)) continue;
++                for (CreatureModel const& m : t.Models)
++                {
++                    CreatureDisplayInfoEntry const* di = sCreatureDisplayInfoStore.LookupEntry(m.CreatureDisplayID);
++                    if (!di || !di->ExtendedDisplayInfoID) continue;
++                    CreatureDisplayInfoExtraEntry const* ex = sCreatureDisplayInfoExtraStore.LookupEntry(di->ExtendedDisplayInfoID);
++                    CreatureModelInfo const* mi = sObjectMgr->GetCreatureModelInfo(m.CreatureDisplayID);
++                    if (!ex || !mi || mi->gender > 1) continue;
++                    pools[{ uint8(ex->DisplayRaceID), uint8(mi->gender) }].push_back(m.CreatureDisplayID);
++                }
++            }
++            std::string sizes;
++            for (auto& [key, v] : pools)
++            {
++                std::ranges::sort(v);
++                v.erase(std::unique(v.begin(), v.end()), v.end());
++                sizes += Acore::StringFormat(" race {} {}: {};", key.first, key.second ? "women" : "men", v.size());
++            }
++            LOG_INFO("server.loading", "SoloWoW townsfolk looks:{}", sizes);
++        });
++        return pools;
++    }
++
+     uint32 EnsureTemplate(SimBody const& b)
+     {
+         uint32 entry = ENTRY_BASE + b.agent;
+@@ -89,6 +138,12 @@ namespace
+             if (mi && uint8(mi->gender == 1 ? 1 : 0) == b.gender) { idx = j; break; }
+         }
+         t.Models = { CreatureModel(src->Models[idx].CreatureDisplayID, 1.0f, 1.0f) };
++        // their own look from everyone the game has of their race and sex, and a little height of their own (94-106%)
++        if (auto it = Looks().find({ b.race, b.gender }); it != Looks().end() && !it->second.empty())
++        {
++            float scale = 0.94f + float(Hash(b.agent, 0x5CA1E) % 13) / 100.0f;
++            t.Models = { CreatureModel(it->second[Hash(b.agent, 0x100C) % it->second.size()], scale, 1.0f) };
++        }
+         t.minlevel = t.maxlevel = std::max<uint8>(1, b.level);
+         t.npcflag = UNIT_NPC_FLAG_GOSSIP | UNIT_NPC_FLAG_QUESTGIVER;   // you can talk to them; some have a request (blue !)
+         t.AIName = "";
+@@ -110,7 +165,7 @@ namespace
+         }
+         Position door(cx, cy, cz, 0.0f);
+         uint32 h = Hash(agent, 0xD00);
+-        for (uint32 k = 0; k < 64; ++k)
++        for (uint32 k = 0; k < 128; ++k)                     // 0-63 outdoors only; 64-127 indoors too (Ironforge)
+         {
+             float ang = float((h % 1000) + k * 618) / 1000.0f * 2.0f * float(M_PI);
+             float r = 15.0f + float((h >> 10) % 40 + k * 7 % 45);
+@@ -120,7 +175,7 @@ namespace
+                 continue;
+             PositionFullTerrainStatus terrain;
+             map->GetFullTerrainStatusForPosition(PHASEMASK_NORMAL, x, y, z, 2.0f, terrain);
+-            if (!terrain.outdoors || terrain.liquidInfo.Status != LIQUID_MAP_NO_WATER)
++            if ((k < 64 && !terrain.outdoors) || terrain.liquidInfo.Status != LIQUID_MAP_NO_WATER)   // indoor cities: the second pass
+                 continue;
+             for (uint32 d = 0; d < 8; ++d)
+             {
+@@ -342,7 +397,7 @@ namespace
+                 case Verb::Recover:
+                 {
+                     uint8 stand = UNIT_STAND_STATE_SIT;
+-                    if (BotBubble::ClaimInnSeat(me, _agent, cx, cy, p, stand))
++                    if (BotBubble::ClaimInnSeat(me, _agent, in.x, in.y, p, stand))     // the town's inn, wherever they live
+                         return Go(p, urand(60000, 180000), stand, 0, p.GetOrientation());
+                     break;
+                 }
+diff --git a/src/server/game/SoloSim/solosim_commands.cpp b/src/server/game/SoloSim/solosim_commands.cpp
+index 245019a..50d3fdd 100644
+--- a/src/server/game/SoloSim/solosim_commands.cpp
++++ b/src/server/game/SoloSim/solosim_commands.cpp
+@@ -7,6 +7,7 @@
+ #include "solosim_civilians.h"
+ #include "solosim_camps.h"
+ #include "botbubble.h"
++#include "botmgr.h"
+ #include "Chat.h"
+ #include "Creature.h"
+ #include "Player.h"
+@@ -249,6 +250,12 @@ public:
+         std::string found = sSoloSim->PlayerKill(player->GetGUID().GetCounter(), player->GetName(), entry, killed->GetName(), killed->GetMapId(), killed->GetPositionX(), killed->GetPositionY());
+         if (!found.empty())
+             ChatHandler(player->GetSession()).SendSysMessage(found);
++        // your companions fought beside you: they come to like you for it
++        if (BotMgr* mgr = player->GetBotMgr())
++            for (auto const& [bguid, bot] : *mgr->GetBotMap())
++                if (bot && bot->IsAlive() && bot->GetDistance(killed) < 60.0f)
++                    if (uint32 agent = BotBubble::SimAgentOf(bot->GetEntry()))
++                        sSoloSim->SharedKill(agent, player->GetGUID().GetCounter());
+         // was it fighting one of the sim's people? then you stepped in for them
+         for (Unit* u : killed->getAttackers())
+             if (u && u->IsNPCBot())
+-- 
+2.56.0.windows.2
+

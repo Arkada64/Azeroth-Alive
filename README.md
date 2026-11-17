@@ -13,7 +13,7 @@ one player, 127.0.0.1.
 ## What's in this repository
 | Folder | What |
 |---|---|
-| `core-patch/` | Our changes to the core (the living-world sim, the bot bubble, townsfolk, boards, camps, threats), as a patch over a pinned upstream commit |
+| `core-patch/` | Our changes to the core (the living-world sim, the bot bubble, townsfolk, boards, camps, threats), as a series of patches over a pinned upstream commit |
 | `launcher/` | The launcher (Rust, egui): start/stop the world, play, settings, start fresh |
 | `scripts/` | Build, configure, play/stop, reset, Era preset |
 | `installer/` | The one-click installer (in progress) |

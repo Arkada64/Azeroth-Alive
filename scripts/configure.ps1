@@ -101,6 +101,8 @@ foreach ($c in 'Blademaster','ObsidianDestroyer','Archmage','Dreadlord','SpellBr
 $xp = if ($NoEra) { '1' } else { '0.5' }
 $w['Rate.XP.Kill'] = $xp; $w['Rate.XP.Quest'] = $xp; $w['Rate.XP.Explore'] = $xp
 $w['DungeonFinder.OptionsMask'] = if ($NoEra) { '7' } else { '0' }   # 0 = no queue-and-teleport; walk there with hired bots
+# Hiring is free: people come along for their own reasons (regard - see BotBubble::InviteByName / World::HireRefusal), not for gold.
+$w['NpcBot.Cost.Hire'] = '0'
 foreach ($k in $w.Keys) { Set-Conf $world $k $w[$k] }
 if ($NoBubble) { Write-Host "Configured: $Bots wandering bots on $Continent (no bubble)" }
 else           { Write-Host "Configured: bubble with $Bots wandering bots around the player" }

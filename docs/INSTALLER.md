@@ -23,7 +23,7 @@ client. Nothing from Blizzard is ever downloaded or shipped by us - game data is
 10. **Uninstall** - restores the client from the backups and removes the install folder.
 
 ## Developer path
-Build from source instead of downloading: clone the core at the pinned commit, apply `core-patch/azeroth-alive.patch`
+Build from source instead of downloading: clone the core at the pinned commit, apply the patches in `core-patch/` in order
 (see core-patch/README.md), then `scripts\build.ps1`.
 
 ## To do before it works end to end
