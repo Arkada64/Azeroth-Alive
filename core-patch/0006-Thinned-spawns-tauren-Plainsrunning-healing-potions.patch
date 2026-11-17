@@ -1,0 +1,464 @@
+From c5beebf9647678c3b88ed1b551559cf40972dfc5 Mon Sep 17 00:00:00 2001
+From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 22:03:28 -0600
+Subject: [PATCH 6/6] Thinned spawns, tauren Plainsrunning, healing potions
+
+- The game's own creatures stay dead longer on hard-hunted grounds; player kills count as hunting
+- Plainsrunning (spell 12821, still in the client) as a stacking run-speed aura: a stack per 35 yd, -1/s standing, -6 per hit, max 30; SoloWoW.Plainsrunning.* settings
+- Sim people carry healing potions: bought in town, drunk when a fight turns bad, and their bodies only drink what they carry
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01JU37XfnHTvru3VVz2sNN7z
+---
+ src/server/game/AI/NpcBots/bot_ai.cpp         |   7 ++
+ src/server/game/AI/NpcBots/botbubble.cpp      |   7 ++
+ src/server/game/AI/NpcBots/botbubble.h        |   2 +
+ src/server/game/SoloSim/solosim.cpp           |  78 ++++++++++++-
+ src/server/game/SoloSim/solosim.h             |   6 +
+ src/server/game/SoloSim/solosim_camps.cpp     |  28 ++++-
+ src/server/game/SoloSim/solosim_commands.cpp  |   3 +
+ .../game/SoloSim/solosim_plainsrunning.cpp    | 107 ++++++++++++++++++
+ .../game/Spells/SpellInfoCorrections.cpp      |  19 ++++
+ 9 files changed, 249 insertions(+), 8 deletions(-)
+ create mode 100644 src/server/game/SoloSim/solosim_plainsrunning.cpp
+
+diff --git a/src/server/game/AI/NpcBots/bot_ai.cpp b/src/server/game/AI/NpcBots/bot_ai.cpp
+index 8309a48..6fc97eb 100644
+--- a/src/server/game/AI/NpcBots/bot_ai.cpp
++++ b/src/server/game/AI/NpcBots/bot_ai.cpp
+@@ -6225,6 +6225,13 @@ void bot_ai::DrinkPotion(bool mana)
+     if (IsCasting())
+         return;
+ 
++    //SoloWoW: a sim person's body drinks from what they carry (healing potions; mana ones are not counted yet)
++    if (!mana && !BotBubble::SimPotion(me, true))
++    {
++        _potionTimer = 15000;   // nothing in their bags: don't keep reaching for it
++        return;
++    }
++
+     me->CastSpell(me, GetPotion(mana));
+ }
+ bool bot_ai::IsPotionReady() const
+diff --git a/src/server/game/AI/NpcBots/botbubble.cpp b/src/server/game/AI/NpcBots/botbubble.cpp
+index 56c7343..a3efdb5 100644
+--- a/src/server/game/AI/NpcBots/botbubble.cpp
++++ b/src/server/game/AI/NpcBots/botbubble.cpp
+@@ -823,6 +823,13 @@ void BotBubble::SaveSimGear(Creature const* bot)
+     sSoloSim->SetGear(agent, gear);
+ }
+ 
++bool BotBubble::SimPotion(Creature const* bot, bool drink)
++{
++    uint32 agent = bot ? SimAgentOf(bot->GetEntry()) : 0;
++    if (!agent) return true;            // an ordinary NPCBot: as NPCBots always did
++    return drink ? sSoloSim->UsePotion(agent) : sSoloSim->HasPotion(agent);
++}
++
+ bool BotBubble::DismissFromParty(Player* player, ObjectGuid guid)
+ {
+     if (!player || !guid.IsCreature() || !player->GetBotMgr()) return false;
+diff --git a/src/server/game/AI/NpcBots/botbubble.h b/src/server/game/AI/NpcBots/botbubble.h
+index d522e41..be9c6b1 100644
+--- a/src/server/game/AI/NpcBots/botbubble.h
++++ b/src/server/game/AI/NpcBots/botbubble.h
+@@ -41,6 +41,8 @@ namespace BotBubble
+     struct GearPiece { uint8 slot = 0; uint32 entry = 0; int32 suffix = 0; uint32 enchant = 0; };
+     bool SimGear(uint32 agent, std::vector<GearPiece>& out, uint8& due);
+     void SaveSimGear(Creature const* bot);
++    // consumables: a sim body drinks a healing potion only if it carries one (drink = take it out of their bags)
++    bool SimPotion(Creature const* bot, bool drink);
+     // removing a sim companion from your party sends them back to their own life
+     bool DismissFromParty(Player* player, ObjectGuid guid);
+     // Sim embodiment: called when an embodied body reached its last target. Fills where to go next (target,
+diff --git a/src/server/game/SoloSim/solosim.cpp b/src/server/game/SoloSim/solosim.cpp
+index ce1ea0f..4c39ede 100644
+--- a/src/server/game/SoloSim/solosim.cpp
++++ b/src/server/game/SoloSim/solosim.cpp
+@@ -194,6 +194,8 @@ void World::CreateTables()
+         CharacterDatabase.DirectExecute("ALTER TABLE sim_agent ADD COLUMN role TINYINT UNSIGNED NOT NULL DEFAULT 0, ADD COLUMN job TINYINT UNSIGNED NOT NULL DEFAULT 0");
+     if (!CharacterDatabase.Query("SHOW COLUMNS FROM sim_agent LIKE 'kit'"))
+         CharacterDatabase.DirectExecute("ALTER TABLE sim_agent ADD COLUMN kit VARCHAR(600) NOT NULL DEFAULT '', ADD COLUMN kit_due TINYINT UNSIGNED NOT NULL DEFAULT 0");
++    if (!CharacterDatabase.Query("SHOW COLUMNS FROM sim_agent LIKE 'potions'"))
++        CharacterDatabase.DirectExecute("ALTER TABLE sim_agent ADD COLUMN potions TINYINT UNSIGNED NOT NULL DEFAULT 0");
+     if (!CharacterDatabase.Query("SHOW COLUMNS FROM sim_agent LIKE 'age0'"))
+         CharacterDatabase.DirectExecute("ALTER TABLE sim_agent ADD COLUMN age0 TINYINT UNSIGNED NOT NULL DEFAULT 0");
+     if (!CharacterDatabase.Query("SHOW COLUMNS FROM sim_bounty LIKE 'player'"))
+@@ -581,12 +583,12 @@ void World::Save()
+     CharacterDatabase.DirectExecute("DELETE FROM sim_agent");
+     rows.clear();
+     for (auto const& [id, a] : _agents)
+-        rows.push_back(Acore::StringFormat("({},'{}','{}',{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},'{}',{},{},{},{},{},{},{},{},'{}',{},{},{},{},{},{},{},'{}',{},{},{},'{}',{})",
++        rows.push_back(Acore::StringFormat("({},'{}','{}',{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},'{}',{},{},{},{},{},{},{},{},'{}',{},{},{},{},{},{},{},'{}',{},{},{},'{}',{},{})",
+             a.id, Esc(a.given), Esc(a.family), a.gender, a.race, a.cls, a.sourceEntry, a.level, a.xp, a.gearTier, a.money, a.lootValue,
+             a.wounds, a.fatigue, a.supplies, a.durability, a.bravery, a.greed, a.sociability, a.caution, a.wanderlust,
+             a.home, a.site, a.born, uint32(a.status), a.statusUntil, a.defeats, a.diedAt, Esc(a.deathCause), a.kills,
+             uint32(a.ambition), a.ambitionTarget, a.ambitionProgress, a.avengeFor, uint32(a.doing), a.wakeAt, a.lastSocial, EncodePlan(a.plan),
+-            a.bounty, a.bountyProgress, a.trainedLevel, a.prof[0], a.profSkill[0], a.prof[1], a.profSkill[1], JoinIds(a.knownNews), a.role, a.job, a.age0, Esc(a.gear), a.gearDue));
++            a.bounty, a.bountyProgress, a.trainedLevel, a.prof[0], a.profSkill[0], a.prof[1], a.profSkill[1], JoinIds(a.knownNews), a.role, a.job, a.age0, Esc(a.gear), a.gearDue, a.potions));
+     Chunked("INSERT INTO sim_agent VALUES ", rows);
+ 
+     CharacterDatabase.DirectExecute("DELETE FROM sim_relation");
+@@ -685,7 +687,7 @@ bool World::Load()
+         } while (r->NextRow());
+     if (QueryResult r = CharacterDatabase.Query("SELECT id, given, family, gender, race, cls, src, level, xp, gear, money, loot, wounds, fatigue, supplies, durability, "
+         "bravery, greed, sociability, caution, wanderlust, home, site, born, status, status_until, defeats, died_at, death_cause, kills, amb, amb_target, amb_progress, "
+-        "avenge_for, doing, wake_at, last_social, plan, bounty, bounty_progress, trained_level, prof1, prof1_skill, prof2, prof2_skill, news, role, job, age0, kit, kit_due FROM sim_agent ORDER BY id"))
++        "avenge_for, doing, wake_at, last_social, plan, bounty, bounty_progress, trained_level, prof1, prof1_skill, prof2, prof2_skill, news, role, job, age0, kit, kit_due, potions FROM sim_agent ORDER BY id"))
+         do
+         {
+             Field* f = r->Fetch(); SimAgent a;
+@@ -700,7 +702,7 @@ bool World::Load()
+             a.bounty = f[38].Get<uint32>(); a.bountyProgress = f[39].Get<uint32>(); a.trainedLevel = f[40].Get<uint8>();
+             a.prof[0] = f[41].Get<uint8>(); a.profSkill[0] = f[42].Get<uint16>(); a.prof[1] = f[43].Get<uint8>(); a.profSkill[1] = f[44].Get<uint16>();
+             a.knownNews = SplitIds(f[45].Get<std::string>());
+-            a.role = f[46].Get<uint8>(); a.job = f[47].Get<uint8>(); a.age0 = f[48].Get<uint8>(); a.gear = f[49].Get<std::string>(); a.gearDue = f[50].Get<uint8>();
++            a.role = f[46].Get<uint8>(); a.job = f[47].Get<uint8>(); a.age0 = f[48].Get<uint8>(); a.gear = f[49].Get<std::string>(); a.gearDue = f[50].Get<uint8>(); a.potions = f[51].Get<uint8>();
+             _agents[a.id] = a;
+         } while (r->NextRow());
+     if (QueryResult r = CharacterDatabase.Query("SELECT a, b, kind, strength FROM sim_relation ORDER BY a, b"))
+@@ -1633,7 +1635,7 @@ void World::ResolveFight(SimAgent& a, SimSite const& site, uint32 minutes)
+     uint8 gray = Acore::XP::GetGrayLevel(a.level);
+     uint8 retreatAt = uint8(35 + a.bravery * 0.45f);
+     int8 skinSlot = a.prof[0] == PROF_SKINNING ? 0 : (a.prof[1] == PROF_SKINNING ? 1 : -1);
+-    uint32 kills = 0, xpGained = 0, copper = 0, skins = 0;
++    uint32 kills = 0, xpGained = 0, copper = 0, skins = 0, potionsDrunk = 0;
+     bool retreated = false;
+ 
+     // bounty work: a named rare to track down; or a pack, where every pull brings friends
+@@ -1655,6 +1657,11 @@ void World::ResolveFight(SimAgent& a, SimSite const& site, uint32 minutes)
+         float danger = std::pow(1.5f, float(d)) * (site.elite ? 3.0f : 1.0f) * (1.15f - a.gearTier / 200.0f) * (1.2f - a.caution / 250.0f) * partySafety * packDanger;
+         if (r.Chance(0.05f * danger)) a.wounds = uint8(std::min<uint32>(100, a.wounds + r.Range(5, 15)));
+         if (r.Chance(0.006f * danger)) a.wounds = uint8(std::min<uint32>(100, a.wounds + r.Range(30, 60))); // a bad pull
++        if (a.wounds >= 75 && a.potions)                       // a potion at the crucial moment
++        {
++            --a.potions; ++potionsDrunk;
++            a.wounds = uint8(a.wounds - 40);
++        }
+         if (a.wounds >= 100) { a.kills += kills; Defeat(a, site); return; }
+ 
+         ++kills;
+@@ -1687,7 +1694,8 @@ void World::ResolveFight(SimAgent& a, SimSite const& site, uint32 minutes)
+         for (SimBounty const& b : _bounties)
+             if (b.id == a.bounty && b.site == site.id && b.kind != BOUNTY_RARE) a.bountyProgress += kills;
+     Log(EventType::Hunted, a, site.id, Acore::StringFormat("{} hunted {} x {}{} (+{} xp{}).", a.FullName(), kills, SiteName(site.id), n > 1 ? " in a party" : "",
+-        xpGained, retreated ? ", pulled back wounded" : ""), false, 0, int32(kills), int32(xpGained));
++        xpGained, std::string(retreated ? ", pulled back wounded" : "") + (potionsDrunk ? Acore::StringFormat(", {} potion{} drunk", potionsDrunk, potionsDrunk > 1 ? "s" : "") : std::string())),
++        false, 0, int32(kills), int32(xpGained));
+ }
+ 
+ bool World::InParty(SimAgent const& o, uint32 party) const
+@@ -2183,6 +2191,39 @@ float World::Pressure(uint32 site) const
+     return it == _pressure.end() ? 0.0f : it->second;
+ }
+ 
++// The game's own spawns feel the sim's hunting: a creature killed on a hard-hunted ground (by anyone) stays dead
++// longer - up to about three times its normal respawn - so a ground the sim's adventurers have been working looks
++// thinned out when the player gets there. The player's own kills count against the ground too. Called from map
++// threads (both continents may update at once), hence the lock; the sim itself only touches this from the world thread
++// while maps are idle.
++uint32 World::HuntedDeath(uint32 map, float x, float y, uint32 respawnDelay, bool countIt)
++{
++    static std::mutex huntLock;
++    static std::map<std::tuple<uint32, int32, int32>, uint32> cellSite;
++    static size_t indexed = 0;
++    std::lock_guard<std::mutex> guard(huntLock);
++    if (indexed != _sites.size())
++    {
++        cellSite.clear();
++        for (SimSite const& s : _sites)
++            if (s.type == SiteType::Hunt)
++                cellSite[{ s.map, int32(std::floor(s.x / 200.0f)), int32(std::floor(s.y / 200.0f)) }] = s.id;
++        indexed = _sites.size();
++    }
++    auto it = cellSite.find({ map, int32(std::floor(x / 200.0f)), int32(std::floor(y / 200.0f)) });
++    if (it == cellSite.end()) return 0;
++    SimSite const* s = SiteById(it->second);
++    if (!s) return 0;
++    if (countIt)
++    {
++        _pressure[s->id] += 1.0f;
++        _lastHunt[s->id] = _clock;
++    }
++    float quiet = std::clamp(1.0f - Pressure(s->id) / (float(std::max<uint32>(s->spawns, 4)) * 25.0f), 0.35f, 1.0f);
++    if (quiet > 0.95f) return 0;
++    return std::min<uint32>(uint32(float(respawnDelay) * (1.0f / quiet - 1.0f)), 30 * 60);
++}
++
+ // =====================================================================================================
+ // wildlife: hunting grounds remember being hunted; neglected ones spill onto the roads; herds graze between grounds
+ // and predator packs follow them (and prowl the roads at night). All sim-owned; real creatures only near the player.
+@@ -2954,6 +2995,13 @@ void World::FinishStep(SimAgent& a, PlanStep const& s)
+             uint32 paid = 0;
+             if (a.money >= repair) { a.money -= repair; paid += repair; a.durability = 100; }
+             if (a.money >= restock) { a.money -= restock; paid += restock; a.supplies = 100; }
++            // healing potions: the careful carry more; nobody spends more than a quarter of their purse on them
++            {
++                uint32 price = 10 + uint32(a.level) * a.level;
++                uint8 want = uint8(2 + a.caution / 25);
++                uint32 budget = a.money / 4;
++                while (a.potions < want && budget >= price) { ++a.potions; budget -= price; a.money -= price; paid += price; }
++            }
+             if (a.durability < 100 || a.supplies < 100)
+                 Log(EventType::Broke, a, a.site, Acore::StringFormat("{} couldn't afford repairs and supplies at {} and had to make do.", a.FullName(), SiteName(a.site)), true);
+             else
+@@ -3702,6 +3750,24 @@ bool World::GearOf(uint32 agentId, std::string& gear, uint8& due)
+     return true;
+ }
+ 
++// a sim person's body drinks a healing potion in front of you: it comes out of what they carry (false = none left)
++bool World::UsePotion(uint32 agentId)
++{
++    std::lock_guard<std::mutex> guard(sBodyLock);
++    SimAgent* a = AgentById(agentId);
++    if (!a) return true;                 // not ours to count
++    if (!a->potions) return false;
++    --a->potions;
++    return true;
++}
++
++bool World::HasPotion(uint32 agentId)
++{
++    std::lock_guard<std::mutex> guard(sBodyLock);
++    SimAgent const* a = AgentById(agentId);
++    return !a || a->potions > 0;
++}
++
+ void World::SetGear(uint32 agentId, std::string const& gear)
+ {
+     std::lock_guard<std::mutex> guard(sBodyLock);
+diff --git a/src/server/game/SoloSim/solosim.h b/src/server/game/SoloSim/solosim.h
+index 583d147..a337630 100644
+--- a/src/server/game/SoloSim/solosim.h
++++ b/src/server/game/SoloSim/solosim.h
+@@ -99,6 +99,7 @@ namespace SoloSim
+         uint32 site = 0;                  // where they are now (site id)
+         SimTime born = 0;
+         std::string gear;                 // the kit their body wears: "slot:entry:suffix:enchant,..." (empty = not seen yet)
++        uint8 potions = 0;                // healing potions carried: bought in towns, drunk when a fight turns bad
+         uint8 gearDue = 0;                // pieces due a change (levels gained since last seen)
+         uint8 age0 = 0;                   // age (years) when born was set; a year passes every game week (see Age())
+         AgentStatus status = AgentStatus::Active;
+@@ -255,6 +256,11 @@ namespace SoloSim
+         std::string SummonCamp(bool havePos, uint32 map, float x, float y);         // GM: a camp now, by the town nearest (x, y)
+         void SaveOnShutdown();
+         bool GearOf(uint32 agentId, std::string& gear, uint8& due);
++        bool UsePotion(uint32 agentId);     // a body drank one (false: they had none; true for anyone not ours)
++        bool HasPotion(uint32 agentId);
++        // A game creature died on a continent: count it against its hunting ground (if countIt), and return how many
++        // extra seconds it should stay dead because the ground has been hunted hard (0 = respawn as normal).
++        uint32 HuntedDeath(uint32 map, float x, float y, uint32 respawnDelay, bool countIt);
+         void SetGear(uint32 agentId, std::string const& gear);          // the server is stopping: write the living world out now   // GM: raise a threat now on each continent that has none   // a townsperson's body won a fight in the game world
+         uint32 Age(SimAgent const& a) const;   // years; a year passes every game week
+         // the physical board: its menu items (text, action: 1000+n = take bounty n, 0 = one of yours) for the town at (x, y)
+diff --git a/src/server/game/SoloSim/solosim_camps.cpp b/src/server/game/SoloSim/solosim_camps.cpp
+index a712cc8..e355a8a 100644
+--- a/src/server/game/SoloSim/solosim_camps.cpp
++++ b/src/server/game/SoloSim/solosim_camps.cpp
+@@ -3,6 +3,7 @@
+ #include "solosim.h"
+ #include "Creature.h"
+ #include "GameObject.h"
++#include "GameTime.h"
+ #include "Map.h"
+ #include "MapMgr.h"
+ #include "Player.h"
+@@ -50,11 +51,34 @@ namespace
+         {
+             if (!unit || !unit->IsCreature()) return;
+             uint32 camp = 0;
++            bool member = false;
+             {
+                 std::lock_guard<std::mutex> guard(lock);
+                 auto it = memberOf.find(unit->GetGUID());
+-                if (it == memberOf.end() || !fallen.insert(unit->GetGUID()).second) return;
+-                camp = it->second;
++                if (it != memberOf.end())
++                {
++                    member = true;
++                    if (!fallen.insert(unit->GetGUID()).second) return;
++                    camp = it->second;
++                }
++            }
++            if (!member)
++            {
++                // an ordinary spawn of the game's on a continent: a hard-hunted ground keeps its dead down longer
++                Creature* c = unit->ToCreature();
++                uint32 mapId = c->GetMapId();
++                if ((mapId != 0 && mapId != 1) || !c->GetSpawnId() || c->IsNPCBotOrPet() || c->IsCivilian() || c->isWorldBoss()
++                    || c->GetCreatureTemplate()->rank != 0 || c->GetCreatureTemplate()->type == CREATURE_TYPE_CRITTER)
++                    return;
++                Unit* who = killer ? killer->GetCharmerOrOwnerOrSelf() : nullptr;
++                bool byPlayer = who && (who->IsPlayer() || (who->IsNPCBot() && who->ToCreature()->GetBotOwner() && who->ToCreature()->GetBotOwner()->IsPlayer()));
++                if (uint32 extra = sSoloSim->HuntedDeath(mapId, c->GetPositionX(), c->GetPositionY(), c->GetRespawnDelay(), byPlayer))
++                {
++                    time_t now = GameTime::GetGameTime().count();
++                    time_t at = std::max<time_t>(c->GetRespawnTime(), now + c->GetRespawnDelay());
++                    c->SetRespawnTime(uint32(at - now + extra));
++                }
++                return;
+             }
+             std::string by;
+             if (killer)
+diff --git a/src/server/game/SoloSim/solosim_commands.cpp b/src/server/game/SoloSim/solosim_commands.cpp
+index 7543468..21d7ece 100644
+--- a/src/server/game/SoloSim/solosim_commands.cpp
++++ b/src/server/game/SoloSim/solosim_commands.cpp
+@@ -280,8 +280,11 @@ public:
+     void OnShutdown() override { sSoloSim->SaveOnShutdown(); }
+ };
+ 
++namespace SoloPlainsrunning { void AddScripts(); }
++
+ void AddSC_solosim_commands()
+ {
++    SoloPlainsrunning::AddScripts();
+     new solosim_commands();
+     new solosim_bounty_commands();
+     new solosim_player();
+diff --git a/src/server/game/SoloSim/solosim_plainsrunning.cpp b/src/server/game/SoloSim/solosim_plainsrunning.cpp
+new file mode 100644
+index 0000000..2e9754a
+--- /dev/null
++++ b/src/server/game/SoloSim/solosim_plainsrunning.cpp
+@@ -0,0 +1,107 @@
++// SoloWoW: tauren Plainsrunning, as on WoW Forever (numbers checked in play by the user):
++//   a stack for every 35 yards run (about 5 s at normal run speed - by distance), +2% run speed per stack, at most 30;
++//   -1 stack for each second standing still, -6 for every hit taken; works everywhere, instances included; doesn't
++//   stack with other speed effects (the strongest wins) and gives nothing mounted (stacks freeze while mounted).
++// The aura is spell 12821 (the beta racial still named in the client), reshaped in SpellInfoCorrections.cpp.
++// Settings: SoloWoW.Plainsrunning.Enable / .MaxStacks / .YardsPerStack / .LossStill / .LossHit.
++#include "Config.h"
++#include "Player.h"
++#include "PlayerScript.h"
++#include "ScriptMgr.h"
++#include "SpellAuras.h"
++#include "UnitScript.h"
++#include <algorithm>
++#include <cmath>
++#include <mutex>
++#include <unordered_map>
++
++namespace SoloPlainsrunning
++{
++namespace
++{
++    constexpr uint32 SPELL_PLAINSRUNNING = 12821;
++
++    struct Settings { bool on = true; int32 max = 30; float yards = 35.0f; int32 still = 1; int32 hit = 6; };
++    Settings const& Cfg()
++    {
++        static Settings const s{
++            sConfigMgr->GetOption<bool>("SoloWoW.Plainsrunning.Enable", true),
++            int32(std::clamp<uint32>(sConfigMgr->GetOption<uint32>("SoloWoW.Plainsrunning.MaxStacks", 30), 1, 100)),
++            std::max(5.0f, sConfigMgr->GetOption<float>("SoloWoW.Plainsrunning.YardsPerStack", 35.0f)),
++            int32(sConfigMgr->GetOption<uint32>("SoloWoW.Plainsrunning.LossStill", 1)),
++            int32(sConfigMgr->GetOption<uint32>("SoloWoW.Plainsrunning.LossHit", 6)) };
++        return s;
++    }
++
++    struct Runner { uint32 map = 0; float x = 0, y = 0, yards = 0; uint32 ms = 0; bool placed = false; };
++    std::mutex lock;
++    std::unordered_map<uint64, Runner> runners;
++
++    int32 Stacks(Unit* u)
++    {
++        Aura* a = u->GetAura(SPELL_PLAINSRUNNING);
++        return a ? int32(a->GetStackAmount()) : 0;
++    }
++
++    void SetStacks(Unit* u, int32 n)
++    {
++        n = std::clamp(n, 0, Cfg().max);
++        Aura* a = u->GetAura(SPELL_PLAINSRUNNING);
++        if (!n) { if (a) u->RemoveAurasDueToSpell(SPELL_PLAINSRUNNING); return; }
++        if (!a && !(a = u->AddAura(SPELL_PLAINSRUNNING, u))) return;
++        if (int32 d = n - int32(a->GetStackAmount())) a->ModStackAmount(d);
++    }
++
++    class solosim_plainsrunning_player : public PlayerScript
++    {
++    public:
++        solosim_plainsrunning_player() : PlayerScript("solosim_plainsrunning_player", { PLAYERHOOK_ON_UPDATE, PLAYERHOOK_ON_LOGOUT }) { }
++
++        void OnPlayerUpdate(Player* p, uint32 diff) override
++        {
++            if (!Cfg().on || p->getRace() != RACE_TAUREN) return;
++            std::lock_guard<std::mutex> guard(lock);
++            Runner& r = runners[p->GetGUID().GetCounter()];
++            if ((r.ms += diff) < 1000) return;
++            uint32 secs = r.ms / 1000; r.ms %= 1000;
++            if (!p->IsAlive() || p->IsInFlight() || p->GetVehicle() || p->IsMounted() || !p->IsInWorld())
++            {
++                r.placed = false;            // mounted, flying, dead: the stacks hold where they are
++                return;
++            }
++            float moved = (r.placed && r.map == p->GetMapId()) ? std::hypot(p->GetPositionX() - r.x, p->GetPositionY() - r.y) : 0.0f;
++            r.map = p->GetMapId(); r.x = p->GetPositionX(); r.y = p->GetPositionY(); r.placed = true;
++            if (moved > 60.0f * secs) moved = 0.0f;   // a teleport or a summon, not a run
++            int32 cur = Stacks(p), n = cur;
++            if (moved < 0.5f * secs) { n -= Cfg().still * int32(secs); r.yards = 0; }
++            else if (!p->IsInWater())
++                for (r.yards += moved; r.yards >= Cfg().yards; r.yards -= Cfg().yards) ++n;
++            if (n != cur) SetStacks(p, n);
++        }
++
++        void OnPlayerLogout(Player* p) override
++        {
++            std::lock_guard<std::mutex> guard(lock);
++            runners.erase(p->GetGUID().GetCounter());
++        }
++    };
++
++    class solosim_plainsrunning_hits : public UnitScript
++    {
++    public:
++        solosim_plainsrunning_hits() : UnitScript("solosim_plainsrunning_hits", true, { UNITHOOK_ON_DAMAGE }) { }
++
++        void OnDamage(Unit* attacker, Unit* victim, uint32& damage) override
++        {
++            if (!damage || !victim || attacker == victim || !Cfg().on || !victim->IsPlayer() || victim->getRace() != RACE_TAUREN) return;
++            if (int32 cur = Stacks(victim)) SetStacks(victim, cur - Cfg().hit);
++        }
++    };
++}
++
++void AddScripts()
++{
++    new solosim_plainsrunning_player();
++    new solosim_plainsrunning_hits();
++}
++}
+diff --git a/src/server/game/Spells/SpellInfoCorrections.cpp b/src/server/game/Spells/SpellInfoCorrections.cpp
+index 2d11401..c11f429 100644
+--- a/src/server/game/Spells/SpellInfoCorrections.cpp
++++ b/src/server/game/Spells/SpellInfoCorrections.cpp
+@@ -40,6 +40,25 @@ void SpellMgr::LoadSpellInfoCorrections()
+ {
+     uint32 oldMSTime = getMSTime();
+ 
++    // SoloWoW: Plainsrunning (12821, a leftover tauren racial from the beta, still named in the 3.3.5 client) becomes
++    // a stacking run-speed aura the server drives (see SoloSim/solosim_plainsrunning.cpp): +2% per stack, unlimited
++    // duration, can't be cancelled. MOD_INCREASE_SPEED takes the strongest only, so it doesn't stack with other speed
++    // effects, and mounted speed ignores it.
++    ApplySpellFix({ 12821 }, [](SpellInfo* spellInfo)
++    {
++        spellInfo->Attributes = 0x80000000;   // SPELL_ATTR0 can't cancel
++        spellInfo->AttributesEx = 0; spellInfo->AttributesEx2 = 0; spellInfo->AttributesEx3 = 0;
++        spellInfo->DurationEntry = sSpellDurationStore.LookupEntry(21); // infinite
++        spellInfo->StackAmount = 100;
++        spellInfo->Effects[EFFECT_0].Effect = SPELL_EFFECT_APPLY_AURA;
++        spellInfo->Effects[EFFECT_0].ApplyAuraName = SPELL_AURA_MOD_INCREASE_SPEED;
++        spellInfo->Effects[EFFECT_0].TargetA = SpellImplicitTargetInfo(TARGET_UNIT_CASTER);
++        spellInfo->Effects[EFFECT_0].BasePoints = 2;
++        spellInfo->Effects[EFFECT_0].DieSides = 0;
++        spellInfo->Effects[EFFECT_0].RealPointsPerLevel = 0.0f;
++        spellInfo->Effects[EFFECT_0].TriggerSpell = 0;
++    });
++
+     //npcbot: corrections for Life Tap (see Trinity-Bots issue #239)
+     ApplySpellFix({1454}, [](SpellInfo* spellInfo) // Life Tap (Rank 1)
+     {
+-- 
+2.56.0.windows.2
+

@@ -55,6 +55,10 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
   distance, max 30 (+60%), -1 stack per second standing still, -6 stacks per hit, works everywhere incl. instances,
   doesn't stack with other speed effects (stronger wins), no mounted bonus, no level requirement; numbers as settings.
   Client buff (reuse the beta Plainsrunning spell if it's still in 3.3.5's data). Tauren bots/townsfolk get it too.
+  **Done Nov 16 (late) for the player, not yet seen in game:** spell 12821 "Plainsrunning" is still in the client
+  (name + icon, no tooltip), reshaped server-side into a stacking MOD_INCREASE_SPEED aura (strongest speed effect wins,
+  ignored mounted); a stack per 35 yd run (not swimming), stacks freeze while mounted/flying/dead; settings
+  SoloWoW.Plainsrunning.*. Still to do: tauren bots and townsfolk, a tooltip (client patch).
 
 ## 4. Wildlife
 - **Done Nov 16 (night), not yet seen in game:** hunting pressure per ground (sim_ground): sim kills add to it, it
@@ -64,7 +68,11 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
   3 h, staying put in rain; predator packs (wolves, cats, bears, raptors...) follow the nearest herd by day and take
   one when they catch it, and go down to the roads at night (a road hazard mostly after dark), with a bounty that
   follows them. Up to 20 herds / 10 packs per continent; they appear as real creatures near you and walk to where the
-  sim moves them. GM: .sim wildlife. Still to do: thinning the game's own spawns where the sim over-hunts.
+  sim moves them. GM: .sim wildlife.
+- **Thinning, done Nov 16 (late), not yet seen in game:** the game's own spawns feel the hunting. A normal creature
+  killed on a hunted ground (anyone's kill) stays dead longer, up to ~3x its respawn (max +30 min) on the hardest-hunted
+  grounds; the player's and their companions' kills count as hunting too (and stop a ground counting as neglected).
+  Grid unloads forget the longer timer (respawn as normal then).
 - Sim-owned, put in the world near you like camps: herds moving between grounds, predators following; real culling
   (over-hunted grounds go quiet, neglected ones swarm and spill onto roads); night prowlers, sheltering in storms;
   reclaiming cleared camps and emptied towns; untended dens escalating.
@@ -93,6 +101,11 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
   levels behind; slots fill in over levels (shoulders!); quality curve (white/green -> blue -> rare epics);
   coherence grows with level; class identity (shields, staves, bows, dual wield); mounts at the riding thresholds;
   townsfolk in work clothes, never adventuring armour.
+- **Consumables v1, done Nov 16 (late), not yet seen in game:** healing potions per person (sim_agent.potions):
+  bought when trading in town (2-6 by caution, at most a quarter of their purse, price grows with level), drunk off
+  screen when a fight turns bad (wounds 75+ -> -40, so a carried potion saves them from a bad pull), and by bodies in
+  front of you only while they have one (NPCBots' potion use now draws on the count; mana potions not counted yet).
+  The older "supplies" meter stays as food/bandages. Still to do: mana potions, food/drink by count, elixirs, gifts.
 - Consumables: counts per person (food, drink, healing/mana potions, bandages, later elixirs/scrolls), bought by
   level in towns (economy), used at crucial moments by bodies (player cooldowns, level-appropriate potions), for
   everyone incl. enemy war groups; gifts add to the stock.
