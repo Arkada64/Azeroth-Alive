@@ -124,7 +124,11 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
   1. generated quest rewards, by the quest's difficulty (stakes ladder band, grey never);
   2. dungeons once they're re-infested (the sim-taken old places);
   3. rarely, at random, from enemies of every kind - on top of the normal static loot, at world-drop-like odds.
-  New named uniques (option B) stay parked.
+  Ordinary items roll too (the user, Nov 17): any armour/weapon of the right level - not just WoW's own random-suffix
+  items - can come with a rolled suffix, its size from WoW's suffix tables for that item's level, slot and quality.
+  The aim: loot exciting again, like Diablo. Rolled suffixes on WoW's items are the safe first step; truly generated
+  items (own names, stat rolls, item levels, made from existing models/icons) are the likely direction after it.
+  New named uniques (option B) stay parked until then.
 - **World-PvP gear drops (the user's design):** when someone is killed in world PvP (never in battlegrounds or
   Wintergrasp), there's a chance they drop one random piece of their equipped gear, which someone else can loot.
   **Sim people's gear only - never the player's.** Fits the war track (enemy bodies near you, sim clashes off-screen).
