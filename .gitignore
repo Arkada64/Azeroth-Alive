@@ -1,0 +1,27 @@
+# Azeroth Alive - only our own code, scripts and docs go in git.
+# NEVER commit Blizzard files (client, MPQs, extracted maps/dbc/vmaps/mmaps), databases, server binaries or logs.
+
+# the player's client
+/WOTLK Client/
+*.mpq
+*.MPQ
+Wow.exe
+
+# the core fork (its own repo; our changes ship as core-patch/azeroth-alive.patch)
+/core/
+/reference/
+
+# build output, server binaries and data, databases, logs
+/build/
+/server/
+/db/
+/logs/
+/launcher/target/
+SoloWoW.exe
+AzerothAlive.exe
+
+# local settings and backups
+/launcher.cfg
+*.bak
+*.bak-*
+*.log

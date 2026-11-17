@@ -1,0 +1,2 @@
+# keep patches byte-exact (git am/apply are picky about line endings)
+*.patch -text

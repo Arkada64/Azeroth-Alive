@@ -1,0 +1,7 @@
+[package]
+name = "solowow-core"
+version = "0.1.0"
+edition = "2021"
+description = "SoloWoW launcher logic (no UI): world processes, client, settings, sim feed. Reused by the desktop and Android launchers."
+
+[dependencies]
