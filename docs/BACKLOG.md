@@ -73,7 +73,10 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
   Now a sim body wears the kit it had last time (sim_agent.kit "slot:entry:suffix:enchant,..."), each level gained
   marks a piece due (kit_due, max 6) and the weakest due pieces are rerolled at the next spawn; anything equipped on a
   sim body (your gifts, their finds) is recorded. Still to do: the sim's fight odds from the real kit (gear tier is
-  still abstract), quality curve and set coherence on top of NPCBots' generator, gear in the story (loss, heirlooms).
+  still abstract), quality curve and set coherence on top of NPCBots' generator.
+- **World-PvP gear drops (the user's design):** when someone is killed in world PvP (never in battlegrounds or
+  Wintergrasp), there's a chance they drop one random piece of their equipped gear, which someone else can loot.
+  **Sim people's gear only - never the player's.** Fits the war track (enemy bodies near you, sim clashes off-screen).
 - Party-invite hiring (like playerbots), no gold: the sim decides (regard, level gap, caution, own party); answers
   as whispers; neutral people come if your plans match theirs. Kicking = dismissing. Gossip hire removed or free.
 - Persistent gear: generated from class/level/luck/history, only exceptions stored (gifts, notable drops, heirlooms:

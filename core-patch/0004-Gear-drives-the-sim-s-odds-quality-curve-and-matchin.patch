@@ -1,0 +1,125 @@
+From 8cb221845a700bcca71fcc4afd640c7d8f3068d0 Mon Sep 17 00:00:00 2001
+From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 21:41:26 -0600
+Subject: [PATCH 4/4] Gear drives the sim's odds; quality curve and matching
+ looks for sim bodies
+
+- The gear tier comes from the real kit (item level and quality against the norm for their level, minus empty slots); shopping and rare drops mark pieces due so the next body shows it
+- Sim bodies' item rolls: quality by level band (greens early, blues from the 20s, epics only near 60 and rare), and from 30 armour from one name family where the roll allows
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01JU37XfnHTvru3VVz2sNN7z
+---
+ src/server/game/AI/NpcBots/bot_ai.cpp | 33 ++++++++++++++++++++++++++-
+ src/server/game/SoloSim/solosim.cpp   | 23 ++++++++++++++++++-
+ 2 files changed, 54 insertions(+), 2 deletions(-)
+
+diff --git a/src/server/game/AI/NpcBots/bot_ai.cpp b/src/server/game/AI/NpcBots/bot_ai.cpp
+index 04311c1..8309a48 100644
+--- a/src/server/game/AI/NpcBots/bot_ai.cpp
++++ b/src/server/game/AI/NpcBots/bot_ai.cpp
+@@ -15174,6 +15174,37 @@ void bot_ai::InitEquips()
+             std::ranges::sort(weakest);
+             for (uint32 k = 0; k < weakest.size() && k < due; ++k) reroll.insert(weakest[k].second);
+         }
++        // SoloWoW: for sim people the roll is shaped for the look of progression - quality by level band (greens early,
++        // blues from the 20s, epics only near 60 and rare) and, from 30, armour that hangs together (one name family)
++        std::string family;
++        auto roll = [&](uint8 slot) -> Item* {
++            if (!simAgent)
++                return BotDataMgr::GenerateWanderingBotItem(gen_category, slot, _botclass, lvl, max_item_level, fit_check);
++            auto qualityFits = [lvl](uint32 q) {
++                if (q >= ITEM_QUALITY_EPIC) return urand(0, 99) < (lvl >= 60 ? 12u : lvl >= 50 ? 2u : 0u);
++                if (q == ITEM_QUALITY_RARE) return urand(0, 99) < (lvl < 20 ? 5u : lvl < 50 ? 25u : lvl < 60 ? 40u : 100u);
++                return true;
++            };
++            bool armour = slot >= BOT_SLOT_HEAD && slot <= BOT_SLOT_HANDS;
++            Item* keep = nullptr;
++            for (uint32 attempt = 0; attempt < 6; ++attempt)
++            {
++                Item* it = BotDataMgr::GenerateWanderingBotItem(gen_category, slot, _botclass, lvl, max_item_level, fit_check);
++                if (!it) break;
++                std::string const& name = it->GetTemplate()->Name1;
++                bool qualityOk = qualityFits(it->GetTemplate()->Quality);
++                bool familyOk = !armour || lvl < 30 || family.empty() || name.rfind(family + " ", 0) == 0;
++                if (qualityOk && familyOk) { delete keep; keep = it; break; }
++                if (qualityOk && !keep) keep = it; else delete it;
++            }
++            if (keep && armour && lvl >= 30 && family.empty())
++            {
++                std::string const& name = keep->GetTemplate()->Name1;
++                size_t sp = name.find(' ');
++                if (sp != std::string::npos && name.find(" of ") == std::string::npos) family = name.substr(0, sp);
++            }
++            return keep;
++        };
+         std::ostringstream gss;
+         gss << "bot_ai::InitEquips(): Wanderer bot " << me->GetName() << " id " << me->GetEntry() << ' ' << "level " << uint32(lvl) << " generated gear:";
+         for (auto i : NPCBots::index_array<uint8, BOT_INVENTORY_SIZE>)
+@@ -15197,7 +15228,7 @@ void bot_ai::InitEquips()
+             if ((i == BOT_SLOT_TRINKET1 || i == BOT_SLOT_TRINKET2 || i == BOT_SLOT_HEAD) && lvl < 30)
+                 continue;
+ 
+-            Item* item = BotDataMgr::GenerateWanderingBotItem(gen_category, i, _botclass, lvl, max_item_level, fit_check);
++            Item* item = roll(i);
+             if (!item)
+             {
+                 if (i <= BOT_SLOT_RANGED && einfo->ItemEntry[i] != 0)
+diff --git a/src/server/game/SoloSim/solosim.cpp b/src/server/game/SoloSim/solosim.cpp
+index 91dd628..fa5bc61 100644
+--- a/src/server/game/SoloSim/solosim.cpp
++++ b/src/server/game/SoloSim/solosim.cpp
+@@ -2,6 +2,7 @@
+ // v2 adds: hunting parties, gathering professions + town markets, town bounties, news that travels, trainer
+ // visits and rainy days.
+ #include "solosim.h"
++#include "ItemTemplate.h"
+ #include <filesystem>
+ #include <cstring>
+ #include "botdatamgr.h"
+@@ -999,6 +1000,7 @@ void World::CheckAmbition(SimAgent& a)
+             if (done)
+             {
+                 uint32 spend = a.money / 2; a.money -= spend; a.gearTier = uint8(std::min<uint32>(100, a.gearTier + 15));
++            a.gearDue = uint8(std::min<uint32>(6, a.gearDue + 2u));     // what they bought shows the next time they're seen
+                 what = Acore::StringFormat("finally had the coin saved and spent {} on better gear", Money(spend));
+             }
+             break;
+@@ -1476,6 +1478,7 @@ bool World::RareFight(SimAgent& a, SimBounty& b, SimSite const& site)
+         while (a.level < 80 && a.xp >= sObjectMgr->GetXPForLevel(a.level)) { a.xp -= sObjectMgr->GetXPForLevel(a.level); ++a.level; }
+         a.lootValue += uint32(rare->level) * rare->level * 20;
+         a.gearTier = uint8(std::min(100, a.gearTier + 8));                 // rares drop good things
++        a.gearDue = uint8(std::min<uint32>(6, a.gearDue + 1u));
+         b.count = 1; a.bountyProgress = 1;
+         _rareDownUntil[rare->entry] = _clock + r.Range(5, 10) * MIN_PER_DAY;
+         _memories.push_back({ a.id, 3, site.id, uint8(EventType::RareSlain), 90, 95, _clock });
+@@ -3514,7 +3517,25 @@ bool World::GearOf(uint32 agentId, std::string& gear, uint8& due)
+ void World::SetGear(uint32 agentId, std::string const& gear)
+ {
+     std::lock_guard<std::mutex> guard(sBodyLock);
+-    if (SimAgent* a = AgentById(agentId)) { a->gear = gear; a->gearDue = 0; }
++    SimAgent* a = AgentById(agentId);
++    if (!a) return;
++    a->gear = gear; a->gearDue = 0;
++    // how well equipped they really are: item level and quality against what's normal for their level, minus empty slots
++    static int32 const qualityBonus[] = { -5, 0, 3, 7, 13, 20, 20, 20 };
++    int32 sum = 0, n = 0;
++    std::istringstream in(gear);
++    std::string part;
++    while (std::getline(in, part, ','))
++    {
++        uint32 slot = 0, entry = 0;
++        if (std::sscanf(part.c_str(), "%u:%u", &slot, &entry) != 2) continue;
++        if (ItemTemplate const* p = sObjectMgr->GetItemTemplate(entry)) { sum += int32(p->ItemLevel) + qualityBonus[std::min<uint32>(p->Quality, 7)]; ++n; }
++    }
++    if (!n) return;
++    int32 expected = a->level < 20 ? 12 : a->level < 30 ? 15 : 17;
++    float rel = float(sum) / float(n) - float(a->level + 3);
++    float tier = 50.0f + rel * 4.0f - float(std::max<int32>(0, expected - n)) * 3.0f;
++    a->gearTier = uint8(std::clamp(tier, 5.0f, 100.0f));
+ }
+ 
+ std::string World::SummonThreats()
+-- 
+2.56.0.windows.2
+
