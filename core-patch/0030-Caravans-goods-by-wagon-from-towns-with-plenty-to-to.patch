@@ -1,0 +1,550 @@
+From d995fc1e6234189204ac2ca9bd2699ce7f70ca11 Mon Sep 17 00:00:00 2001
+From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 13:51:03 -0600
+Subject: [PATCH 30/30] Caravans: goods by wagon from towns with plenty to
+ towns that are short, guarded by the towns adventurers, a night on the way,
+ bandits by the road; pack animals near you; the restless move home further
+
+sim_caravan table; CaravanTick/Leg/Arrive; EventType::Caravan (rumours).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01JU37XfnHTvru3VVz2sNN7z
+---
+ src/server/game/AI/NpcBots/botbubble.cpp |  35 +++
+ src/server/game/SoloSim/solosim.cpp      | 292 ++++++++++++++++++++++-
+ src/server/game/SoloSim/solosim.h        |  16 +-
+ 3 files changed, 334 insertions(+), 9 deletions(-)
+
+diff --git a/src/server/game/AI/NpcBots/botbubble.cpp b/src/server/game/AI/NpcBots/botbubble.cpp
+index 1decf47..7ef035c 100644
+--- a/src/server/game/AI/NpcBots/botbubble.cpp
++++ b/src/server/game/AI/NpcBots/botbubble.cpp
+@@ -29,6 +29,8 @@
+ #include "SharedDefines.h"
+ #include "solosim.h"
+ #include "solosim_civilians.h"
++#include "TemporarySummon.h"
++#include "MotionMaster.h"
+ namespace SoloCamp { void Tick(Player* player); }
+ #include "solosim_boards.h"
+ #include "solosim_camps.h"
+@@ -367,6 +369,7 @@ namespace
+     struct CampFire { ObjectGuid guid; uint32 map = 0; float x = 0, y = 0, z = 0; };
+     std::unordered_map<uint32, CampFire> campFires;  // sim site -> the fire its campers sit round tonight (Nov 17)
+     constexpr uint32 CAMPFIRE_GO = 29784;            // Basic Campfire
++    std::unordered_map<uint32, ObjectGuid> packAnimals;  // a caravan's lead guard (bot entry) -> the mule/kodo with them (Nov 17)
+     std::mutex lifeLock;                          // bodies update on map threads
+ 
+     uint32 Hash(uint32 agent, uint32 salt) { return uint32(SoloSim::Mix((uint64(agent) << 20) ^ salt)); }
+@@ -587,6 +590,38 @@ bool BotBubble::SimLife(Creature* me, WanderNode const* cur, Position& target, W
+     Life& life = lives[me->GetEntry()];
+     nextNode = nullptr;
+ 
++    // a caravan on the road (Nov 17): the lead guard has the wagon's pack animal - a mule for the Alliance, a kodo for the
++    // Horde - plodding at their heels; gone again when the road ends
++    if (in.caravanLead)
++    {
++        ObjectGuid& pg = packAnimals[me->GetEntry()];
++        Creature* pack = pg ? ObjectAccessor::GetCreature(*me, pg) : nullptr;
++        if (!pack || !pack->IsAlive())
++        {
++            Position at(me->GetPositionX() - 2.0f * std::cos(me->GetOrientation()), me->GetPositionY() - 2.0f * std::sin(me->GetOrientation()), me->GetPositionZ(), me->GetOrientation());
++            if (TempSummon* s = me->SummonCreature(in.horde ? 11564 : 16225, at, TEMPSUMMON_TIMED_DESPAWN, 30 * MINUTE * IN_MILLISECONDS))
++            {
++                s->SetFaction(35);
++                s->SetImmuneToAll(true);
++                s->SetReactState(REACT_PASSIVE);
++                s->SetWalk(true);
++                s->GetMotionMaster()->MoveFollow(me, 2.5f, float(M_PI));
++                pg = s->GetGUID();
++            }
++        }
++        else if (pack->GetExactDist(me) > 40.0f)
++        {
++            pack->NearTeleportTo(me->GetPositionX(), me->GetPositionY(), me->GetPositionZ(), me->GetOrientation());
++            pack->GetMotionMaster()->MoveFollow(me, 2.5f, float(M_PI));
++        }
++    }
++    else if (auto it = packAnimals.find(me->GetEntry()); it != packAnimals.end())
++    {
++        if (Creature* pack = ObjectAccessor::GetCreature(*me, it->second))
++            pack->DespawnOrUnsummon();
++        packAnimals.erase(it);
++    }
++
+     // This is called when the body has reached its last target. The engine's wait comes BEFORE the next
+     // move, so a stay is done here, on arrival: settle (sit, lie down, face and greet the NPC), then wait.
+     if (life.pending)
+diff --git a/src/server/game/SoloSim/solosim.cpp b/src/server/game/SoloSim/solosim.cpp
+index 5f15241..52ca376 100644
+--- a/src/server/game/SoloSim/solosim.cpp
++++ b/src/server/game/SoloSim/solosim.cpp
+@@ -182,7 +182,7 @@ namespace
+ // setup
+ // =====================================================================================================
+ static char const* const SIM_TABLES[] = { "sim_state", "sim_site", "sim_agent", "sim_relation", "sim_memory", "sim_event",
+-                                          "sim_bounty", "sim_news", "sim_hub_news", "sim_market", "sim_errand", "sim_camp", "sim_ground", "sim_crafted" };
++                                          "sim_bounty", "sim_news", "sim_hub_news", "sim_market", "sim_errand", "sim_camp", "sim_ground", "sim_crafted", "sim_caravan" };
+ 
+ void World::CreateTables()
+ {
+@@ -251,6 +251,8 @@ void World::CreateTables()
+     CharacterDatabase.DirectExecute("CREATE TABLE IF NOT EXISTS sim_news (id INT UNSIGNED NOT NULL PRIMARY KEY, subject INT UNSIGNED NOT NULL, site INT UNSIGNED NOT NULL, at INT UNSIGNED NOT NULL) ENGINE=InnoDB");
+     CharacterDatabase.DirectExecute("CREATE TABLE IF NOT EXISTS sim_hub_news (hub INT UNSIGNED NOT NULL, news INT UNSIGNED NOT NULL, PRIMARY KEY (hub, news)) ENGINE=InnoDB");
+     CharacterDatabase.DirectExecute("CREATE TABLE IF NOT EXISTS sim_market (hub INT UNSIGNED NOT NULL PRIMARY KEY, ore INT UNSIGNED NOT NULL, herbs INT UNSIGNED NOT NULL, hides INT UNSIGNED NOT NULL, fish INT UNSIGNED NOT NULL) ENGINE=InnoDB");
++    CharacterDatabase.DirectExecute("CREATE TABLE IF NOT EXISTS sim_caravan (id INT UNSIGNED NOT NULL PRIMARY KEY, src INT UNSIGNED NOT NULL, dst INT UNSIGNED NOT NULL, guards VARCHAR(80) NOT NULL, "
++        "goods VARCHAR(80) NOT NULL, made VARCHAR(80) NOT NULL, pay INT UNSIGNED NOT NULL, departed INT UNSIGNED NOT NULL, state TINYINT UNSIGNED NOT NULL) ENGINE=InnoDB");
+     CharacterDatabase.DirectExecute("CREATE TABLE IF NOT EXISTS sim_crafted (hub INT UNSIGNED NOT NULL PRIMARY KEY, potions INT UNSIGNED NOT NULL, food INT UNSIGNED NOT NULL, arms INT UNSIGNED NOT NULL, leather INT UNSIGNED NOT NULL) ENGINE=InnoDB");
+ }
+ 
+@@ -746,6 +748,14 @@ void World::Save()
+     for (auto const& [hub, c] : _crafted)
+         rows.push_back(Acore::StringFormat("({},{},{},{},{})", hub, c[CRAFT_POTION], c[CRAFT_FOOD], c[CRAFT_ARMS], c[CRAFT_LEATHER]));
+     Chunked("INSERT INTO sim_crafted VALUES ", rows);
++    CharacterDatabase.DirectExecute("DELETE FROM sim_caravan");
++    rows.clear();
++    for (SimCaravan const& c : _caravans)
++    {
++        auto join = [](auto const& v, size_t from) { std::string s; for (size_t i = from; i < v.size(); ++i) s += (s.empty() ? "" : ",") + std::to_string(v[i]); return s; };
++        rows.push_back(Acore::StringFormat("({},{},{},'{}','{}','{}',{},{},{})", c.id, c.from, c.to, join(c.guards, 0), join(c.goods, 0), join(c.made, 0), c.pay, c.left, c.state));
++    }
++    Chunked("INSERT INTO sim_caravan VALUES ", rows);
+ 
+     // only what's worth remembering is kept (the chronicle's events), and only for a season: 90 game days
+     if (_clock > 90 * MIN_PER_DAY)
+@@ -850,6 +860,22 @@ bool World::Load()
+     _crafted.clear();
+     if (QueryResult r = CharacterDatabase.Query("SELECT hub, potions, food, arms, leather FROM sim_crafted"))
+         do { Field* f = r->Fetch(); auto& c = _crafted[f[0].Get<uint32>()]; for (uint8 k = 0; k < CRAFT_COUNT; ++k) c[k] = f[1 + k].Get<uint32>(); } while (r->NextRow());
++    _caravans.clear(); _nextCaravan = 1;
++    if (QueryResult r = CharacterDatabase.Query("SELECT id, src, dst, guards, goods, made, pay, departed, state FROM sim_caravan ORDER BY id"))
++        do
++        {
++            Field* f = r->Fetch();
++            SimCaravan c; c.id = f[0].Get<uint32>(); c.from = f[1].Get<uint32>(); c.to = f[2].Get<uint32>();
++            auto nums = [](std::string const& s) { std::vector<uint32> v; std::stringstream ss(s); std::string x; while (std::getline(ss, x, ',')) if (!x.empty()) v.push_back(uint32(std::stoul(x))); return v; };
++            c.guards = nums(f[3].Get<std::string>());
++            std::vector<uint32> g = nums(f[4].Get<std::string>()), m = nums(f[5].Get<std::string>());
++            for (size_t i = 0; i < g.size() && i < c.goods.size(); ++i) c.goods[i] = g[i];
++            for (size_t i = 0; i < m.size() && i < c.made.size(); ++i) c.made[i] = m[i];
++            c.pay = f[6].Get<uint32>(); c.left = f[7].Get<uint32>(); c.state = f[8].Get<uint8>();
++            _nextCaravan = std::max(_nextCaravan, c.id + 1);
++            for (uint32 id : c.guards) if (SimAgent* a = AgentById(id)) a->caravan = c.id;   // agents are loaded by now
++            _caravans.push_back(c);
++        } while (r->NextRow());
+     if (QueryResult r = CharacterDatabase.Query("SELECT hub, ore, herbs, hides, fish FROM sim_market"))
+         do
+         {
+@@ -909,7 +935,7 @@ std::string World::Reset()
+     for (char const* t : SIM_TABLES) CharacterDatabase.DirectExecute(Acore::StringFormat("DROP TABLE IF EXISTS {}", t));
+     _sites.clear(); _agents.clear(); _relations.clear(); _memories.clear(); _pending.clear();
+     _bounties.clear(); _news.clear(); _hubNews.clear(); _market.clear(); _socialChronicled.clear(); _rain.clear();
+-    _errands.clear(); _mail.clear(); _rumors.clear(); _notices.clear(); _camps.clear(); _nextCamp = 1; _townOf.clear(); _rares.clear(); _rareDownUntil.clear(); _requeue.clear();
++    _errands.clear(); _mail.clear(); _rumors.clear(); _notices.clear(); _camps.clear(); _nextCamp = 1; _caravans.clear(); _nextCaravan = 1; _townOf.clear(); _rares.clear(); _rareDownUntil.clear(); _requeue.clear();
+     _nextErrand = 1; _lastBountyTick = 0;
+     _ready = false;
+     _siteRoad.clear(); _flushed = 0; _liveStarted = false; _liveMs = 0; _realTime = 0;
+@@ -971,7 +997,7 @@ static bool Rumorworthy(EventType t)
+         case EventType::Died: case EventType::Defeated: case EventType::Clash: case EventType::RareSlain: case EventType::RareRepelled:
+         case EventType::RareFind: case EventType::BountyPosted: case EventType::BountyDone: case EventType::AmbitionDone:
+         case EventType::LeftRegion: case EventType::Newcomer: case EventType::MovedHome: case EventType::PlayerBounty:
+-        case EventType::PlayerHelped: case EventType::FellBeside:
++        case EventType::PlayerHelped: case EventType::FellBeside: case EventType::Caravan:
+             return true;
+         default:
+             return false;
+@@ -1163,12 +1189,26 @@ uint32 World::PickHuntSite(SimAgent& a)
+ uint32 World::PickNewHome(SimAgent const& a) const
+ {
+     uint32 best = 0, bestMin = UINT32_MAX;
++    std::vector<std::pair<uint32, uint32>> fitting;                 // (minutes, town)
+     for (SimSite const& s : _sites)
+         if (s.type == SiteType::Hub && (s.services & SVC_INN) && s.id != a.home && Welcome(a, s) && HasFittingHunt(a, s.id, 2500.0f))
+         {
+             uint32 m = TravelMinutes(a.site, s.id, a);
++            fitting.emplace_back(m, s.id);
+             if (m < bestMin) { bestMin = m; best = s.id; }
+         }
++    // the restless don't settle for the next town over (Nov 17): any town that suits, up to a few times as far - across
++    // the continent, now and then
++    if (a.wanderlust > 60 && fitting.size() > 1)
++    {
++        Rng r(_seed, a.id, _clock, P_GEN + 595);
++        if (r.Chance(float(a.wanderlust - 50) / 80.0f))
++        {
++            std::vector<uint32> distant;
++            for (auto const& [m, id] : fitting) if (m > bestMin && m <= std::max<uint32>(bestMin * 4, 60)) distant.push_back(id);
++            if (!distant.empty()) return distant[r.Range(0, uint32(distant.size()) - 1)];
++        }
++    }
+     return best;
+ }
+ 
+@@ -1489,7 +1529,7 @@ void World::FormParty(SimAgent& leader, uint32 site, uint32 minutes, uint32 want
+ {
+     want = std::clamp<uint32>(want, 1, 2);
+     auto free = [&](SimAgent const* o) {
+-        if (!o || o->id == leader.id || o->status != AgentStatus::Active || o->site != leader.site || o->party || o->role != ROLE_ADVENTURER) return false;
++        if (!o || o->id == leader.id || o->status != AgentStatus::Active || o->site != leader.site || o->party || o->caravan || o->role != ROLE_ADVENTURER) return false;
+         if (o->doing != Verb::Socialize && o->doing != Verb::Trade && o->doing != Verb::Idle) return false;
+         return o->wounds <= 40 && o->fatigue <= 60 && std::abs(int32(o->level) - int32(leader.level)) <= 4;
+     };
+@@ -2864,6 +2904,7 @@ float World::DangerFor(SimAgent const& a, uint32 site) const
+ void World::WildlifeTick()
+ {
+     RebuildDanger();
++    CaravanTick();
+     bool night = HourOf(_clock) >= 21 || HourOf(_clock) < 5;
+     for (SimCamp& k : _camps)
+     {
+@@ -3553,11 +3594,11 @@ void World::StartStep(SimAgent& a)
+     a.doing = s.verb;
+     if (s.verb == Verb::Goto)
+     {
+-        s.minutes = TravelMinutes(a.site, s.site, a);
++        if (!(a.caravan && s.minutes)) s.minutes = TravelMinutes(a.site, s.site, a);   // a caravan's legs are set at its pace
+         // a journey that runs well past their bedtime: stop for the night on the way - an inn if one's there, else camp -
+         // and go on in the morning (Nov 17)
+         uint32 toBed = MinutesToBed(a);
+-        if (a.role == ROLE_ADVENTURER && !Asleep(a, _clock) && s.minutes >= 30 && s.minutes > toBed + 20)
++        if (a.role == ROLE_ADVENTURER && !a.caravan && !Asleep(a, _clock) && s.minutes >= 30 && s.minutes > toBed + 20)
+             if (uint32 stop = WayStop(a, a.site, s.site, toBed))
+             {
+                 PlanStep onward = s;                                                      // the rest of the way, tomorrow
+@@ -3599,6 +3640,7 @@ void World::FinishStep(SimAgent& a, PlanStep const& s)
+             a.site = s.site;
+             if (a.role == ROLE_ADVENTURER)
+             {
++                if (a.caravan) CaravanLeg(a, from, s.site);    // the wagons: a band by the road may try them (the lead guard reports)
+                 RoadDanger(a, from, s.site);
+                 if (a.status != AgentStatus::Active) break;
+             }
+@@ -3646,6 +3688,7 @@ void World::FinishStep(SimAgent& a, PlanStep const& s)
+         }
+         case Verb::Trade:
+         {
++            if (a.caravan) CaravanArrive(a);                   // the end of a caravan's road: goods in, guards paid
+             ClaimBounty(a);
+             uint32 sold = a.lootValue;
+             if (SimSite const* ts = SiteById(a.site); ts && IsCapital(*ts) && sold)
+@@ -4050,6 +4093,8 @@ bool World::Intent(uint32 agentId, SimIntent& out)
+     out.siteType = s->type; out.x = s->x; out.y = s->y; out.z = s->z; out.services = s->services;
+     out.verb = out.travelling ? Verb::Idle : a->doing;
+     out.camp = !out.travelling && AtCamp(*a);
++    out.horde = IsHordeRace(a->race);
++    if (SimCaravan const* c = CaravanOf(*a)) out.caravanLead = out.travelling && !c->guards.empty() && c->guards.front() == a->id;
+     if (SimSite const* hs = a->role == ROLE_CIVILIAN ? DistrictOf(*a) : SiteById(a->home)) { out.homeX = hs->x; out.homeY = hs->y; out.homeZ = hs->z; }
+     if (a->role == ROLE_CIVILIAN)
+         for (SimErrand const& e : _errands)
+@@ -4065,7 +4110,7 @@ bool World::Intent(uint32 agentId, SimIntent& out)
+     bool inTown = !out.travelling && out.siteType == SiteType::Hub;
+     bool stroller = (Mix(uint64(a->id) * 2654435761u) % 10) < 3;
+     out.walk = inTown || a->doing == Verb::Recover || (out.travelling && (a->fatigue >= 60 || a->wounds >= 50 || stroller
+-        || ((_clock / 3 + a->id) % 2) == 0));                       // on the road: walk one three-minute stretch, jog the next
++        || ((_clock / 3 + a->id) % 2) == 0 || a->caravan));         // on the road: walk one three-minute stretch, jog the next; beside a wagon, walk
+     return true;
+ }
+ 
+@@ -4122,7 +4167,8 @@ std::string World::Doing(SimAgent const& a) const
+     {
+         case Verb::Goto:
+             if (!a.plan.empty())
+-                return Acore::StringFormat("on the road from {} to {} ({} min to go)", SiteName(a.site), SiteName(a.plan.front().site), a.wakeAt > _clock ? a.wakeAt - _clock : 0);
++                return Acore::StringFormat("{} from {} to {} ({} min to go)", a.caravan ? "guarding a caravan on the road" : "on the road", SiteName(a.site),
++                    SiteName(a.plan.front().site), a.wakeAt > _clock ? a.wakeAt - _clock : 0);
+             break;
+         case Verb::Fight:     return Acore::StringFormat("hunting {}", SiteName(a.site));
+         case Verb::Gather:    return Acore::StringFormat("gathering {}", PlaceOnly(SiteName(a.site)));
+@@ -5912,4 +5958,234 @@ uint32 World::NewestBountyOf(uint32 guid)
+     return best;
+ }
+ 
++// =====================================================================================================
++// caravans (Nov 17): goods on the road. A town with plenty in its market or on its crafters' shelves sends a trader's
++// wagon to a town that's short, a long day's road away at a wagon's pace (about 2.6 yd/s), with two to four of the
++// town's adventurers hired to guard it. The guards travel as one: the same legs, the same stop for the night (an inn on
++// the way, else a camp), the same arrival. A bandit camp by the road may fall on it - beaten off, or the wagons emptied
++// and the price on that camp raised. At the end the goods go into the town's market and shelves, and the guards are paid.
++// =====================================================================================================
++namespace
++{
++    constexpr uint32 WAGON_NUM = 17, WAGON_DEN = 10;      // wagon minutes = foot minutes x 1.7
++    std::string Cargo(SimCaravan const& c)
++    {
++        static char const* const goods[5] = { "", "ore", "herbs", "hides", "fish" };
++        static char const* const made[4] = { "potions", "food", "arms", "leather goods" };
++        std::vector<std::pair<uint32, std::string>> parts;          // what there's most of, first
++        for (uint8 p = 1; p < 5; ++p) if (c.goods[p] >= 5) parts.emplace_back(c.goods[p], goods[p]);
++        for (uint8 k = 0; k < 4; ++k) if (c.made[k] >= 3) parts.emplace_back(c.made[k] * 3, made[k]);   // made things count for more
++        if (parts.empty()) return "odds and ends";
++        std::ranges::stable_sort(parts, [](auto const& x, auto const& y) { return x.first > y.first; });
++        size_t n = std::min<size_t>(parts.size(), 3);
++        std::string out;
++        for (size_t i = 0; i < n; ++i) out += (i == 0 ? "" : i + 1 == n ? " and " : ", ") + parts[i].second;
++        return parts.size() > n ? out + ", among other things" : out;
++    }
++}
++
++SimCaravan* World::CaravanOf(SimAgent const& a)
++{
++    if (!a.caravan) return nullptr;
++    for (SimCaravan& c : _caravans) if (c.id == a.caravan) return &c;
++    return nullptr;
++}
++
++void World::CaravanTick()
++{
++    auto names = [this](SimCaravan const& c) {
++        std::string out;
++        for (size_t i = 0; i < c.guards.size(); ++i)
++            if (SimAgent const* g = AgentById(c.guards[i]))
++                out += (out.empty() ? "" : i + 1 == c.guards.size() ? " and " : ", ") + g->FullName();
++        return out;
++    };
++    // the road takes its toll: guards beaten, fallen or hired away leave the caravan; with none left, it's lost
++    for (auto it = _caravans.begin(); it != _caravans.end();)
++    {
++        SimCaravan& c = *it;
++        std::erase_if(c.guards, [&](uint32 id) {
++            SimAgent* g = AgentById(id);
++            bool ok = g && g->status == AgentStatus::Active && g->caravan == c.id;
++            if (!ok && g && g->caravan == c.id) g->caravan = 0;
++            return !ok;
++        });
++        if (c.guards.empty())
++        {
++            if (c.state == 0)
++                Log(EventType::Caravan, Nobody(), c.to, Acore::StringFormat("The caravan from {} to {} never arrived. Its guards fell on the road, and its {} with them.",
++                    SiteName(c.from), SiteName(c.to), Cargo(c)), true);
++            it = _caravans.erase(it);
++        }
++        else ++it;
++    }
++
++    uint32 hour = HourOf(_clock);
++    if (hour < 6 || hour > 12) return;                     // wagons leave in the morning
++    uint32 towns = 0;
++    for (SimSite const& s : _sites) if (s.type == SiteType::Hub && (s.services & SVC_INN)) ++towns;
++    uint32 cap = std::clamp<uint32>(towns / 12, 2, 10);
++    Rng r(_seed, _clock, uint32(_caravans.size()), P_GEN + 600);
++    // towns with plenty, that haven't a wagon out already
++    std::vector<std::pair<uint32, uint32>> rich;                         // (town, goods + made)
++    for (auto const& [hub, g] : _market)
++    {
++        SimSite const* s = SiteById(hub);
++        if (!s || s->type != SiteType::Hub || !(s->services & SVC_INN)) continue;
++        if (std::ranges::any_of(_caravans, [hub](SimCaravan const& c) { return c.from == hub; })) continue;
++        uint32 goods = g[1] + g[2] + g[3] + g[4], made = 0;
++        if (auto it = _crafted.find(hub); it != _crafted.end()) for (uint32 v : it->second) made += v;
++        if (goods >= 60 || made >= 40) rich.emplace_back(hub, goods + made);
++    }
++    for (size_t i = rich.size(); i > 1; --i) std::swap(rich[i - 1], rich[r.Range(0, uint32(i) - 1)]);   // in no order
++    uint32 started = 0;
++    for (auto const& [from, stock] : rich)
++    {
++        if (_caravans.size() >= cap || started >= 2) break;
++        if (!r.Chance(0.35f)) continue;
++        SimSite const& f = *SiteById(from);
++        // guards: the town's own adventurers within a short walk, with nothing pressing, who like coin or the road
++        std::vector<std::pair<SimAgent*, uint32>> idle;                   // (agent, minutes to the town)
++        for (auto& [id, a] : _agents)
++        {
++            if (a.role != ROLE_ADVENTURER || a.status != AgentStatus::Active || a.caravan || a.bounty || a.party || a.wounds >= 40) continue;
++            if (a.home != from && a.site != from) continue;
++            if (a.doing == Verb::Goto || a.doing == Verb::Sleep || a.greed + a.wanderlust < 80) continue;
++            uint32 m = a.site == from ? 0 : TravelMinutes(a.site, from, a);
++            if (m <= 15) idle.emplace_back(&a, m);
++        }
++        if (idle.size() < 2) continue;
++        std::ranges::sort(idle, [](auto const& x, auto const& y) { return x.first->level != y.first->level ? x.first->level > y.first->level : x.first->id < y.first->id; });
++        SimAgent& lead = *idle[0].first;
++        // a town of the same side (or neutral) that has less than half of this one's stock, a long day's road away
++        std::vector<std::pair<uint32, uint32>> want;
++        for (SimSite const& s : _sites)
++        {
++            if (s.type != SiteType::Hub || !(s.services & SVC_INN) || s.map != f.map || s.id == from) continue;
++            if (!Welcome(lead, s) || (s.side != f.side && s.side != SIDE_NEUTRAL && f.side != SIDE_NEUTRAL)) continue;
++            if (s.regionLevel > lead.level + 3) continue;
++            uint32 have = 0;
++            if (auto it = _market.find(s.id); it != _market.end()) have += it->second[1] + it->second[2] + it->second[3] + it->second[4];
++            if (auto it = _crafted.find(s.id); it != _crafted.end()) for (uint32 v : it->second) have += v;
++            if (have * 2 >= stock) continue;
++            uint32 m = TravelMinutes(from, s.id, lead) * WAGON_NUM / WAGON_DEN;
++            if (m >= 30 && m <= 600) want.emplace_back(s.id, m);
++        }
++        if (want.empty()) continue;
++        auto [to, minutes] = want[r.Range(0, uint32(want.size()) - 1)];
++        ++started;
++
++        SimCaravan c; c.id = _nextCaravan++; c.from = from; c.to = to; c.pay = minutes; c.left = _clock;
++        auto& g = _market[from];
++        for (uint8 p = 1; p < PROF_COUNT; ++p) { c.goods[p] = g[p] / 2; g[p] -= c.goods[p]; }
++        auto& made = _crafted[from];
++        for (uint8 k = 0; k < CRAFT_COUNT; ++k) { c.made[k] = made[k] / 2; made[k] -= c.made[k]; }
++        uint32 want_guards = 2 + r.Range(0, 2), gather = 1;
++        for (auto const& [a, m] : idle)
++            if (c.guards.size() < want_guards && a->level + 8 >= lead.level && IsHordeRace(a->race) == IsHordeRace(lead.race))   // one side to a wagon
++                { c.guards.push_back(a->id); gather = std::max(gather, m + 1); }
++        if (c.guards.size() < 2) { --_nextCaravan; continue; }
++
++        // the road: on to the end, or (when it runs past nightfall) to an inn or a camp on the way, and on in the morning
++        uint32 tod = (_clock + gather) % MIN_PER_DAY, toNight = tod < 21 * 60 ? 21 * 60 - tod : 0;   // they leave once all are in
++        uint32 stop = minutes > toNight + 20 ? WayStop(lead, from, to, toNight * WAGON_DEN / WAGON_NUM) : 0;
++        std::vector<PlanStep> legs;
++        if (stop)
++        {
++            uint32 leg1 = std::max<uint32>(1, TravelMinutes(from, stop, lead) * WAGON_NUM / WAGON_DEN);
++            uint32 leg2 = std::max<uint32>(1, TravelMinutes(stop, to, lead) * WAGON_NUM / WAGON_DEN);
++            uint32 arrive = (tod + leg1 + 40) % MIN_PER_DAY;
++            uint32 sleep = std::max<uint32>(60, (6 * 60 + MIN_PER_DAY - arrive) % MIN_PER_DAY + r.Range(0, 30));
++            legs = { { Verb::Goto, stop, leg1 }, { Verb::Socialize, stop, 40 }, { Verb::Sleep, stop, sleep }, { Verb::Goto, to, leg2 } };
++        }
++        else
++            legs = { { Verb::Goto, to, minutes } };
++        legs.push_back({ Verb::Trade, to, 30 });
++        for (uint32 id : c.guards)
++            if (SimAgent* a = AgentById(id))
++            {
++                a->plan.clear();
++                uint32 walk = a->site == from ? 0 : std::max<uint32>(1, TravelMinutes(a->site, from, *a));
++                if (walk) a->plan.push_back({ Verb::Goto, from, walk });               // come into town...
++                a->plan.push_back({ Verb::Idle, from, std::max<uint32>(1, gather - walk) });   // ...and wait for the rest
++                a->plan.insert(a->plan.end(), legs.begin(), legs.end());
++                a->caravan = c.id; a->doing = a->plan.front().verb; a->wakeAt = _clock + std::max<uint32>(1, a->plan.front().minutes);   // the first step is under way
++                _requeue.push_back(a->id);
++            }
++        _caravans.push_back(c);
++        Log(EventType::Caravan, lead, from, Acore::StringFormat("A trader's caravan set out from {} for {} with {}, {} guarding it.", SiteName(from), SiteName(to), Cargo(c),
++            names(_caravans.back())), true, 0, int32(minutes));
++    }
++}
++
++void World::CaravanLeg(SimAgent& lead, uint32 from, uint32 to)
++{
++    SimCaravan* c = CaravanOf(lead);
++    if (!c || c->state || c->guards.empty() || c->guards.front() != lead.id) return;
++    SimSite const* f = SiteById(from); SimSite const* t = SiteById(to);
++    if (!f || !t || f->map != t->map) return;
++    for (SimCamp& k : _camps)
++    {
++        if (k.done || k.kind != CAMP_BAND || k.map != f->map || SegDist(k.x, k.y, f->x, f->y, t->x, t->y) > 500.0f) continue;
++        Rng r(_seed, c->id, _clock, P_FIGHT + 910);
++        if (!r.Chance(0.6f)) continue;                     // a wagon's worth robbing - most bands try
++        std::vector<SimAgent*> gs; float guard = 0.0f; std::string who;
++        for (uint32 id : c->guards)
++            if (SimAgent* g = AgentById(id); g && g->status == AgentStatus::Active)
++            {
++                gs.push_back(g);
++                guard += float(g->level) * float(100 - g->wounds) / 100.0f;
++            }
++        for (size_t i = 0; i < gs.size(); ++i) who += (i == 0 ? "" : i + 1 == gs.size() ? " and " : ", ") + gs[i]->FullName();
++        float band = float(k.level) * float(k.alive) * 0.9f;
++        std::string place = AreaOf(SiteName(k.site));
++        if (r.Chance(guard / std::max(1.0f, guard + band)))
++        {
++            uint32 n = std::min<uint32>(k.alive, r.Range(1, 3));
++            for (SimAgent* g : gs) g->wounds = uint8(std::min<uint32>(95, g->wounds + r.Range(5, 20)));
++            Log(EventType::Caravan, lead, to, Acore::StringFormat("{} fell on the caravan from {} to {} near {}. {} drove them off.", Plural(k.name), SiteName(c->from),
++                SiteName(c->to), place, who), true);
++            for (uint32 i = 0; i < n; ++i) CampLossLocked(k, who);
++        }
++        else
++        {
++            c->state = 1; c->goods.fill(0); c->made.fill(0);
++            for (SimAgent* g : gs) g->wounds = uint8(std::min<uint32>(95, g->wounds + r.Range(30, 60)));
++            for (SimBounty& b : _bounties)
++                if (!b.done && b.target == (k.id | CAMP_MARK)) b.reward += b.reward / 2;
++            k.until = std::max<SimTime>(k.until, _clock + 2 * MIN_PER_DAY);
++            Log(EventType::Caravan, lead, to, Acore::StringFormat("{} robbed the caravan from {} to {} near {}. {} limped on behind empty wagons; the price on that camp went up.",
++                Plural(k.name), SiteName(c->from), SiteName(c->to), place, who), true);
++        }
++        return;                                             // one camp a stretch
++    }
++}
++
++void World::CaravanArrive(SimAgent& a)
++{
++    SimCaravan* c = CaravanOf(a);
++    a.caravan = 0;
++    if (!c || a.site != c->to) return;
++    uint32 pay = uint32(a.level) * a.level * 3 + c->pay * a.level / 2 + 100;   // a day's hire, by level and the length of the road
++    if (c->state == 1) pay /= 3;                                                 // robbed: the trader pays what's left
++    a.money += pay;
++    if (c->state == 0)
++    {
++        auto& g = _market[c->to];
++        for (uint8 p = 1; p < PROF_COUNT; ++p) g[p] += c->goods[p];
++        auto& made = _crafted[c->to];
++        for (uint8 k = 0; k < CRAFT_COUNT; ++k) made[k] = std::min<uint32>(CRAFT_CAP, made[k] + c->made[k]);
++        Log(EventType::Caravan, a, c->to, Acore::StringFormat("The caravan from {} came into {} with {}. Its guards were paid off.", SiteName(c->from), SiteName(c->to), Cargo(*c)), true);
++        c->state = 2;
++    }
++    else if (c->state == 1)
++    {
++        Log(EventType::Caravan, a, c->to, Acore::StringFormat("What was left of the caravan from {} limped into {} with nothing to sell.", SiteName(c->from), SiteName(c->to)), true);
++        c->state = 3;
++    }
++    std::erase(c->guards, a.id);
++    if (c->guards.empty())
++        std::erase_if(_caravans, [id = c->id](SimCaravan const& x) { return x.id == id; });
++}
++
+ } // namespace SoloSim
+diff --git a/src/server/game/SoloSim/solosim.h b/src/server/game/SoloSim/solosim.h
+index 24a1fbe..4a2778e 100644
+--- a/src/server/game/SoloSim/solosim.h
++++ b/src/server/game/SoloSim/solosim.h
+@@ -78,6 +78,11 @@ namespace SoloSim
+     constexpr uint32 CAMP_MARK = 0x40000000;     // ... with this bit, a roadside camp's id
+     // A band that has made camp by a road where its kind isn't normally found; spawned for real when a player comes near.
+     enum CampKind : uint8 { CAMP_BAND = 0, CAMP_HERD = 1, CAMP_PACK = 2 };   // a camp by the road / grazers that move / predators that follow them
++    // a caravan (Nov 17): a trader's goods going from a town with plenty to one that's short, at a wagon's pace, with
++    // adventurers hired to guard it. Its guards travel as one (the same legs, the same nights); bandits by the road may
++    // fall on it. state: 0 on the road, 1 robbed (going on empty)
++    struct SimCaravan { uint32 id = 0, from = 0, to = 0; std::vector<uint32> guards; std::array<uint32, 5> goods{}; std::array<uint32, 4> made{};
++                        uint32 pay = 0; SimTime left = 0; uint8 state = 0; };
+     struct SimCamp { uint32 id = 0, map = 0, entry = 0, town = 0, site = 0; float x = 0, y = 0, z = 0; std::string name; uint8 level = 1, size = 0, alive = 0; SimTime made = 0, until = 0; bool done = false; uint8 kind = CAMP_BAND; uint32 home = 0; };   // a bounty target with this bit is a threat's agent id, not a creature entry
+     enum Job : uint8 { JOB_NONE = 0, JOB_FARMHAND = 1, JOB_LABORER = 2, JOB_MARKET = 3, JOB_LOAFER = 4,
+                        JOB_SMITH = 5, JOB_ALCHEMIST = 6, JOB_COOK = 7, JOB_LEATHERWORKER = 8 };   // crafters (Nov 17)
+@@ -109,6 +114,7 @@ namespace SoloSim
+         SimTime born = 0;
+         std::string gear;                 // the kit their body wears: "slot:entry:suffix:enchant,..." (empty = not seen yet)
+         uint8 potions = 0;                // healing potions carried: bought in towns, drunk when a fight turns bad
++        uint32 caravan = 0;               // guarding this caravan (not saved: rebuilt from sim_caravan) (Nov 17)
+         uint8 gearDue = 0;                // pieces due a change (levels gained since last seen)
+         uint8 age0 = 0;                   // age (years) when born was set; a year passes every game week (see Age())
+         AgentStatus status = AgentStatus::Active;
+@@ -153,7 +159,8 @@ namespace SoloSim
+         Newcomer = 15, LeftRegion = 16, Broke = 17, PartyFormed = 18, Gathered = 19, SkillUp = 20, RareFind = 21,
+         BountyPosted = 22, BountyTaken = 23, BountyDone = 24, BountyExpired = 25, Trained = 26, Weather = 27, FellBeside = 28,
+         RareSlain = 29, BountyAbandoned = 30, RareRepelled = 31, PlayerHelped = 32, Hired = 33, Dismissed = 34, PlayerBounty = 35,
+-        Clash = 36                                         // Alliance and Horde adventurers came to blows (Nov 17)
++        Clash = 36,                                        // Alliance and Horde adventurers came to blows (Nov 17)
++        Caravan = 37                                       // a caravan set out, was attacked, robbed, arrived (Nov 17)
+     };
+ 
+     struct SimEvent
+@@ -214,6 +221,8 @@ namespace SoloSim
+         uint32 services = 0;
+         Verb verb = Verb::Idle;           // what they do there (Idle while travelling)
+         bool camp = false;                // sleeping or sitting about by a campfire, away from any inn (Nov 17)
++        bool caravanLead = false;         // the first guard of a caravan on the road: the pack animal walks with them
++        bool horde = false;
+         uint32 goalNode = 0;              // road node serving the site
+         uint8 role = 0, job = 0;
+         float homeX = 0, homeY = 0, homeZ = 0;   // their home town's centre
+@@ -460,6 +469,11 @@ namespace SoloSim
+         float DangerFor(SimAgent const& a, uint32 site) const;
+         bool AtCamp(SimAgent const& a) const;   // an adventurer resting away from any inn: a camp (Nov 17)
+         uint32 WayStop(SimAgent const& a, uint32 from, uint32 to, uint32 afterMinutes) const;   // where to stop for the night on a journey
++        void CaravanTick();                                       // caravans set out (Nov 17)
++        void CaravanLeg(SimAgent& lead, uint32 from, uint32 to);  // a stretch of road behind them: bandits?
++        void CaravanArrive(SimAgent& a);                          // a guard reached the end of the road
++        SimCaravan* CaravanOf(SimAgent const& a);
++        std::vector<SimCaravan> _caravans; uint32 _nextCaravan = 1;
+         bool IsCapital(SimSite const& s) const;
+         void FileCapitals();                           // towns inside the Horde's capitals belong to the city
+         uint32 DockTown(uint32 map, float x, float y, SimAgent const& a) const;   // the town serving a boat or zeppelin dock
+-- 
+2.56.0.windows.2
+

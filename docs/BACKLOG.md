@@ -146,6 +146,16 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
     quarter more for the haul, up to 30-90 min away). Your companions sit down by your fire and get Cozy Fire too.
     48 h test: 158 places seen, 12 nights stopped at an inn on the way, 16 auction hauls, ~1000 camp nights vs ~14000
     at inns. Deaths up to ~21 per 61 h (12 of them in clashes: more road, more meetings - the war).
+  - **Caravans, Nov 17 (13:50), not yet seen in game:** a town with plenty (60+ goods in its market or 40+ made things)
+    sends half of it by wagon, in the morning, to a town of its side (or neutral) with less than half as much, 30 min
+    to 10 h away at a wagon's pace (foot x 1.7). Two to four of the town's adventurers (of one side, within 15 min,
+    who like coin or the road) come in and guard it; they walk beside it as one - the same legs, the same night at an
+    inn or a camp on the way - and near you the lead guard has its pack animal (Pack Mule for the Alliance, Gizelton
+    Caravan Kodo for the Horde). A bandit camp by the road tries it (60%): driven off (camp losses), or robbed (wagons
+    emptied, guards hurt, the price on that camp up half again). At the end: goods into the market and shelves, guards
+    paid (lvl^2 x 3 + road minutes x lvl / 2 + 1 s; a third if robbed). Caravans are news (rumours, boards). sim_caravan.
+    48 h test: 18 set out, 17 arrived, 1 fought off, 1 robbed. The restless now move home further too (any fitting town
+    up to four times as far). Next: you as a guard (an errand at the trader), robbing them yourself, caravans at sea.
   - Dialogue: "might be time to consider a text generator" for natural talk about world events, life and rumours,
     with you and between NPCs. NOTE: the standing rule so far is templated NPC text only, no AI-generated text - the
     user is reopening that; options when we get there: a bigger procedural grammar (combinatorial templates fed by the
