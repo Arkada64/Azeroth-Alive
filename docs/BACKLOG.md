@@ -28,8 +28,7 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
     free bench seat (one each) or stand by a fire - as the townsfolk do.
   - Fixes from the 06:32 playtest: boards only where you can walk from the town square, at street level (Goldshire's
     was up in the floors); townsfolk never move where there's no walking path (they "flew" to seats upstairs and
-    such; a door out of reach just takes them in); murlocs: skills/languages/armour they lack are given at login (Roro
-    had no Orcish or armour skills - made before the fix), weapons re-shown every second while talking to NPCs;
+    such; a door out of reach just takes them in) (murloc race fixes here since removed);
     starting camps (Northshire, Coldridge, Aldrassil, Shadowglen, the Valley of Trials, Camp Narache, Deathknell) have
     8 young adventurers each (1-6) and most newcomers begin there (they stood empty: only inn towns had adventurers);
     the innkeepers' 153 letters were deleted (with the user's OK).
@@ -59,9 +58,7 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
   goings, ambitions done - not socialising); an escorted townsperson settles where you took them (their new home, the
   body stays); townsfolk hold still while you talk (45 s, renewed by each choice, "Good day." releases); the talk
   animation now comes with words in /say when you're within 25 yd (templated small talk by job, or the town's news, at
-  most once a minute each); murlocs take the Trolls' starting kits, action bars and shared class skills (the Undead
-  have no shamans or hunters, so those got nothing) - server side applied, client patch-X rebuilt when WoW is closed;
-  an existing murloc shaman needs re-creating. The list:
+  most once a minute each). The list:
   - Fixes (quick): townsfolk work pays far too much (11 silver to walk someone Stormwind -> Goldshire) - pay by level,
     danger and distance, money shouldn't come easily; far fewer townsfolk with requests (more had one than not);
     rumours: drop the "X shared stories with Y" kind - only what a listener would want to know; an escorted townsperson
@@ -392,7 +389,7 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
 - Keep race/patch/asset tooling client-neutral.
 
 ## 11. Playable races (stock client)
-- **Order (Nov 16, the user's call): Worgen, then Murloc.** Worgen from the public AzerothCore worgen module
+- **Order (Nov 16, the user's call): Worgen, then Murloc** (custom races dropped Nov 17, see below). Worgen from the public AzerothCore worgen module
   (its client patch + server side), adapted to our core. Murloc built by us, borrowing the Tauren client prefix for
   helmets (see RACES-SURVEY.md). Both must work as NPCs too: our own CreatureDisplayInfoExtra looks in our patch,
   the race in the sim's race pools (townsfolk, adventurers, NPCBots), and faction/reputation so guards and
@@ -407,79 +404,15 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
   recommended patcher, run by the player on the clean 12340 exe) so the new character-creation screen loads; then
   worgen NPCs (NPCBots' race tables stop at 11; looks; sim race pools) and the class list (the module also allows
   Death Knight).
-- **Murloc v1, built Nov 17 (just after midnight), not yet seen in game:** scripts/races/murloc.py builds our own
-  tables + client patch (Data/patch-X.MPQ, loads after patch-W) from the stock client and the module's glue screens;
-  scripts/races/murloc.sql the server rows. Race 15 (the stock NPC "Skeleton" slot - only ~25 NPC looks use it; they
-  may look wrong now), Horde, Orcish, Forsaken reputations (every Horde-wide skill/language/reputation row widened to
-  include murlocs). Body: the game's creature murloc (weapons in hand), skin colours = the five murloc skins; armour
-  counts but isn't drawn (solosim_races.cpp hides non-weapon visible slots, so the character list hides it too).
-  Classes Warrior/Hunter/Rogue/Priest/Shaman/Mage, Undead starting kits. Racials for now from stock spells:
-  Underwater Breathing, Nature Resistance, Quickness (dodge). Start: east shore of Brightwater Lake, Tirisfal (the
-  clearest spot, ~60 yd from the nearest hostile; mobs there are 6-9, so head to Brill/Deathknell). Creation screen:
-  a 13th race button, Undead icon/background for now. Unknowns to test: whether the stock exe lists a 13th race,
-  animations missing from the creature model (jump, emotes, sitting), the camera. Next: our own racial spells, an icon,
-  murloc NPCs (friendly murloc townsfolk), the 25 skeleton looks.
-- **Murloc in game, Nov 17:** works - creation screen, entering the world, fighting. Fixed on the way: the skin is now
-  baked into the model (the composited character skin came out blank), full customization grids (switching races
-  crashed the client on missing entries), clothes left out of the creation preview, sheath points added on the back
-  and hips. Start moved to Deathknell (Brightwater Lake was ringed by level 5-7s). Still: no jump/sit/emote
-  animations (the creature model has none - needs animation merging from the murloc costume model or new ones), skin
-  colours (one model per colour, or a working composite), our own racials and icon, the customization rows that do
-  nothing, unsheathing outside combat to check.
-- **Murloc, second pass, Nov 17 (05:05), not yet seen in game** (the user's playtest: no starter quests, sheathing
-  broken and back weapons misaligned, instant looting, no class spells or auto-attack for a shaman):
-  - spells/bars/kits: the Trolls' (all six murloc classes; the Undead have no shamans or hunters, so those got nothing),
-    shared class skills from rows trolls share with another Horde race - existing murloc characters need re-creating;
-  - quests: murlocs are in every quest, item, race condition and area-aura mask that has the Undead or the Trolls -
-    2257 quests incl. Deathknell's whole chain, 4924 items, 33 conditions (no mask had bit 16384 before);
-  - weapons always drawn (the body has no sheath animations or proper back/hip points; murlocs carry them in hand);
-  - looting waits 0.9 s (no kneel animation, the window opened at once);
-  - own icon: the game's murloc head icon on the race button and portrait (was the Undead's);
-  - the 25 "Skeleton" NPC looks now use the Undead body (they'd have drawn as murlocs);
-  - jumping falls back to the swimming paddle (as falling already did) instead of standing upright. **Didn't work**
-    (the user, Nov 17): the client finds an animation by exact id in the model's hash table and ignores the
-    fallback for this. Fixed in the model itself (murloc.py): four new sequences - JumpStart, Jump and Fall copy the
-    swimming paddle, JumpEnd copies standing - with every animated track (34 bone tracks, attachments, 18 events,
-    camera) given entries pointing at the source sequence's keys (no new motion data), and the hash table rebuilt
-    (67 slots). Checked: every animation resolves, every track has 0 or 33 entries, nothing points outside the file.
-  Still open: sit/emote animations (need animations made for this model - the fallback trick only fits jumps), skin
-  colours (one baked texture; needs a working composite), our own racials, the customization rows that do nothing.
-  Same check for the other races: Worgen and Goblin come from mod-worgoblin, whose SQL already widens quests, items
-  and starting skills/bars for them; Tuskarr/Furbolg/Naga will need this whole list from the start.
-- Classes (the user's convention, Nov 16): follow what Reforged allows in play, then adjust by each race's lore
-  and nature as we go. Murloc: Warrior, Hunter, Rogue, Priest, Shaman, Mage (no Paladin, Death Knight, Warlock,
-  Druid - as seen in their game; their file tables still list Warlock, so their server trims it). Worgen:
-  Warrior, Hunter, Rogue, Priest, Mage, Warlock, Druid (their list; Cataclysm also had Death Knight - decide later).
-- Start zones (proposed, not yet confirmed): Worgen in Teldrassil (Gilneas refugees taken in by the night elves;
-  3.3.5's Gilneas terrain isn't playable) unless the module's own start is better; Murloc on Tirisfal's north coast
-  (low-level murloc camps by Brill, matches Reforged's undead/troll starter kits) as Horde, or a neutral murloc
-  village if we want them outside the war.
-- **Naga, Tuskarr, Furbolg v1, built Nov 17 (07:30), not yet seen in game** - scripts/races/newraces.py (run after
-  murloc.py) and its generated newraces.sql, everything the murloc's second pass needed, from the start:
-  - Naga, race 13, Horde: the game's naga body; Warrior, Hunter, Priest, Shaman, Mage; starts on Sunstrider Isle
-    (Eversong); kits/bars from the trolls (warrior, shaman) and blood elves (the rest); Orcish; blood-elf and troll
-    quests; racials Underwater Breathing, Frost Resistance.
-  - Tuskarr, race 17, Alliance (balancing the goblins): the game's tuskarr body (the female is the male model -
-    the game has no other); Warrior, Hunter, Priest, Shaman, Mage; **starts in Coldridge Valley (Dun Morogh) - to
-    confirm**; kits from dwarves (warrior, hunter, priest), draenei (shaman), gnomes (mage); Common; dwarf and gnome
-    quests; racials Frost Resistance, Endurance.
-  - Furbolg, race 20 (was "Northrend Skeleton"; its 37 NPC looks moved to the Undead body), Alliance: the creature
-    furbolg with its brown skin baked in, weapons in hand like the murloc (it has jump/sit animations already);
-    Warrior, Hunter, Shaman, Druid; starts in Ammen Vale beside the draenei (Stillpine Hold is just north);
-    draenei kits (night-elf for druids); Common; draenei and night-elf quests; racials Nature Resistance, Endurance.
-  - All three: armour hidden on the body, language/skill repair at login, full customization grids (no crash on
-    switching), own icons on the creation screen (Lady Vashj, Tuskarr and Timbermaw achievement icons), borrowed
-    backgrounds (Blood Elf, Dwarf, Draenei), lore text. Still open: one skin each, own racials, own scenes.
-- Earlier plan: **Furbolg** and **Naga**. Furbolg can start in the draenei area - the Stillpine
-  furbolgs of Azuremyst Isle (Stillpine Hold) are already the draenei's allies there (needs map 530). Naga: Horde,
-  starting in Eversong Woods (the user's pick) - Highborne kin of the blood elves, and Vashj's naga stood with
-  Kael'thas; the Eversong coast suits them (also map 530).
-- Murloc (and naga): understand how an existing custom-race client does it (survey their patch, diff tables against
-  stock, find what their Wow.exe changes and why), then build our own from scripts - table edits, model conversion
-  (creature model -> character model), creation screen, an exe patcher written from that understanding and public
-  docs - never copying their files. Server: race in core + world DB (start zone, stats, racials, faction, language).
-- Sooner, in the sim: murloc and naga people with their creature models (Winterfin Retreat is a neutral murloc town),
-  naga as a faction or threat.
+- **Custom races removed, Nov 17 (12:40, the user's call): Worgen and Goblin only.** Murloc (15), Naga (13), Tuskarr
+  (17) and Furbolg (20) were built (murloc.py / newraces.py) but taken out: every playable race needs its own stock
+  slot, and the NPC looks already in that slot then draw on the new body (the 37 Northrend Skeleton looks would have
+  been furbolgs, the 25 Skeleton looks murlocs), on top of the extra work each body needed (animations, sheathing,
+  skins). Removed: the characters (Roro), client patch-X.MPQ, the server tables (back to the worgoblin state), the
+  world-DB rows and race-mask bits, solosim_races.cpp and the loot delay, the scripts (git history keeps them).
+  Murlocs, naga and the rest stay in the world as creatures - the sim can still use them as people or threats.
+- Still to do for the two we keep: worgen and goblin NPCs (NPCBots' race tables stop at 11; looks; the sim's race
+  pools), the class list (the module also allows Death Knight).
 
 ## 12. VERY LAST - only when everything above is done and dusted (the user, Nov 17)
 - **Experiment: host the world for other players over Spacewar** (Steam's free test app, ID 480, which hobby projects

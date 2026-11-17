@@ -32,6 +32,5 @@ Build from source instead of downloading: clone the core at the pinned commit, a
 - Bundling/fetching the MySQL 8.4 zip and the VC++ redistributable.
 ## World-DB scripts the installer must apply (in order, after the core's own updates)
 - `scripts/era-db.ps1` (Era preset: quest map areas, riding levels)
-- `scripts/races/murloc.sql` (after `scripts/races/murloc.py` has built the tables and patch-X.MPQ)
 - `scripts/sim_quests.sql` (the 95000-95999 quest pool for townsfolk requests in the quest log)
 - mod-worgoblin's own SQL is applied by the core updater (fetch the module into core/modules first)
