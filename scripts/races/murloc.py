@@ -59,6 +59,69 @@ while len(m2) % 16: m2 += b"\0"
 at = len(m2); m2 += b"".join(atts); struct.pack_into("<II", m2, 0xF0, len(atts), at)
 while len(m2) % 16: m2 += b"\0"
 at = len(m2); m2 += struct.pack(f"<{len(lookup)}h", *lookup); struct.pack_into("<II", m2, 0xF8, len(lookup), at)
+# ---- animations the creature murloc lacks (Nov 17: it jumped standing bolt upright). The game finds an animation by its
+#      exact id through a hash table (id % size, linear probing), so a missing one can't just point somewhere else: it
+#      needs a sequence of its own. New sequences are copies of the murloc's own (JumpStart/Jump/Fall: the swimming
+#      paddle; JumpEnd: standing), and every animated track gets an entry for each new sequence pointing at the source
+#      sequence's keys - no new motion data, the stock model's own motion under new labels.
+SEQ_SIZE = 64
+sn, so = struct.unpack_from("<II", m2, 28)
+seqs = [bytearray(m2[so + i * SEQ_SIZE: so + (i + 1) * SEQ_SIZE]) for i in range(sn)]
+def seq_index(anim_id):
+    return next(i for i, s in enumerate(seqs) if struct.unpack_from("<HH", s)[0] == anim_id and struct.unpack_from("<HH", s)[1] == 0)
+NEW = [(37, seq_index(41)), (38, seq_index(41)), (39, seq_index(0)), (40, seq_index(41))]   # (new anim id, copied from)
+have_ids = {struct.unpack_from("<H", s)[0] for s in seqs}
+NEW = [(a, src) for a, src in NEW if a not in have_ids]
+if NEW:
+    first_new = len(seqs)
+    for k, (aid, src) in enumerate(NEW):
+        s = bytearray(seqs[src]); idx = first_new + k
+        struct.pack_into("<HH", s, 0, aid, 0)            # id, variation 0
+        struct.pack_into("<hh", s, 60, -1, idx)          # no further variation; its own alias
+        seqs.append(s)
+    def align():
+        global m2
+        while len(m2) % 16: m2 += b"\0"
+    def extend_array(field_at):
+        """an M2Array of per-sequence M2Arrays at field_at: if it has one entry per sequence, add the new ones"""
+        global m2
+        n, off = struct.unpack_from("<II", m2, field_at)
+        if n != sn: return
+        entries = [m2[off + 8 * i: off + 8 * (i + 1)] for i in range(n)] + [m2[off + 8 * src: off + 8 * (src + 1)] for _, src in NEW]
+        align(); at = len(m2); m2 += b"".join(entries)
+        struct.pack_into("<II", m2, field_at, len(entries), at)
+    def extend_track(track_at, values=True):
+        """an M2Track (interp, global seq, timestamps, values) - not tied to a global sequence"""
+        if struct.unpack_from("<h", m2, track_at + 2)[0] != -1: return
+        extend_array(track_at + 4)
+        if values: extend_array(track_at + 12)
+    bn, bo = struct.unpack_from("<II", m2, 44)                       # bones: translation, rotation, scale
+    for i in range(bn):
+        for k in range(3): extend_track(bo + i * 88 + 16 + k * 20)
+    tn, to = struct.unpack_from("<II", m2, 88)                       # texture weights (transparency)
+    for i in range(tn): extend_track(to + i * 20)
+    an_, ao_ = struct.unpack_from("<II", m2, 0xF0)                   # attachments (incl. the sheath points above)
+    for i in range(an_): extend_track(ao_ + i * 40 + 20)
+    en, eo = struct.unpack_from("<II", m2, 256)                      # events: timestamps only
+    for i in range(en): extend_track(eo + i * 36 + 24, values=False)
+    cn, co = struct.unpack_from("<II", m2, 272)                      # cameras: position, target, roll
+    for i in range(cn):
+        for k in (16, 48, 80): extend_track(co + i * 100 + k)
+    for name, off in (("colors", 72), ("texture transforms", 96), ("lights", 264), ("ribbons", 288), ("particles", 296)):
+        assert struct.unpack_from("<I", m2, off)[0] == 0, f"murloc model has {name} now - extend their tracks too"
+    align(); at = len(m2); m2 += b"".join(seqs); struct.pack_into("<II", m2, 28, len(seqs), at)
+    # the lookup hash, rebuilt: each animation's first variation at id % size, probing forward
+    size = max(struct.unpack_from("<I", m2, 36)[0], 2 * len(seqs) + 1)
+    table = [-1] * size
+    for i, s in enumerate(seqs):
+        aid, var = struct.unpack_from("<HH", s)
+        if var: continue
+        h = aid % size
+        while table[h] != -1: h = (h + 1) % size
+        table[h] = i
+    align(); at = len(m2); m2 += struct.pack(f"<{size}h", *table); struct.pack_into("<II", m2, 36, size, at)
+    print("animations added:", [a for a, _ in NEW], "-> sequences", len(seqs))
+
 for sex in ("Male", "Female"):
     open(OUT + rf"\Character\Murloc\{sex}\Murloc{sex}.m2", "wb").write(m2)
     shutil.copy(MODEL + r"\Murloc00.skin", OUT + rf"\Character\Murloc\{sex}\Murloc{sex}00.skin")

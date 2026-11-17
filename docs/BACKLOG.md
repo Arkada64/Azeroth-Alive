@@ -428,7 +428,12 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
   - looting waits 0.9 s (no kneel animation, the window opened at once);
   - own icon: the game's murloc head icon on the race button and portrait (was the Undead's);
   - the 25 "Skeleton" NPC looks now use the Undead body (they'd have drawn as murlocs);
-  - jumping falls back to the swimming paddle (as falling already did) instead of standing upright.
+  - jumping falls back to the swimming paddle (as falling already did) instead of standing upright. **Didn't work**
+    (the user, Nov 17): the client finds an animation by exact id in the model's hash table and ignores the
+    fallback for this. Fixed in the model itself (murloc.py): four new sequences - JumpStart, Jump and Fall copy the
+    swimming paddle, JumpEnd copies standing - with every animated track (34 bone tracks, attachments, 18 events,
+    camera) given entries pointing at the source sequence's keys (no new motion data), and the hash table rebuilt
+    (67 slots). Checked: every animation resolves, every track has 0 or 33 entries, nothing points outside the file.
   Still open: sit/emote animations (need animations made for this model - the fallback trick only fits jumps), skin
   colours (one baked texture; needs a working composite), our own racials, the customization rows that do nothing.
   Same check for the other races: Worgen and Goblin come from mod-worgoblin, whose SQL already widens quests, items
