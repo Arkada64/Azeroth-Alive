@@ -1,0 +1,120 @@
+From 447d602089b4d968441855855c4a19f67e8e510b Mon Sep 17 00:00:00 2001
+From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 01:00:59 -0600
+Subject: [PATCH 12/12] SoloSim: clash grudges become revenge ambitions;
+ clashes at 15%
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01JU37XfnHTvru3VVz2sNN7z
+---
+ src/server/game/SoloSim/solosim.cpp | 33 ++++++++++++++++++++++++-----
+ src/server/game/SoloSim/solosim.h   |  3 ++-
+ 2 files changed, 30 insertions(+), 6 deletions(-)
+
+diff --git a/src/server/game/SoloSim/solosim.cpp b/src/server/game/SoloSim/solosim.cpp
+index 0f1bea3..cb071f7 100644
+--- a/src/server/game/SoloSim/solosim.cpp
++++ b/src/server/game/SoloSim/solosim.cpp
+@@ -1166,6 +1166,15 @@ void World::CheckAmbition(SimAgent& a)
+                 what = Acore::StringFormat("avenged {} at {}", f ? f->FullName() : std::string("a friend"), SiteName(a.ambitionTarget));
+             }
+             break;
++        case AmbitionType::Revenge:
++        {
++            SimAgent* f = AgentById(a.avengeFor);
++            if (!f || f->status == AgentStatus::Dead || f->status == AgentStatus::Gone)
++                done = true, what = Acore::StringFormat("let the grudge against {} go - they are gone", f ? f->FullName() : std::string("their enemy"));
++            else if (a.ambitionProgress >= 80)                     // searched long enough
++                done = true, what = Acore::StringFormat("gave up looking for {} near {}", f->FullName(), SiteName(a.ambitionTarget));
++            break;
++        }
+         default: break;
+     }
+     if (!done) return;
+@@ -1829,7 +1838,7 @@ void World::ResolveFight(SimAgent& a, SimSite const& site, uint32 minutes)
+     a.lootValue += copper;
+     if (skins) { a.goodsUnits[PROF_SKINNING] += skins; SkillUp(a, uint8(skinSlot), skins); }
+     a.fatigue = uint8(std::min<uint32>(100, a.fatigue + minutes * 7 / 60));
+-    if (a.ambition == AmbitionType::Avenge && a.ambitionTarget == site.id) a.ambitionProgress += kills;
++    if ((a.ambition == AmbitionType::Avenge || a.ambition == AmbitionType::Revenge) && a.ambitionTarget == site.id) a.ambitionProgress += kills;
+     if (a.bounty)
+         for (SimBounty const& b : _bounties)
+             if (b.id == a.bounty && b.site == site.id && b.kind != BOUNTY_RARE) a.bountyProgress += kills;
+@@ -1858,11 +1867,14 @@ bool World::Clash(SimAgent& a, SimSite const& site)
+             if (!os || os->map != site.map || Dist2d(os->x, os->y, site.x, site.y) > 350.0f) continue;
+         }
+         if (auto it = _lastClash.find(o.id); it != _lastClash.end() && it->second + MIN_PER_DAY > _clock) continue;
++        bool grudge = (a.ambition == AmbitionType::Revenge && a.avengeFor == o.id) || (o.ambition == AmbitionType::Revenge && o.avengeFor == a.id);
++        if (grudge) { foe = &o; break; }                           // the one they swore to find: nobody else matters
+         if (!foe || o.level > foe->level) foe = &o;                // the most dangerous of them is the one who matters
+     }
+     if (!foe) return false;
+     Rng r(_seed, a.id ^ (foe->id << 12), _clock, P_FIGHT + 950);
+-    if (!r.Chance(0.35f)) return false;                            // the ground is wide: often they never cross paths
++    bool sought = (a.ambition == AmbitionType::Revenge && a.avengeFor == foe->id) || (foe->ambition == AmbitionType::Revenge && foe->avengeFor == a.id);
++    if (!sought && !r.Chance(0.15f)) return false;                 // the ground is wide: often they never cross paths
+     _lastClash[a.id] = _lastClash[foe->id] = _clock;
+     uint32 na = PartySize(a), nf = PartySize(*foe);
+     auto strength = [&](SimAgent const& x, uint32 n) { return float(x.level) * 4.0f + x.gearTier / 10.0f + float(n - 1) * 14.0f + r.Float() * 20.0f; };
+@@ -1871,7 +1883,7 @@ bool World::Clash(SimAgent& a, SimSite const& site)
+     char const* them = horde ? "the Alliance" : "the Horde";
+     // seeing a fight they can't win, the careful walk away (both sides keep a grudge)
+     SimAgent& weaker = sa < sf ? a : *foe;
+-    if (std::abs(sa - sf) > 25.0f && r.Chance(weaker.caution / 120.0f))
++    if (!sought && std::abs(sa - sf) > 25.0f && r.Chance(weaker.caution / 120.0f))
+     {
+         _memories.push_back({ a.id, 1, foe->id, uint8(EventType::Clash), -30, 40, _clock });
+         _memories.push_back({ foe->id, 1, a.id, uint8(EventType::Clash), -30, 40, _clock });
+@@ -1896,6 +1908,17 @@ bool World::Clash(SimAgent& a, SimSite const& site)
+         _culprit.clear();
+         if (&lose != &a) _requeue.push_back(lose.id);                // their plans changed outside their own wake
+     }
++    if (win.ambition == AmbitionType::Revenge && win.avengeFor == lose.id)
++    {
++        Log(EventType::AmbitionDone, win, site.id, Acore::StringFormat("{} had their revenge on {} near {}.", Who(win), lose.FullName(), place), true, lose.id);
++        SetAmbition(win);
++    }
++    // the beaten and the bold swear to pay it back - on the same ground, where the other side hunts
++    if (lose.status != AgentStatus::Dead && lose.ambition != AmbitionType::Revenge && lose.bravery > 45 && r.Chance(lose.bravery / 100.0f))
++    {
++        lose.ambition = AmbitionType::Revenge; lose.ambitionTarget = site.id; lose.ambitionProgress = 0; lose.avengeFor = win.id;
++        Log(EventType::AmbitionSet, lose, site.id, Acore::StringFormat("{} swore to pay {} back for what happened near {}.", lose.FullName(), win.FullName(), place), true, win.id);
++    }
+     return &lose == &a && a.status != AgentStatus::Active;           // beaten (or worse); a bloodied loser hunts on
+ }
+ 
+@@ -3031,7 +3054,7 @@ void World::Decide(SimAgent& a)
+     float growth = 45.0f + a.bravery * 0.25f - a.wounds * 0.6f - a.fatigue * 0.3f - (night ? 30.0f : 0.0f) - (rain ? 15.0f : 0.0f) + noise();
+     float hoursAlone = float(_clock - std::min(_clock, a.lastSocial)) / 60.0f;
+     float ties   = a.sociability * 0.35f + std::min(40.0f, hoursAlone / 2.0f) + ((MinutesToBed(a) <= 4 * 60 && !night) ? 20.0f : 0.0f) + (rain ? 20.0f : 0.0f) - 25.0f + noise();
+-    float ambition = (a.ambition == AmbitionType::SeePlace || a.ambition == AmbitionType::Avenge) ? 20.0f + a.wanderlust * 0.4f + noise() : 0.0f;
++    float ambition = (a.ambition == AmbitionType::SeePlace || a.ambition == AmbitionType::Avenge || a.ambition == AmbitionType::Revenge) ? 20.0f + a.wanderlust * 0.4f + noise() : 0.0f;
+     float moveOn = HasFittingHunt(a, a.home, 2500.0f) ? 0.0f : 120.0f;
+     bool canGather = std::ranges::any_of(a.prof, [](uint8 p) { return p == PROF_MINING || p == PROF_HERBALISM || p == PROF_FISHING; });
+     float work   = canGather ? 20.0f + a.greed * 0.25f + (a.money < uint32(a.level) * a.level * 100 ? 20.0f : 0.0f) - (night ? 35.0f : 0.0f) - (rain ? 10.0f : 0.0f) - a.fatigue * 0.2f + noise() : -1.0f;
+@@ -3111,7 +3134,7 @@ void World::Decide(SimAgent& a)
+             break;
+         case AMBITION:
+             goTo(a.ambitionTarget, a.ambition == AmbitionType::SeePlace);
+-            if (a.ambition == AmbitionType::Avenge) a.plan.push_back({ Verb::Fight, a.ambitionTarget, r.Range(90, 180) });
++            if (a.ambition == AmbitionType::Avenge || a.ambition == AmbitionType::Revenge) a.plan.push_back({ Verb::Fight, a.ambitionTarget, r.Range(90, 180) });
+             else a.plan.push_back({ Verb::Socialize, a.ambitionTarget, 60 });
+             break;
+         case WORK:
+diff --git a/src/server/game/SoloSim/solosim.h b/src/server/game/SoloSim/solosim.h
+index 4460c3f..19c1277 100644
+--- a/src/server/game/SoloSim/solosim.h
++++ b/src/server/game/SoloSim/solosim.h
+@@ -71,7 +71,8 @@ namespace SoloSim
+     // ---------------------------------------------------------------- agents
+     enum class AgentStatus : uint8 { Active = 1, Recovering = 2, Dead = 3, Gone = 4, Hired = 5 };
+     enum class Verb : uint8 { Idle = 0, Goto = 1, Fight = 2, Sleep = 3, Trade = 4, Socialize = 5, Recover = 6, Gather = 7, Train = 8, Work = 9 };
+-    enum class AmbitionType : uint8 { None = 0, ReachLevel = 1, SaveGold = 2, SeePlace = 3, Avenge = 4 };
++    enum class AmbitionType : uint8 { None = 0, ReachLevel = 1, SaveGold = 2, SeePlace = 3, Avenge = 4,
++                                       Revenge = 5 };   // Revenge: pay back the one who beat you in a clash (avengeFor = them)
+     enum Role : uint8 { ROLE_ADVENTURER = 0, ROLE_CIVILIAN = 1, ROLE_THREAT = 2 };   // threat: a roaming hero-class elite (hostile to all)
+     constexpr uint32 THREAT_MARK = 0x80000000;
+     constexpr uint32 CAMP_MARK = 0x40000000;     // ... with this bit, a roadside camp's id
+-- 
+2.56.0.windows.2
+

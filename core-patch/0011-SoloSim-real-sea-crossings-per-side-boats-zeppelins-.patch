@@ -1,7 +1,7 @@
 From d8e255a41b1764f3e76ac09b549a5fbe64d2d2ae Mon Sep 17 00:00:00 2001
 From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
 Date: Tue, 17 Nov 2026 00:55:08 -0600
-Subject: [PATCH 11/11] SoloSim: real sea crossings per side (boats, zeppelins,
+Subject: [PATCH 11/12] SoloSim: real sea crossings per side (boats, zeppelins,
  the goblin boat) and Alliance-Horde clashes on shared hunting grounds
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
