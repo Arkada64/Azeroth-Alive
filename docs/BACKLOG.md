@@ -57,6 +57,14 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
   Client buff (reuse the beta Plainsrunning spell if it's still in 3.3.5's data). Tauren bots/townsfolk get it too.
 
 ## 4. Wildlife
+- **Done Nov 16 (night), not yet seen in game:** hunting pressure per ground (sim_ground): sim kills add to it, it
+  decays 40% a day; a hard-hunted ground yields as little as 35% and adventurers drift elsewhere. Neglect: a ground near
+  a town unhunted for 7+ days can spill a band onto the nearest road (a camp caused by something, with its bounty).
+  Herds (grazers by name: deer, boar, kodo, zhevra, plainstrider...) graze between beast grounds within 1500 yd every
+  3 h, staying put in rain; predator packs (wolves, cats, bears, raptors...) follow the nearest herd by day and take
+  one when they catch it, and go down to the roads at night (a road hazard mostly after dark), with a bounty that
+  follows them. Up to 20 herds / 10 packs per continent; they appear as real creatures near you and walk to where the
+  sim moves them. GM: .sim wildlife. Still to do: thinning the game's own spawns where the sim over-hunts.
 - Sim-owned, put in the world near you like camps: herds moving between grounds, predators following; real culling
   (over-hunted grounds go quiet, neglected ones swarm and spill onto roads); night prowlers, sheltering in storms;
   reclaiming cleared camps and emptied towns; untended dens escalating.

@@ -1,0 +1,559 @@
+From 6220edc33f890a491d382c7b212cdc09fd5beb7b Mon Sep 17 00:00:00 2001
+From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 21:50:52 -0600
+Subject: [PATCH 5/5] Wildlife v1: hunting pressure, neglect spills, herds and
+ predator packs
+
+- sim_ground: hunted grounds yield less and recover daily; adventurers drift to quieter ones
+- A ground near a town left unhunted for a week can spill a band onto the nearest road (camp + bounty)
+- Herds graze between beast grounds; packs follow and prey on them by day, prowl the roads at night; both real creatures near the player, walking where the sim moves them
+- .sim wildlife (GM)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01JU37XfnHTvru3VVz2sNN7z
+---
+ src/server/game/SoloSim/solosim.cpp          | 291 ++++++++++++++++---
+ src/server/game/SoloSim/solosim.h            |  13 +-
+ src/server/game/SoloSim/solosim_camps.cpp    |  34 ++-
+ src/server/game/SoloSim/solosim_commands.cpp |   7 +
+ 4 files changed, 297 insertions(+), 48 deletions(-)
+
+diff --git a/src/server/game/SoloSim/solosim.cpp b/src/server/game/SoloSim/solosim.cpp
+index fa5bc61..ce1ea0f 100644
+--- a/src/server/game/SoloSim/solosim.cpp
++++ b/src/server/game/SoloSim/solosim.cpp
+@@ -139,7 +139,7 @@ namespace
+ // setup
+ // =====================================================================================================
+ static char const* const SIM_TABLES[] = { "sim_state", "sim_site", "sim_agent", "sim_relation", "sim_memory", "sim_event",
+-                                          "sim_bounty", "sim_news", "sim_hub_news", "sim_market", "sim_errand", "sim_camp" };
++                                          "sim_bounty", "sim_news", "sim_hub_news", "sim_market", "sim_errand", "sim_camp", "sim_ground" };
+ 
+ void World::CreateTables()
+ {
+@@ -185,6 +185,9 @@ void World::CreateTables()
+         "town INT UNSIGNED NOT NULL, site INT UNSIGNED NOT NULL, x FLOAT NOT NULL, y FLOAT NOT NULL, z FLOAT NOT NULL, name VARCHAR(100) NOT NULL, "
+         "level TINYINT UNSIGNED NOT NULL, size TINYINT UNSIGNED NOT NULL, alive TINYINT UNSIGNED NOT NULL, made INT UNSIGNED NOT NULL, "
+         "until INT UNSIGNED NOT NULL, done TINYINT UNSIGNED NOT NULL) ENGINE=InnoDB");
++    if (!CharacterDatabase.Query("SHOW COLUMNS FROM sim_camp LIKE 'kind'"))
++        CharacterDatabase.DirectExecute("ALTER TABLE sim_camp ADD COLUMN kind TINYINT UNSIGNED NOT NULL DEFAULT 0, ADD COLUMN home INT UNSIGNED NOT NULL DEFAULT 0");
++    CharacterDatabase.DirectExecute("CREATE TABLE IF NOT EXISTS sim_ground (site INT UNSIGNED NOT NULL PRIMARY KEY, pressure FLOAT NOT NULL, last_hunt INT UNSIGNED NOT NULL) ENGINE=InnoDB");
+     if (!CharacterDatabase.Query("SHOW COLUMNS FROM sim_errand LIKE 'target'"))
+         CharacterDatabase.DirectExecute("ALTER TABLE sim_errand ADD COLUMN target INT UNSIGNED NOT NULL DEFAULT 0");
+     if (!CharacterDatabase.Query("SHOW COLUMNS FROM sim_agent LIKE 'role'"))
+@@ -614,9 +617,16 @@ void World::Save()
+     CharacterDatabase.DirectExecute("DELETE FROM sim_camp");
+     rows.clear();
+     for (SimCamp const& k : _camps)
+-        rows.push_back(Acore::StringFormat("({},{},{},{},{},{},{},{},'{}',{},{},{},{},{},{})", k.id, k.map, k.entry, k.town, k.site, k.x, k.y, k.z, Esc(k.name),
+-            k.level, k.size, k.alive, k.made, k.until, k.done ? 1 : 0));
++        rows.push_back(Acore::StringFormat("({},{},{},{},{},{},{},{},'{}',{},{},{},{},{},{},{},{})", k.id, k.map, k.entry, k.town, k.site, k.x, k.y, k.z, Esc(k.name),
++            k.level, k.size, k.alive, k.made, k.until, k.done ? 1 : 0, k.kind, k.home));
+     Chunked("INSERT INTO sim_camp VALUES ", rows);
++    CharacterDatabase.DirectExecute("DELETE FROM sim_ground");
++    rows.clear();
++    for (auto const& [site, p] : _pressure)
++        rows.push_back(Acore::StringFormat("({},{},{})", site, p, _lastHunt.contains(site) ? _lastHunt.at(site) : 0));
++    for (auto const& [site, t] : _lastHunt)
++        if (!_pressure.contains(site)) rows.push_back(Acore::StringFormat("({},0,{})", site, t));
++    Chunked("INSERT INTO sim_ground VALUES ", rows);
+     kv("next_camp", _nextCamp);
+ 
+     CharacterDatabase.DirectExecute("DELETE FROM sim_news");
+@@ -708,15 +718,19 @@ bool World::Load()
+             _bounties.push_back(b);
+         } while (r->NextRow());
+     _camps.clear();
+-    if (QueryResult r = CharacterDatabase.Query("SELECT id, map, entry, town, site, x, y, z, name, level, size, alive, made, until, done FROM sim_camp ORDER BY id"))
++    if (QueryResult r = CharacterDatabase.Query("SELECT id, map, entry, town, site, x, y, z, name, level, size, alive, made, until, done, kind, home FROM sim_camp ORDER BY id"))
+         do
+         {
+             Field* f = r->Fetch(); SimCamp k;
+             k.id = f[0].Get<uint32>(); k.map = f[1].Get<uint32>(); k.entry = f[2].Get<uint32>(); k.town = f[3].Get<uint32>(); k.site = f[4].Get<uint32>();
+             k.x = f[5].Get<float>(); k.y = f[6].Get<float>(); k.z = f[7].Get<float>(); k.name = f[8].Get<std::string>(); k.level = f[9].Get<uint8>();
+             k.size = f[10].Get<uint8>(); k.alive = f[11].Get<uint8>(); k.made = f[12].Get<uint32>(); k.until = f[13].Get<uint32>(); k.done = f[14].Get<uint8>() != 0;
++            k.kind = f[15].Get<uint8>(); k.home = f[16].Get<uint32>();
+             _camps.push_back(k);
+         } while (r->NextRow());
++    _pressure.clear(); _lastHunt.clear();
++    if (QueryResult r = CharacterDatabase.Query("SELECT site, pressure, last_hunt FROM sim_ground"))
++        do { Field* f = r->Fetch(); if (float p = f[1].Get<float>(); p > 0.0f) _pressure[f[0].Get<uint32>()] = p; if (uint32 t = f[2].Get<uint32>()) _lastHunt[f[0].Get<uint32>()] = t; } while (r->NextRow());
+     _errands.clear();
+     if (QueryResult r = CharacterDatabase.Query("SELECT id, agent, kind, item, site, count, reward, player, progress, expires, done, target FROM sim_errand ORDER BY id"))
+         do
+@@ -927,7 +941,8 @@ uint32 World::PickHuntSite(SimAgent& a)
+         if (!HuntFits(s, a.level, a.bravery)) continue;
+         if (SimSite const* here = SiteById(a.site); here && here->map != s.map) continue;   // no sea voyages for a day's hunting
+         float avg = (s.minLevel + s.maxLevel) / 2.0f;
+-        float score = 100.0f - std::abs(avg - ideal) * 12.0f - float(TravelMinutes(a.site, s.id, a)) * 0.6f - (s.elite ? 25.0f : 0.0f);
++        float score = 100.0f - std::abs(avg - ideal) * 12.0f - float(TravelMinutes(a.site, s.id, a)) * 0.6f - (s.elite ? 25.0f : 0.0f)
++            - std::min(30.0f, Pressure(s.id) / float(std::max<uint32>(s.spawns, 4)) * 1.5f);   // hunted out lately: go elsewhere
+         scored.emplace_back(score, s.id);
+     }
+     if (scored.empty()) return 0;
+@@ -1091,6 +1106,10 @@ void World::DailyTick()
+     RetireAdventurers();
+     SpawnThreats();
+     PostCamps();
++    for (auto it = _pressure.begin(); it != _pressure.end();)   // grounds recover
++        if ((it->second *= 0.6f) < 0.5f) it = _pressure.erase(it); else ++it;
++    NeglectSpills();
++    SpawnWildlife();
+     // the townsfolk's days harden them a little: labourers most, idlers least
+     for (auto& [id, a] : _agents)
+     {
+@@ -1398,11 +1417,15 @@ void World::PostBounties()
+     }
+ }
+ 
++namespace { std::string Plural(std::string const& n); }   // with the camps, below
++
+ std::string World::RareName(uint32 entry) const
+ {
+     if (entry & CAMP_MARK)
+     {
+-        for (SimCamp const& k : _camps) if (k.id == (entry & ~CAMP_MARK)) return "the " + k.name + " camp by the road";
++        for (SimCamp const& k : _camps)
++            if (k.id == (entry & ~CAMP_MARK))
++                return k.kind == CAMP_PACK ? "the pack of " + Plural(k.name) : k.kind == CAMP_HERD ? "the " + Plural(k.name) : "the " + k.name + " camp by the road";
+         return "a roadside camp";
+     }
+     if (entry & THREAT_MARK)
+@@ -1599,6 +1622,11 @@ void World::ResolveFight(SimAgent& a, SimSite const& site, uint32 minutes)
+     float partyMul = n == 1 ? 1.0f : (n == 2 ? 1.6f : 2.1f);
+     float perHour = 10.0f * classMul * trainMul * partyMul * (0.8f + a.gearTier / 250.0f) * (1.1f - a.caution / 500.0f);
+     uint32 killsPlanned = std::max<uint32>(1, uint32(perHour * minutes / 60.0f));
++    // a ground hunted hard lately has fewer left to find (it recovers over the days - DailyTick)
++    float quiet = std::clamp(1.0f - Pressure(site.id) / (float(std::max<uint32>(site.spawns, 4)) * 25.0f), 0.35f, 1.0f);
++    killsPlanned = std::max<uint32>(1, uint32(float(killsPlanned) * quiet));
++    _pressure[site.id] += float(killsPlanned);
++    _lastHunt[site.id] = _clock;
+     float xpRate = sWorld->getRate(RATE_XP_KILL);
+     float groupRate = n > 1 ? Acore::XP::xp_in_group_rate(n, false) / float(n) : 1.0f;     // WoW's group split
+     float partySafety = std::pow(0.55f, float(n - 1));
+@@ -2093,43 +2121,200 @@ void World::PostCamps(bool force, uint32 nearTown)
+                 && std::abs(int32((s.minLevel + s.maxLevel) / 2) - int32(h.regionLevel)) <= 3)
+                 kinds.push_back(&s);
+         if (kinds.empty()) continue;
+-        SimSite const& src = *kinds[r.Range(0, uint32(kinds.size()) - 1)];
+-        uint32 lvl = (src.minLevel + src.maxLevel) / 2;
+-        uint32 entry = CampEntry(src.creatureName, lvl);
+-        if (!entry) continue;
+-        // where: on a road, a fair walk from town, away from any hunting ground or town
+-        std::vector<RoadNode const*> spots;
+-        for (RoadNode const& n : _roads)
++        MakeCamp(h, *kinds[r.Range(0, uint32(kinds.size()) - 1)], r, false);
++    }
++}
++
++// A band of src's creatures sets up by a road near town h (the board posts a bounty). nearSource: on the road
++// closest to where they came from (a neglected ground spilling over), else anywhere a fair walk from town.
++bool World::MakeCamp(SimSite const& h, SimSite const& src, Rng& r, bool nearSource)
++{
++    uint32 lvl = (src.minLevel + src.maxLevel) / 2;
++    uint32 entry = CampEntry(src.creatureName, lvl);
++    if (!entry) return false;
++    std::vector<RoadNode const*> spots;
++    for (RoadNode const& n : _roads)
++    {
++        if (n.map != h.map) continue;
++        float d = Dist2d(n.x, n.y, h.x, h.y);
++        if (d < 250.0f || d > 1100.0f) continue;
++        bool clear = true;
++        for (SimSite const& s : _sites)
++            if (s.map == h.map && Dist2d(n.x, n.y, s.x, s.y) < (s.type == SiteType::Hub ? 300.0f : 250.0f)) { clear = false; break; }
++        if (clear) spots.push_back(&n);
++    }
++    if (spots.empty()) return false;
++    if (nearSource)
++    {
++        std::ranges::sort(spots, [&](RoadNode const* x, RoadNode const* y) { return Dist2d(x->x, x->y, src.x, src.y) < Dist2d(y->x, y->y, src.x, src.y); });
++        spots.resize(std::min<size_t>(spots.size(), 4));
++    }
++    RoadNode const& at = *spots[r.Range(0, uint32(spots.size()) - 1)];
++    SimCamp k;
++    k.id = _nextCamp++; k.map = h.map; k.entry = entry; k.town = h.id; k.name = src.creatureName; k.level = uint8(lvl);
++    k.kind = CAMP_BAND; k.home = src.id;
++    k.x = at.x + 12.0f; k.y = at.y + 12.0f; k.z = at.z;                         // just off the road
++    k.size = k.alive = uint8(r.Range(4, 7)); k.made = _clock; k.until = _clock + r.Range(3, 5) * MIN_PER_DAY;
++    k.site = ClosestSite(k.map, k.x, k.y);
++    _camps.push_back(k);
++    Log(EventType::RareFind, Nobody(), h.id, nearSource
++        ? Acore::StringFormat("With nobody hunting them, the {} near {} have grown bold and spilled onto the road.", Plural(k.name), AreaOf(SiteName(src.id)))
++        : Acore::StringFormat("{} have made camp by the road near {}. Travellers are going the long way round.", Plural(k.name), AreaOf(SiteName(k.site))), true);
++    SimBounty b;
++    b.id = _nextBounty++; b.hub = h.id; b.site = k.site; b.kind = BOUNTY_RARE; b.count = k.size; b.party = 3;
++    b.target = k.id | CAMP_MARK; b.targetLevel = k.level;
++    b.reward = (lvl * lvl * 30 + 500) * 3 / 2;
++    b.posted = _clock; b.expires = k.until;
++    _bounties.push_back(b);
++    return true;
++}
++
++uint32 World::ClosestSite(uint32 map, float x, float y) const
++{
++    uint32 best = 0; float bd = 1e9f;
++    for (SimSite const& s : _sites)
++        if (s.map == map) { float d = Dist2d(s.x, s.y, x, y); if (d < bd) { bd = d; best = s.id; } }
++    return best;
++}
++
++float World::Pressure(uint32 site) const
++{
++    auto it = _pressure.find(site);
++    return it == _pressure.end() ? 0.0f : it->second;
++}
++
++// =====================================================================================================
++// wildlife: hunting grounds remember being hunted; neglected ones spill onto the roads; herds graze between grounds
++// and predator packs follow them (and prowl the roads at night). All sim-owned; real creatures only near the player.
++// =====================================================================================================
++namespace
++{
++    bool IsGrazer(std::string const& n)
++    {
++        return NameHas(n, { "Deer", "Stag", "Doe", "Fawn", "Boar", "Kodo", "Zhevra", "Plainstrider", "Goat", "Ram", "Elk", "Moose", "Sheep",
++                            "Thunder Lizard", "Strider", "Mountain Cow", "Rabbit", "Hare" });
++    }
++    bool IsPredator(std::string const& n)
++    {
++        return NameHas(n, { "Wolf", "Worg", "Coyote", "Jackal", "Lion", "Panther", "Tiger", "Lynx", "Saber", "Bear", "Hyena", "Raptor", "Crocolisk", "Prowler", "Stalker" });
++    }
++}
++
++// a hunting ground near a town that nobody has hunted for a week grows bold: some of it spills onto the nearest road
++void World::NeglectSpills()
++{
++    if (_clock < 7 * MIN_PER_DAY) return;
++    for (SimSite const& h : _sites)
++    {
++        if (h.type != SiteType::Hub || !(h.services & SVC_INN) || !h.regionLevel || !SIM_MAPS.contains(h.map)) continue;
++        if (std::ranges::any_of(_camps, [&](SimCamp const& k) { return !k.done && k.kind == CAMP_BAND && k.town == h.id; })) continue;
++        std::vector<SimSite const*> quiet;
++        for (SimSite const& s : _sites)
++            if (s.type == SiteType::Hunt && !s.elite && s.map == h.map && (s.creatureType == 7 || s.creatureType == 1) && Dist2d(s.x, s.y, h.x, h.y) < 1500.0f
++                && std::abs(int32((s.minLevel + s.maxLevel) / 2) - int32(h.regionLevel)) <= 4
++                && (!_lastHunt.contains(s.id) || _clock - _lastHunt.at(s.id) > 7 * MIN_PER_DAY))
++                quiet.push_back(&s);
++        if (quiet.empty()) continue;
++        Rng r(_seed, h.id, _clock, P_GEN + 610);
++        if (!r.Chance(0.2f) || !AwayAllows(h.id + 3000)) continue;
++        MakeCamp(h, *quiet[r.Range(0, uint32(quiet.size()) - 1)], r, true);
++    }
++}
++
++// new herds and packs on their home grounds (a few a day while there's room); they move on after a couple of weeks
++void World::SpawnWildlife()
++{
++    for (uint32 map : SIM_MAPS)
++    {
++        uint32 herds = 0, packs = 0;
++        for (SimCamp const& k : _camps)
++            if (!k.done && k.map == map) { if (k.kind == CAMP_HERD) ++herds; else if (k.kind == CAMP_PACK) ++packs; }
++        std::vector<SimSite const*> grazing, hunting;
++        for (SimSite const& s : _sites)
++            if (s.type == SiteType::Hunt && !s.elite && s.map == map && s.creatureType == 1 && TownOf(s.id))
++            {
++                if (IsGrazer(s.creatureName)) grazing.push_back(&s);
++                else if (IsPredator(s.creatureName)) hunting.push_back(&s);
++            }
++        Rng r(_seed, map, _clock, P_GEN + 620);
++        for (uint32 tries = 0; tries < 3; ++tries)
+         {
+-            if (n.map != h.map) continue;
+-            float d = Dist2d(n.x, n.y, h.x, h.y);
+-            if (d < 250.0f || d > 1100.0f) continue;
+-            bool clear = true;
+-            for (SimSite const& s : _sites)
+-                if (s.map == h.map && Dist2d(n.x, n.y, s.x, s.y) < (s.type == SiteType::Hub ? 300.0f : 250.0f)) { clear = false; break; }
+-            if (clear) spots.push_back(&n);
++            bool herd = r.Chance(0.7f);
++            std::vector<SimSite const*>& from = herd ? grazing : hunting;
++            if (from.empty() || (herd ? herds >= 20 : packs >= 10) || !r.Chance(0.5f)) continue;
++            SimSite const& src = *from[r.Range(0, uint32(from.size()) - 1)];
++            uint32 lvl = (src.minLevel + src.maxLevel) / 2;
++            uint32 entry = CampEntry(src.creatureName, lvl);
++            if (!entry) continue;
++            if (std::ranges::any_of(_camps, [&](SimCamp const& k) { return !k.done && k.home == src.id && k.kind != CAMP_BAND; })) continue;
++            SimCamp k;
++            k.id = _nextCamp++; k.map = map; k.entry = entry; k.town = TownOf(src.id); k.name = src.creatureName; k.level = uint8(lvl);
++            k.kind = herd ? CAMP_HERD : CAMP_PACK; k.home = src.id; k.site = src.id;
++            k.x = src.x + float(r.Range(0, 40)) - 20.0f; k.y = src.y + float(r.Range(0, 40)) - 20.0f; k.z = src.z;
++            k.size = k.alive = uint8(herd ? r.Range(4, 8) : r.Range(3, 5));
++            k.made = _clock; k.until = _clock + (herd ? r.Range(10, 20) : r.Range(7, 14)) * MIN_PER_DAY;
++            _camps.push_back(k);
++            if (herd) { ++herds; continue; }
++            ++packs;
++            Log(EventType::RareFind, Nobody(), k.town, Acore::StringFormat("A pack of {} is hunting the country around {}. Mind the roads after dark.", Plural(k.name), AreaOf(SiteName(src.id))), true);
++            SimBounty b;
++            b.id = _nextBounty++; b.hub = k.town; b.site = k.site; b.kind = BOUNTY_RARE; b.count = k.size; b.party = 2;
++            b.target = k.id | CAMP_MARK; b.targetLevel = k.level;
++            b.reward = lvl * lvl * 20 + 300;
++            b.posted = _clock; b.expires = k.until;
++            _bounties.push_back(b);
+         }
+-        if (spots.empty()) continue;
+-        RoadNode const& at = *spots[r.Range(0, uint32(spots.size()) - 1)];
+-        SimCamp k;
+-        k.id = _nextCamp++; k.map = h.map; k.entry = entry; k.town = h.id; k.name = src.creatureName; k.level = uint8(lvl);
+-        k.x = at.x + 12.0f; k.y = at.y + 12.0f; k.z = at.z;                     // just off the road
+-        k.size = k.alive = uint8(r.Range(4, 7)); k.made = _clock; k.until = _clock + r.Range(3, 5) * MIN_PER_DAY;
+-        uint32 closest = h.id; float nd = 1e9f;                                 // for "near ..." on the board
+-        for (SimSite const& s : _sites)
+-            if (s.map == h.map) { float d = Dist2d(s.x, s.y, k.x, k.y); if (d < nd) { nd = d; closest = s.id; } }
+-        k.site = closest;
+-        _camps.push_back(k);
+-        Log(EventType::RareFind, Nobody(), h.id, Acore::StringFormat("{} have made camp by the road near {}. Travellers are going the long way round.", Plural(k.name), AreaOf(SiteName(k.site))), true);
+-        SimBounty b;
+-        b.id = _nextBounty++; b.hub = h.id; b.site = k.site; b.kind = BOUNTY_RARE; b.count = k.size; b.party = 3;
+-        b.target = k.id | CAMP_MARK; b.targetLevel = k.level;
+-        b.reward = (lvl * lvl * 30 + 500) * 3 / 2;
+-        b.posted = _clock; b.expires = k.until;
+-        _bounties.push_back(b);
+     }
+ }
+ 
++// every three hours: herds drift between their grazing grounds (not in the rain); packs follow the nearest herd by
++// day and take one of it when they catch up; at night packs go down to the roads
++void World::WildlifeTick()
++{
++    bool night = HourOf(_clock) >= 21 || HourOf(_clock) < 5;
++    for (SimCamp& k : _camps)
++    {
++        if (k.done || k.kind == CAMP_BAND) continue;
++        if (_clock >= k.until || !k.alive) { k.done = true; continue; }
++        SimSite const* home = SiteById(k.home);
++        if (!home) continue;
++        Rng r(_seed, k.id, _clock, P_GEN + 630);
++        if (k.kind == CAMP_HERD)
++        {
++            if (Rainy(k.home) || !r.Chance(0.4f)) continue;          // sheltering, or still grazing
++            std::vector<SimSite const*> spots;
++            for (SimSite const& s : _sites)
++                if (s.type == SiteType::Hunt && s.map == k.map && s.creatureType == 1 && !s.elite && Dist2d(s.x, s.y, home->x, home->y) < 1500.0f)
++                    spots.push_back(&s);
++            if (spots.empty()) continue;
++            SimSite const& to = *spots[r.Range(0, uint32(spots.size()) - 1)];
++            k.x = to.x + float(r.Range(0, 40)) - 20.0f; k.y = to.y + float(r.Range(0, 40)) - 20.0f; k.z = to.z; k.site = to.id;
++            continue;
++        }
++        // a pack
++        if (night)
++        {
++            RoadNode const* best = nullptr; float bd = 700.0f;
++            for (RoadNode const& n : _roads)
++                if (n.map == k.map) { float d = Dist2d(n.x, n.y, k.x, k.y); if (d < bd) { bd = d; best = &n; } }
++            if (best) { k.x = best->x + 10.0f; k.y = best->y + 10.0f; k.z = best->z; k.site = ClosestSite(k.map, k.x, k.y); }
++        }
++        else
++        {
++            SimCamp* prey = nullptr; float pd = 2000.0f;
++            for (SimCamp& h : _camps)
++                if (!h.done && h.kind == CAMP_HERD && h.alive && h.map == k.map) { float d = Dist2d(h.x, h.y, k.x, k.y); if (d < pd) { pd = d; prey = &h; } }
++            if (prey)
++            {
++                k.x = prey->x + 35.0f; k.y = prey->y + 35.0f; k.z = prey->z; k.site = prey->site;
++                if (pd < 400.0f && r.Chance(0.5f)) { --prey->alive; if (!prey->alive) prey->done = true; }
++            }
++            else { k.x = home->x; k.y = home->y; k.z = home->z; k.site = home->id; }
++        }
++        for (SimBounty& b : _bounties)                                // the board says where they were seen last
++            if (!b.done && b.target == (k.id | CAMP_MARK)) b.site = k.site;
++    }
++}
+ // an adventurer's road went past a camp: strong ones cut their way through, the rest take a beating (or worse)
+ void World::RoadDanger(SimAgent& a, uint32 from, uint32 to)
+ {
+@@ -2137,9 +2322,10 @@ void World::RoadDanger(SimAgent& a, uint32 from, uint32 to)
+     if (!f || !t || f->map != t->map) return;
+     for (SimCamp& k : _camps)
+     {
+-        if (k.done || k.map != f->map || SegDist(k.x, k.y, f->x, f->y, t->x, t->y) > 400.0f) continue;
++        if (k.done || k.kind == CAMP_HERD || k.map != f->map || SegDist(k.x, k.y, f->x, f->y, t->x, t->y) > 400.0f) continue;
+         Rng r(_seed, a.id, _clock, P_FIGHT + 900);
+-        if (!r.Chance(0.25f)) return;
++        bool night = HourOf(_clock) >= 21 || HourOf(_clock) < 5;
++        if (!r.Chance(k.kind == CAMP_PACK ? (night ? 0.3f : 0.08f) : 0.25f)) return;
+         if (a.level >= k.level + 3)
+         {
+             uint32 n = std::min<uint32>(k.alive, r.Range(1, 2));
+@@ -2164,8 +2350,9 @@ void World::CampLossLocked(SimCamp& k, std::string const& by)
+     if (k.done || !k.alive) return;
+     if (--k.alive) return;
+     k.done = true; k.until = _clock;
+-    Log(EventType::BountyDone, Nobody(), k.site, Acore::StringFormat("The {} camp by the road near {} was cleared{}.", k.name, AreaOf(SiteName(k.site)),
+-        by.empty() ? std::string() : " by " + by), true);
++    if (k.kind != CAMP_HERD)
++        Log(EventType::BountyDone, Nobody(), k.site, Acore::StringFormat(k.kind == CAMP_PACK ? "The pack of {} near {} was put down{}." : "The {} camp by the road near {} was cleared{}.",
++            k.kind == CAMP_PACK ? Plural(k.name) : k.name, AreaOf(SiteName(k.site)), by.empty() ? std::string() : " by " + by), true);
+     for (SimBounty& b : _bounties)
+         if (!b.done && b.target == (k.id | CAMP_MARK) && b.playerProgress < b.count)
+         {
+@@ -2875,6 +3062,7 @@ void World::Advance(SimTime end, uint32& wakes)
+         if (!a || a->wakeAt != t) continue;             // stale queue entry
+         _clock = t;
+         if (DayOf(t) > _lastDailyTick) { _lastDailyTick = DayOf(t); DailyTick(); }
++        if (t / (3 * MIN_PER_HOUR) > _lastWildTick) { _lastWildTick = t / (3 * MIN_PER_HOUR); WildlifeTick(); }
+         if (t / (12 * MIN_PER_HOUR) > _lastBountyTick) { _lastBountyTick = t / (12 * MIN_PER_HOUR); PostBounties(); PostErrands(); }
+         Wake(*a);
+         ++wakes;
+@@ -3538,6 +3726,25 @@ void World::SetGear(uint32 agentId, std::string const& gear)
+     a->gearTier = uint8(std::clamp(tier, 5.0f, 100.0f));
+ }
+ 
++std::string World::SummonWildlife()
++{
++    std::lock_guard<std::mutex> guard(sBodyLock);
++    if (!_ready) return "The world isn't running yet.";
++    for (int i = 0; i < 4; ++i) { SpawnWildlife(); _clock += 1; }    // a few rolls (the clock nudge changes the dice)
++    _clock -= 4;
++    WildlifeTick();
++    uint32 herds = 0, packs = 0, bands = 0;
++    std::string some;
++    for (SimCamp const& k : _camps)
++        if (!k.done)
++        {
++            (k.kind == CAMP_HERD ? herds : k.kind == CAMP_PACK ? packs : bands)++;
++            if (k.kind != CAMP_BAND && some.size() < 300)
++                some += Acore::StringFormat(" {} ({}) near {};", k.kind == CAMP_HERD ? "herd of " + Plural(k.name) : "pack of " + Plural(k.name), k.alive, AreaOf(SiteName(k.site)));
++        }
++    return Acore::StringFormat("{} herds, {} packs, {} roadside camps.{}", herds, packs, bands, some);
++}
++
+ std::string World::SummonThreats()
+ {
+     std::lock_guard<std::mutex> guard(sBodyLock);
+diff --git a/src/server/game/SoloSim/solosim.h b/src/server/game/SoloSim/solosim.h
+index 68d451f..583d147 100644
+--- a/src/server/game/SoloSim/solosim.h
++++ b/src/server/game/SoloSim/solosim.h
+@@ -70,7 +70,8 @@ namespace SoloSim
+     constexpr uint32 THREAT_MARK = 0x80000000;
+     constexpr uint32 CAMP_MARK = 0x40000000;     // ... with this bit, a roadside camp's id
+     // A band that has made camp by a road where its kind isn't normally found; spawned for real when a player comes near.
+-    struct SimCamp { uint32 id = 0, map = 0, entry = 0, town = 0, site = 0; float x = 0, y = 0, z = 0; std::string name; uint8 level = 1, size = 0, alive = 0; SimTime made = 0, until = 0; bool done = false; };   // a bounty target with this bit is a threat's agent id, not a creature entry
++    enum CampKind : uint8 { CAMP_BAND = 0, CAMP_HERD = 1, CAMP_PACK = 2 };   // a camp by the road / grazers that move / predators that follow them
++    struct SimCamp { uint32 id = 0, map = 0, entry = 0, town = 0, site = 0; float x = 0, y = 0, z = 0; std::string name; uint8 level = 1, size = 0, alive = 0; SimTime made = 0, until = 0; bool done = false; uint8 kind = CAMP_BAND; uint32 home = 0; };   // a bounty target with this bit is a threat's agent id, not a creature entry
+     enum Job : uint8 { JOB_NONE = 0, JOB_FARMHAND = 1, JOB_LABORER = 2, JOB_MARKET = 3, JOB_LOAFER = 4 };
+     enum Profession : uint8 { PROF_NONE = 0, PROF_MINING = 1, PROF_HERBALISM = 2, PROF_SKINNING = 3, PROF_FISHING = 4, PROF_COUNT = 5 };
+ 
+@@ -248,6 +249,7 @@ namespace SoloSim
+         void CivilianFought(uint32 agentId);
+         bool IsThreat(uint32 agentId);
+         std::string SummonThreats();
++        std::string SummonWildlife();   // GM: roll for herds and packs now
+         std::vector<SimCamp> CampsNear(uint32 map, float x, float y, float radius);   // world thread: camps to put in the world
+         void CampLoss(uint32 campId, std::string const& by);                       // one of a camp fell in the game world
+         std::string SummonCamp(bool havePos, uint32 map, float x, float y);         // GM: a camp now, by the town nearest (x, y)
+@@ -303,6 +305,12 @@ namespace SoloSim
+         bool AwayAllows(uint32 salt);
+         void SpawnThreats(bool force = false);
+         void PostCamps(bool force = false, uint32 nearTown = 0);
++        bool MakeCamp(SimSite const& h, SimSite const& src, Rng& r, bool nearSource);
++        uint32 ClosestSite(uint32 map, float x, float y) const;
++        float Pressure(uint32 site) const;
++        void NeglectSpills();
++        void SpawnWildlife();
++        void WildlifeTick();
+         void RoadDanger(SimAgent& a, uint32 from, uint32 to);
+         void CampLossLocked(SimCamp& k, std::string const& by);
+         void ThreatWake(SimAgent& t);
+@@ -422,6 +430,9 @@ namespace SoloSim
+         std::map<uint32, uint32> _hiredBy;           // agent -> who hired them (runtime)
+         mutable std::map<uint32, std::vector<uint32>> _districts;   // town -> its districts (sites), runtime
+         uint32 _nextCamp = 1;
++        std::map<uint32, float> _pressure;           // hunting ground -> how hard it's been hunted lately (decays daily)
++        std::map<uint32, SimTime> _lastHunt;         // hunting ground -> when someone last hunted it
++        SimTime _lastWildTick = 0;                   // 3-hour wildlife steps
+         uint32 _nextErrand = 1;
+         std::map<uint32, std::deque<std::pair<SimTime, std::string>>> _notices;   // town -> board notices (rebuilt from sim_event on load)
+         std::map<uint32, std::vector<std::string>> _rumors;         // town -> recent notable happenings nearby (runtime)
+diff --git a/src/server/game/SoloSim/solosim_camps.cpp b/src/server/game/SoloSim/solosim_camps.cpp
+index cb78140..a712cc8 100644
+--- a/src/server/game/SoloSim/solosim_camps.cpp
++++ b/src/server/game/SoloSim/solosim_camps.cpp
+@@ -23,7 +23,7 @@ namespace
+     constexpr float PUT_UP = 300.0f;          // a camp appears when a player comes this close
+     constexpr float TAKE_DOWN = 450.0f;       // and goes when they're this far away
+ 
+-    struct Placed { uint32 map = 0; float x = 0, y = 0; std::vector<ObjectGuid> members; ObjectGuid fire; };
++    struct Placed { uint32 map = 0; float x = 0, y = 0; uint8 kind = 0; std::vector<ObjectGuid> members; ObjectGuid fire; };
+ 
+     std::mutex lock;
+     std::map<uint32, Placed> placed;                       // camp id -> what's in the world
+@@ -88,7 +88,30 @@ namespace SoloCamps
+         {
+             bool keep = it->second.map == map->GetId() && std::hypot(it->second.x - px, it->second.y - py) <= TAKE_DOWN
+                 && std::ranges::any_of(camps, [&](SoloSim::SimCamp const& k) { return k.id == it->first; });
+-            if (keep) { ++it; continue; }
++            if (keep)
++            {
++                // a herd or pack the sim has moved on: they walk (herds) or lope (packs) to where they are now
++                auto k = std::ranges::find_if(camps, [&](SoloSim::SimCamp const& c) { return c.id == it->first; });
++                if (k != camps.end() && std::hypot(k->x - it->second.x, k->y - it->second.y) > 8.0f)
++                {
++                    uint32 n = 0;
++                    for (ObjectGuid const& g : it->second.members)
++                        if (Creature* c = map->GetCreature(g); c && c->IsAlive() && !c->IsInCombat())
++                        {
++                            float ang = float(n++) * 1.3f + float(k->id % 5);
++                            float x = k->x + 5.0f * std::cos(ang), y = k->y + 5.0f * std::sin(ang);
++                            float z = map->GetHeight(PHASEMASK_NORMAL, x, y, k->z + 20.0f, true, 60.0f);
++                            if (z <= INVALID_HEIGHT) z = k->z;
++                            Position to(x, y, z, 0.0f);
++                            c->SetHomePosition(to);
++                            c->SetWalk(k->kind == SoloSim::CAMP_HERD);
++                            c->GetMotionMaster()->MovePoint(1, to);
++                        }
++                    it->second.x = k->x; it->second.y = k->y;
++                }
++                ++it;
++                continue;
++            }
+             if (it->second.map == map->GetId()) TakeDown(map, it->second);
+             else if (Map* other = sMapMgr->FindMap(it->second.map, 0)) TakeDown(other, it->second);   // the player crossed the sea
+             it = placed.erase(it);
+@@ -98,11 +121,12 @@ namespace SoloCamps
+         {
+             if (placed.contains(k.id) || std::hypot(k.x - px, k.y - py) > PUT_UP) continue;
+             map->LoadGrid(k.x, k.y);
+-            Placed p; p.map = map->GetId(); p.x = k.x; p.y = k.y;
++            Placed p; p.map = map->GetId(); p.x = k.x; p.y = k.y; p.kind = k.kind;
+             float z = map->GetHeight(PHASEMASK_NORMAL, k.x, k.y, k.z + 10.0f, true, 40.0f);
+             if (z <= INVALID_HEIGHT) z = k.z;
+-            if (GameObject* fire = map->SummonGameObject(CAMPFIRE, k.x, k.y, z, 0.0f, 0, 0, 0, 0, 0))
+-                p.fire = fire->GetGUID();
++            if (k.kind == SoloSim::CAMP_BAND)                        // only a band makes a fire
++                if (GameObject* fire = map->SummonGameObject(CAMPFIRE, k.x, k.y, z, 0.0f, 0, 0, 0, 0, 0))
++                    p.fire = fire->GetGUID();
+             for (uint8 i = 0; i < k.alive; ++i)
+             {
+                 float ang = float(i) * 2.0f * float(M_PI) / float(k.alive) + float(k.id % 7) * 0.3f;
+diff --git a/src/server/game/SoloSim/solosim_commands.cpp b/src/server/game/SoloSim/solosim_commands.cpp
+index 50d3fdd..7543468 100644
+--- a/src/server/game/SoloSim/solosim_commands.cpp
++++ b/src/server/game/SoloSim/solosim_commands.cpp
+@@ -39,6 +39,7 @@ public:
+             { "advice", HandleAdvice, rbac::RBAC_PERM_COMMAND_NPCBOT_DUMP_WRITE, Console::Yes },
+             { "threat", HandleThreat, rbac::RBAC_PERM_COMMAND_NPCBOT_DUMP_WRITE, Console::Yes },
+             { "camp",   HandleCamp,   rbac::RBAC_PERM_COMMAND_NPCBOT_DUMP_WRITE, Console::Yes },
++            { "wildlife", HandleWildlife, rbac::RBAC_PERM_COMMAND_NPCBOT_DUMP_WRITE, Console::Yes },
+         };
+         static ChatCommandTable root =
+         {
+@@ -130,6 +131,12 @@ public:
+         return true;
+     }
+ 
++    static bool HandleWildlife(ChatHandler* handler)
++    {
++        handler->SendSysMessage(sSoloSim->SummonWildlife());
++        return true;
++    }
++
+     static bool HandleThreat(ChatHandler* handler)
+     {
+         handler->SendSysMessage(sSoloSim->SummonThreats());
+-- 
+2.56.0.windows.2
+
