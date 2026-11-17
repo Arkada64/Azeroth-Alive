@@ -51,6 +51,14 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
   their own name sets). Agents only live, trade, rest, move or settle in their own side's towns or neutral ones;
   newcomers are born as their start town's people. Backup of the pre-Horde world: db/sim-before-horde.sql. Not yet:
   zeppelins (Horde can't cross the sea), clashes, enemy bodies hostile near you, mixed parties in neutral towns.
+  **Sea crossings and clashes, Nov 17 (01:00), not yet seen running:** crossings are the real 3.3.5 routes - Alliance
+  boats Menethil-Theramore and Menethil-Auberdine, Horde zeppelins Grom'gol-Orgrimmar and Tirisfal-Orgrimmar, the
+  goblins' Booty Bay-Ratchet boat for anyone - each dock served by the nearest welcoming inn town (before: any inn in a
+  "port zone", for everyone, and no zeppelins). Clashes: adventurers of the two sides hunting the same ground (or one
+  within 350 yd) at the same time (35%, at most once a day each, within 12 levels) either fight - level, kit, party, luck; the loser is beaten
+  (a defeat like any other, so it can be final), the winner bruised, a kill on the record - or the weaker, if cautious
+  and clearly outmatched, keeps their distance. Both remember the other (grudges, -90 for the beaten); the nearest town
+  hears of it. Not yet: revenge ambitions from clash grudges, clashes on the roads, enemy bodies hostile near you.
 - Stage 1, a two-sided world: both factions' towns (side from guard/service hostility), Horde zones and races (orc,
   troll, tauren, undead, blood elf; goblins neutral), Horde townsfolk looks; danger-aware routes (enemy towns and
   contested roads cost more; the brave or vengeful take them); clashes resolved like threats, feeding grudges,

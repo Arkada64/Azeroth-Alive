@@ -1,0 +1,192 @@
+From d8e255a41b1764f3e76ac09b549a5fbe64d2d2ae Mon Sep 17 00:00:00 2001
+From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 00:55:08 -0600
+Subject: [PATCH 11/11] SoloSim: real sea crossings per side (boats, zeppelins,
+ the goblin boat) and Alliance-Horde clashes on shared hunting grounds
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01JU37XfnHTvru3VVz2sNN7z
+---
+ src/server/game/SoloSim/solosim.cpp | 105 +++++++++++++++++++++++++---
+ src/server/game/SoloSim/solosim.h   |   6 +-
+ 2 files changed, 100 insertions(+), 11 deletions(-)
+
+diff --git a/src/server/game/SoloSim/solosim.cpp b/src/server/game/SoloSim/solosim.cpp
+index 47ab9c6..0f1bea3 100644
+--- a/src/server/game/SoloSim/solosim.cpp
++++ b/src/server/game/SoloSim/solosim.cpp
+@@ -64,7 +64,16 @@ namespace
+                                             141, 1657, 148, 331, 406, 15, 17, 405,
+                                             14, 1637, 215, 1638, 85, 1497, 130 };   // the Horde's homelands (Nov 17)
+     const std::set<uint32> ELF_ZONES = { 141, 1657, 148 };   // where night elves are most of the folk
+-    const std::set<uint32> PORT_ZONES = { 1519, 11, 148, 15 }; // Stormwind, Menethil Harbor | Auberdine, Theramore: the boats
++    // the sea crossings of 3.3.5 between the two old continents (Nov 17): dock positions; each dock is served by the nearest
++    // town with an inn within 900 yd that will have the traveller. Alliance boats, Horde zeppelins, the goblins' boat.
++    struct SeaRoute { float ax, ay; float bx, by; uint8 side; uint32 minutes; char const* name; };   // a on map 0, b on map 1
++    const SeaRoute SEA_ROUTES[] = {
++        { -3895.0f,  -605.0f, -3995.0f, -4725.0f, 0, 25, "the boat from Menethil Harbor to Theramore" },
++        { -3725.0f,  -575.0f,  6420.0f,   820.0f, 0, 25, "the boat from Menethil Harbor to Auberdine" },
++        { -14280.0f,  555.0f,  -995.0f, -3830.0f, 2, 25, "the boat from Booty Bay to Ratchet" },
++        { -12415.0f,  210.0f,  1320.0f, -4650.0f, 1, 20, "the zeppelin from Grom'gol to Orgrimmar" },
++        {  2065.0f,   290.0f,  1320.0f, -4650.0f, 1, 20, "the zeppelin from Tirisfal to Orgrimmar" },
++    };
+     const std::set<uint32> DWARF_ZONES = { 1, 1537, 38 };   // where dwarves and gnomes are most of the folk
+ 
+     // purposes for sub-seeded rolls (keep stable: changing them changes histories)
+@@ -918,23 +927,36 @@ void World::Log(EventType t, SimAgent const& a, uint32 site, std::string text, b
+     _pending.push_back(std::move(e));
+ }
+ 
++// the town serving a dock: the nearest hub with an inn within 900 yd that will have this traveller (0 = none)
++uint32 World::DockTown(uint32 map, float x, float y, SimAgent const& a) const
++{
++    if (map > 1) return 0;
++    uint32 best = 0; float bd = 900.0f;
++    for (SimSite const& s : _sites)
++    {
++        if (s.type != SiteType::Hub || !(s.services & SVC_INN) || s.map != map || !Welcome(a, s)) continue;
++        float d = Dist2d(s.x, s.y, x, y);
++        if (d < bd) { bd = d; best = s.id; }
++    }
++    return best;
++}
++
+ uint32 World::TravelMinutes(uint32 fromSite, uint32 toSite, SimAgent const& a) const
+ {
+     SimSite const* f = SiteById(fromSite); SimSite const* t = SiteById(toSite);
+     if (!f || !t || f == t) return 0;
+     if (f->map != t->map)
+     {
+-        // another continent: walk to a port, take the boat (about 25 minutes at sea), walk on from the far port
++        // another continent: walk to a dock their side may use, cross (boat or zeppelin), walk on from the far dock
+         uint32 best = UINT32_MAX;
+-        for (SimSite const& p : _sites)
++        bool horde = IsHordeRace(a.race);
++        for (SeaRoute const& sr : SEA_ROUTES)
+         {
+-            if (p.type != SiteType::Hub || !(p.services & SVC_INN) || p.map != f->map || !PORT_ZONES.contains(p.zone)) continue;
+-            for (SimSite const& q : _sites)
+-            {
+-                if (q.type != SiteType::Hub || !(q.services & SVC_INN) || q.map != t->map || !PORT_ZONES.contains(q.zone)) continue;
+-                uint32 m = TravelMinutes(fromSite, p.id, a) + 25 + TravelMinutes(q.id, toSite, a);
+-                best = std::min(best, m);
+-            }
++            if (sr.side != SIDE_NEUTRAL && a.role != ROLE_THREAT && sr.side != (horde ? SIDE_HORDE : SIDE_ALLIANCE)) continue;
++            uint32 here = DockTown(f->map, f->map == 0 ? sr.ax : sr.bx, f->map == 0 ? sr.ay : sr.by, a);
++            uint32 there = DockTown(t->map, t->map == 0 ? sr.ax : sr.bx, t->map == 0 ? sr.ay : sr.by, a);
++            if (!here || !there) continue;
++            best = std::min(best, TravelMinutes(fromSite, here, a) + sr.minutes + TravelMinutes(there, toSite, a));
+         }
+         return best == UINT32_MAX ? 24 * 60 : best;
+     }
+@@ -1754,6 +1776,8 @@ void World::ResolveFight(SimAgent& a, SimSite const& site, uint32 minutes)
+     uint32 kills = 0, xpGained = 0, copper = 0, skins = 0, potionsDrunk = 0;
+     bool retreated = false;
+ 
++    if (Clash(a, site)) return;                             // the other side was hunting here too, and won
++
+     // bounty work: a named rare to track down; or a pack, where every pull brings friends
+     float packDanger = 1.0f;
+     if (SimBounty* bb = BountyOf(a); bb && !bb->done && bb->site == site.id)
+@@ -1814,6 +1838,67 @@ void World::ResolveFight(SimAgent& a, SimSite const& site, uint32 minutes)
+         false, 0, int32(kills), int32(xpGained));
+ }
+ 
++// Alliance and Horde on the same hunting ground (Ashenvale, the Barrens, Stranglethorn, Hillsbrad, Arathi...): someone
++// usually decides it's their ground. The cautious or the badly outnumbered keep their distance. Strength is level, kit,
++// party and luck; the loser is beaten (and can die of it like any defeat), the winner is bruised. Both remember the
++// other, and the nearest town hears of it. Returns true when `a` lost and their hunt is over.
++bool World::Clash(SimAgent& a, SimSite const& site)
++{
++    if (a.role != ROLE_ADVENTURER || site.type != SiteType::Hunt) return false;
++    if (auto it = _lastClash.find(a.id); it != _lastClash.end() && it->second + MIN_PER_DAY > _clock) return false;
++    bool horde = IsHordeRace(a.race);
++    SimAgent* foe = nullptr;
++    for (auto& [id, o] : _agents)
++    {
++        if (o.status != AgentStatus::Active || o.role != ROLE_ADVENTURER || o.doing != Verb::Fight) continue;
++        if (IsHordeRace(o.race) == horde || std::abs(int32(o.level) - int32(a.level)) > 12) continue;
++        if (o.site != site.id)                                     // or a neighbouring ground: hunters drift
++        {
++            SimSite const* os = SiteById(o.site);
++            if (!os || os->map != site.map || Dist2d(os->x, os->y, site.x, site.y) > 350.0f) continue;
++        }
++        if (auto it = _lastClash.find(o.id); it != _lastClash.end() && it->second + MIN_PER_DAY > _clock) continue;
++        if (!foe || o.level > foe->level) foe = &o;                // the most dangerous of them is the one who matters
++    }
++    if (!foe) return false;
++    Rng r(_seed, a.id ^ (foe->id << 12), _clock, P_FIGHT + 950);
++    if (!r.Chance(0.35f)) return false;                            // the ground is wide: often they never cross paths
++    _lastClash[a.id] = _lastClash[foe->id] = _clock;
++    uint32 na = PartySize(a), nf = PartySize(*foe);
++    auto strength = [&](SimAgent const& x, uint32 n) { return float(x.level) * 4.0f + x.gearTier / 10.0f + float(n - 1) * 14.0f + r.Float() * 20.0f; };
++    float sa = strength(a, na), sf = strength(*foe, nf);
++    std::string place = AreaOf(SiteName(site.id));
++    char const* them = horde ? "the Alliance" : "the Horde";
++    // seeing a fight they can't win, the careful walk away (both sides keep a grudge)
++    SimAgent& weaker = sa < sf ? a : *foe;
++    if (std::abs(sa - sf) > 25.0f && r.Chance(weaker.caution / 120.0f))
++    {
++        _memories.push_back({ a.id, 1, foe->id, uint8(EventType::Clash), -30, 40, _clock });
++        _memories.push_back({ foe->id, 1, a.id, uint8(EventType::Clash), -30, 40, _clock });
++        Log(EventType::Clash, weaker, site.id, Acore::StringFormat("{} saw {} of {} hunting {} and kept their distance.", Who(weaker),
++            Who(&weaker == &a ? *foe : a), &weaker == &a ? them : (horde ? "the Horde" : "the Alliance"), site.creatureName), false, (&weaker == &a ? *foe : a).id);
++        return false;
++    }
++    SimAgent& win = sa >= sf ? a : *foe;
++    SimAgent& lose = sa >= sf ? *foe : a;
++    win.wounds = uint8(std::min<uint32>(95, win.wounds + r.Range(10, 40)));
++    _memories.push_back({ lose.id, 1, win.id, uint8(EventType::Clash), -90, 90, _clock });
++    _memories.push_back({ win.id, 1, lose.id, uint8(EventType::Clash), -40, 60, _clock });
++    ++win.kills;
++    Log(EventType::Clash, win, site.id, Acore::StringFormat("{} fought {} over the {} hunting near {} and won.", Who(win), Who(lose), site.creatureName, place),
++        true, lose.id);
++    lose.wounds = uint8(std::min<uint32>(100, lose.wounds + r.Range(50, 90)));
++    if (lose.wounds >= 100 || r.Chance(0.6f))
++    {
++        _culprit = Acore::StringFormat("{} of {} near {}", lose.id == a.id ? Who(*foe) : Who(a), IsHordeRace(win.race) ? "the Horde" : "the Alliance", place);
++        lose.wounds = 100;
++        Defeat(lose, site);
++        _culprit.clear();
++        if (&lose != &a) _requeue.push_back(lose.id);                // their plans changed outside their own wake
++    }
++    return &lose == &a && a.status != AgentStatus::Active;           // beaten (or worse); a bloodied loser hunts on
++}
++
+ bool World::InParty(SimAgent const& o, uint32 party) const
+ {
+     return party && (o.party == party || (o.lastParty == party && _clock - o.lastPartyAt <= 60));
+diff --git a/src/server/game/SoloSim/solosim.h b/src/server/game/SoloSim/solosim.h
+index 69a26f8..4460c3f 100644
+--- a/src/server/game/SoloSim/solosim.h
++++ b/src/server/game/SoloSim/solosim.h
+@@ -149,7 +149,8 @@ namespace SoloSim
+         Recovered = 9, MovedHome = 10, Socialized = 11, AmbitionSet = 12, AmbitionDone = 13, HeardDeath = 14,
+         Newcomer = 15, LeftRegion = 16, Broke = 17, PartyFormed = 18, Gathered = 19, SkillUp = 20, RareFind = 21,
+         BountyPosted = 22, BountyTaken = 23, BountyDone = 24, BountyExpired = 25, Trained = 26, Weather = 27, FellBeside = 28,
+-        RareSlain = 29, BountyAbandoned = 30, RareRepelled = 31, PlayerHelped = 32, Hired = 33, Dismissed = 34, PlayerBounty = 35
++        RareSlain = 29, BountyAbandoned = 30, RareRepelled = 31, PlayerHelped = 32, Hired = 33, Dismissed = 34, PlayerBounty = 35,
++        Clash = 36                                         // Alliance and Horde adventurers came to blows (Nov 17)
+     };
+ 
+     struct SimEvent
+@@ -413,6 +414,8 @@ namespace SoloSim
+         uint32 PickHuntSite(SimAgent& a);
+         uint32 PickNewHome(SimAgent const& a) const;
+         uint32 TravelMinutes(uint32 fromSite, uint32 toSite, SimAgent const& a) const;
++        bool Clash(SimAgent& a, SimSite const& site);   // the other side hunting the same ground: blows, or distance kept
++        uint32 DockTown(uint32 map, float x, float y, SimAgent const& a) const;   // the town serving a boat or zeppelin dock
+         bool HasFittingHunt(SimAgent const& a, uint32 nearHub, float radius) const;
+         Rng R(SimAgent const& a, uint32 purpose) const { return Rng(_seed, a.id, _clock, purpose); }
+         void Log(EventType t, SimAgent const& a, uint32 site, std::string text, bool notable, uint32 target = 0, int32 n1 = 0, int32 n2 = 0);
+@@ -431,6 +434,7 @@ namespace SoloSim
+         std::vector<SimEvent> _pending;            // events not yet saved/written
+         std::map<std::pair<uint32, uint32>, SimTime> _socialChronicled; // a pair makes the chronicle at most every 5 days
+         uint32 _lastDailyTick = 0;
++        std::unordered_map<uint32, SimTime> _lastClash;   // at most one clash a day each (not saved: a restart forgives)
+         std::vector<uint32> _requeue;              // agents whose wakeAt changed outside their own wake (party members)
+         uint32 _nextParty = 1, _nextBounty = 1, _nextNews = 1;
+         std::vector<SimBounty> _bounties;
+-- 
+2.56.0.windows.2
+

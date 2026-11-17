@@ -2,8 +2,9 @@
 param([switch]$StopMysql)
 . C:\SoloWoW\scripts\common.ps1
 if (Test-Port 8085) {
-    try { Invoke-Soap '.saveall' | Out-Null; Invoke-Soap '.server shutdown 1' | Out-Null } catch { Write-Host "SOAP failed: $_" }
-    $t = 0; while ((Get-Process worldserver -ErrorAction SilentlyContinue) -and $t -lt 60) { Start-Sleep 1; $t++ }
+    # 'server shutdown' saves players and the living world itself; a saveall first used to outlast the wait
+    try { Invoke-Soap 'server shutdown 1' | Out-Null } catch { Write-Host "SOAP failed: $_" }
+    $t = 0; while ((Get-Process worldserver -ErrorAction SilentlyContinue) -and $t -lt 240) { Start-Sleep 1; $t++ }
     Get-Process worldserver -ErrorAction SilentlyContinue | Stop-Process -Force
 }
 Get-Process authserver -ErrorAction SilentlyContinue | Stop-Process -Force
