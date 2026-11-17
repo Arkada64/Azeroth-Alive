@@ -105,7 +105,16 @@ for i in range(len(so.raw)):
     if raw[4] == 5 and raw[5] in CLASSES:
         new = bytearray(raw); struct.pack_into("<I", new, 0, oid); oid += 1; new[4] = RACE
         so.add_raw(new)
-save(so, "CharStartOutfit.dbc")
+so.save(os.path.join(SDBC, "CharStartOutfit.dbc"))      # the server keeps the full kits (it hands out the items)
+# the client's copy only previews the kit on the creation screen: its clothes would be painted over the murloc's
+# skin, so only the weapons are kept in the preview (offsets: displays at byte 104, inventory types at byte 200)
+WEAPON_SLOTS = {13, 14, 15, 17, 21, 22, 23, 25, 26}
+for raw in so.raw:
+    if raw[4] == RACE:
+        for k in range(24):
+            if struct.unpack_from("<I", raw, 200 + 4 * k)[0] not in WEAPON_SLOTS:
+                struct.pack_into("<I", raw, 104 + 4 * k, 0)
+so.save(os.path.join(OUT, "DBFilesClient", "CharStartOutfit.dbc"))
 
 # ---- everything the Horde shares (masks with both Orc and Undead): languages, skills, reputations
 def widen(d, fields, name):
