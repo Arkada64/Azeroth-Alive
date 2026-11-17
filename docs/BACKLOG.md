@@ -12,6 +12,49 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
   pinned trickerer/AzerothCore-wotlk-with-NPCBots commit.
 
 ## 1. Correctness (now)
+- **Playtest feedback, Nov 17 (04:35) - the user's list.** Done the same morning, not yet seen in game: errands pay
+  lvl^2 x 3 + 40 copper (was x12 + 150), escorts x distance (800 yd = 1x, 0.5-3x) x danger (camps/threats on the way,
+  up to 3x), old foes lvl^2 x 6 + 100; requests posted at 3.5% a tick (was 20%) and trimmed to one in seven townsfolk;
+  rumours and board notices only from news worth passing on (deaths, defeats, clashes, rares, bounties, comings and
+  goings, ambitions done - not socialising); an escorted townsperson settles where you took them (their new home, the
+  body stays); townsfolk hold still while you talk (45 s, renewed by each choice, "Good day." releases); the talk
+  animation now comes with words in /say when you're within 25 yd (templated small talk by job, or the town's news, at
+  most once a minute each); murlocs take the Trolls' starting kits, action bars and shared class skills (the Undead
+  have no shamans or hunters, so those got nothing) - server side applied, client patch-X rebuilt when WoW is closed;
+  an existing murloc shaman needs re-creating. The list:
+  - Fixes (quick): townsfolk work pays far too much (11 silver to walk someone Stormwind -> Goldshire) - pay by level,
+    danger and distance, money shouldn't come easily; far fewer townsfolk with requests (more had one than not);
+    rumours: drop the "X shared stories with Y" kind - only what a listener would want to know; an escorted townsperson
+    vanished after paying - they should stay and live in that area; townsfolk walk away while you talk to them - stop
+    them; townsfolk play the talk animation but nothing shows in /say; bounty boards float (a wall board standing in
+    the open) - a better model, or the same one placed against a wall where it makes sense.
+  - Generated quests/requests: a quest marker (map/minimap POI) where to go - vague is fine, an idea is the point.
+  - Townsfolk lives: walking onto railings and tables, several sitting in the same spot, random paths - robotic. Real
+    places to go and things to do (stalls, benches, wells, doors, each other), one person per seat.
+  - Embodied count: 40 bodies at a time feels empty (even at night); live WoW areas had hundreds - optimise toward
+    hundreds (lighter bodies far away, sleepers indoors, townsfolk cheap).
+  - New world fills at once: a fresh world (the user will restart theirs at the end) should be fully populated from
+    the first start, not dripped in.
+  - Danger recognition (adventurers and townsfolk): leave areas, avoid roads or sneak through when a place is judged
+    too dangerous (camps, threats, war, recent deaths) - builds on immigration's push and the route costs.
+  - Crafters: people working the professions - goods, armour, weapons, potions - who gather or buy every ingredient,
+    need the right place (forge and anvil, alchemy lab...) and sell what they make (shops, markets, the player).
+  - Cooks: buy ingredients or hunt for them, cook, sell to taverns and shops (the inns' food comes from someone).
+  - Adventurers: interact with the world around them and talk with each other (in /say, near you).
+  - Camping (from WoW Forever) brought to 3.3.5: a camp you set up to rest with your party, with benefits; sim people
+    camp too, alone or together, between areas.
+  - Dialogue: "might be time to consider a text generator" for natural talk about world events, life and rumours,
+    with you and between NPCs. NOTE: the standing rule so far is templated NPC text only, no AI-generated text - the
+    user is reopening that; options when we get there: a bigger procedural grammar (combinatorial templates fed by the
+    sim's facts - still no AI) or a small local language model (cost: RAM/CPU on this PC, consistency, and it
+    changes the rule). The user decides.
+  - Graphics: Lumenveil (github.com/lumenveil/Lumenveil, GPL v2, no game assets; fog, light shafts, lamp lights,
+    water, per-zone looks, longer view distance; copies files next to Wow.exe, hooks Direct3D in memory) into the
+    installer (fetched, not vendored). Check its docs/INSTALL.md against our DXVK + ReShade setup and our MPQs first.
+    "Could be used with Project Reforged models": their HD packs are their files - we don't ship or copy them.
+  - Murloc (then every new race the same way): no starter quests in the start area; sheath/unsheath doesn't work and
+    weapons on the back sit wrong; items picked up instantly (no loot animation); characters start without spells -
+    a murloc shaman had no class spells and no auto-attack on 1 (the race's playercreateinfo_spell/action rows).
 - **Audit Nov 17 (01:55) - fix these:**
   - Not in the sim yet (no towns, adventurers, camps, herds or thinning there - an empty world): Eastern Kingdoms -
     Alterac Mountains, the Hinterlands, Searing Gorge, Burning Steppes, Blasted Lands, Deadwind Pass, Western and

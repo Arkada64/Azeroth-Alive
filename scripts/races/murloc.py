@@ -15,7 +15,7 @@ GLUE = r"C:\SoloWoW\core\modules\mod-worgoblin\data\patch\Interface\GlueXML"
 MODEL = r"C:\SoloWoW\reference\reforged-survey\extract_murloc\patch.MPQ\Creature\Murloc"
 OUT = r"C:\SoloWoW\build\races\patch-X"
 SDBC = r"C:\SoloWoW\build\races\server-dbc"
-UNDEAD, ORC = 1 << 4, 1 << 1
+UNDEAD, ORC, TAUREN, TROLL = 1 << 4, 1 << 1, 1 << 5, 1 << 7
 
 shutil.rmtree(OUT, ignore_errors=True); shutil.rmtree(SDBC, ignore_errors=True); shutil.rmtree(SRC, ignore_errors=True)
 # start from clean tables every time: the server's, with the pre-murloc copies of anything we changed before
@@ -127,12 +127,13 @@ for sex in (0, 1):
     for v in range(GRID): fh.add_row([RACE, sex, v, 0, 0, 0, 0, 0])
 save(fh, "CharacterFacialHairStyles.dbc")
 
-# ---- CharStartOutfit: the Undead class kits (byte 0 of field 1 is the race)
+# ---- CharStartOutfit: the Troll class kits (byte 0 of field 1 is the race) - trolls have all six murloc classes;
+#      the Undead (the first template) have no shamans or hunters, so those murlocs started with nothing (Nov 17)
 so = Dbc(SRC + r"\CharStartOutfit.dbc")
 oid = so.max_id() + 1
 for i in range(len(so.raw)):
     raw = so.raw[i]                                  # id, race/class/sex/outfit bytes, items[24], displays[24], slots[24]
-    if raw[4] == 5 and raw[5] in CLASSES:
+    if raw[4] == 8 and raw[5] in CLASSES:
         new = bytearray(raw); struct.pack_into("<I", new, 0, oid); oid += 1; new[4] = RACE
         so.add_raw(new)
 so.save(os.path.join(SDBC, "CharStartOutfit.dbc"))      # the server keeps the full kits (it hands out the items)
@@ -147,19 +148,21 @@ for raw in so.raw:
                 for at in (8, 104, 200): struct.pack_into("<I", raw, at + 4 * k, 0)
 so.save(os.path.join(OUT, "DBFilesClient", "CharStartOutfit.dbc"))
 
-# ---- everything the Horde shares (masks with both Orc and Undead): languages, skills, reputations
-def widen(d, fields, name):
+# ---- what the Horde shares: skills and class abilities the Trolls have together with at least one other Horde race
+#      (so shaman and hunter lines come along, troll-only racials don't); reputations as the Forsaken's (Orc + Undead)
+def widen(d, fields, name, shared):
     k = 0
     for i in range(len(d.raw)):
         row = d.row(i); hit = False
         for f in fields:
-            if row[f] not in (0, 0xFFFFFFFF) and row[f] & UNDEAD and row[f] & ORC and not row[f] & BIT:
+            if row[f] not in (0, 0xFFFFFFFF) and shared(row[f]) and not row[f] & BIT:
                 row[f] |= BIT; hit = True
         if hit: d.set_row(i, row); k += 1
     save(d, name); print(f"{name}: {k} rows now include murlocs")
-widen(Dbc(SRC + r"\SkillRaceClassInfo.dbc"), [2], "SkillRaceClassInfo.dbc")
-widen(Dbc(SRC + r"\SkillLineAbility.dbc"), [3], "SkillLineAbility.dbc")
-widen(Dbc(SRC + r"\Faction.dbc"), [2, 3, 4, 5], "Faction.dbc")
+with_trolls = lambda m: bool(m & TROLL) and bool(m & (ORC | UNDEAD | TAUREN))
+widen(Dbc(SRC + r"\SkillRaceClassInfo.dbc"), [2], "SkillRaceClassInfo.dbc", with_trolls)
+widen(Dbc(SRC + r"\SkillLineAbility.dbc"), [3], "SkillLineAbility.dbc", with_trolls)
+widen(Dbc(SRC + r"\Faction.dbc"), [2, 3, 4, 5], "Faction.dbc", lambda m: bool(m & UNDEAD) and bool(m & ORC))
 
 # ---- character creation screen: a 13th race button, the Undead's background/lighting/icon for now, our text
 os.makedirs(OUT + r"\Interface\GlueXML")

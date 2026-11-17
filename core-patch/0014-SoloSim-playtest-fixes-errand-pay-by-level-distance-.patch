@@ -1,0 +1,267 @@
+From c26dd18f1c246ac67cb8c3ef34d990849ceb04c6 Mon Sep 17 00:00:00 2001
+From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 04:44:48 -0600
+Subject: [PATCH 14/14] SoloSim: playtest fixes - errand pay by level, distance
+ and danger; fewer requests; rumours only real news; escorts settle where
+ taken; townsfolk hold still while talked to and speak in /say
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01JU37XfnHTvru3VVz2sNN7z
+---
+ src/server/game/SoloSim/solosim.cpp           | 64 ++++++++++++++++--
+ src/server/game/SoloSim/solosim_civilians.cpp | 66 ++++++++++++++++++-
+ 2 files changed, 120 insertions(+), 10 deletions(-)
+
+diff --git a/src/server/game/SoloSim/solosim.cpp b/src/server/game/SoloSim/solosim.cpp
+index 086d152..78e8a8f 100644
+--- a/src/server/game/SoloSim/solosim.cpp
++++ b/src/server/game/SoloSim/solosim.cpp
+@@ -910,11 +910,27 @@ std::string World::Who(SimAgent const& a) const
+     return Acore::StringFormat("{} ({} {}, {})", a.FullName(), RaceName(a.race), ClassName(a.cls), a.level);
+ }
+ 
++// what's worth passing on at the inn or pinning to the board: who died, who was beaten and by what, fights between the
++// sides, rares, bounties, people coming and going, dreams come true. Not who had a drink with whom (Nov 17).
++static bool Rumorworthy(EventType t)
++{
++    switch (t)
++    {
++        case EventType::Died: case EventType::Defeated: case EventType::Clash: case EventType::RareSlain: case EventType::RareRepelled:
++        case EventType::RareFind: case EventType::BountyPosted: case EventType::BountyDone: case EventType::AmbitionDone:
++        case EventType::LeftRegion: case EventType::Newcomer: case EventType::MovedHome: case EventType::PlayerBounty:
++        case EventType::PlayerHelped: case EventType::FellBeside:
++            return true;
++        default:
++            return false;
++    }
++}
++
+ void World::Log(EventType t, SimAgent const& a, uint32 site, std::string text, bool notable, uint32 target, int32 n1, int32 n2)
+ {
+     SimEvent e; e.id = _nextEvent++; e.at = _clock; e.type = t; e.actor = a.id; e.target = target; e.site = site;
+     e.n1 = n1; e.n2 = n2; e.notable = notable; e.text = std::move(text);
+-    if (notable && site)                                 // what people in the nearest town will be talking about
++    if (notable && site && Rumorworthy(t))               // what people in the nearest town will be talking about
+         if (uint32 town = TownOf(site))
+         {
+             auto& r = _rumors[town];
+@@ -4454,17 +4470,29 @@ void World::PostErrands()
+         if (_away && e.player && !e.done) e.expires = std::max(e.expires, _clock + MIN_PER_DAY);                  // yours waits for you
+         else if (!e.done && _clock >= e.expires) e.done = true;
+     std::erase_if(_errands, [this](SimErrand const& e) { return e.done && _clock > e.expires + MIN_PER_DAY; });
++    // too many asking at once (older worlds, before Nov 17): withdraw the extras nobody has taken, oldest first
++    {
++        uint32 folk = 0, open = 0;
++        for (auto const& [id, a] : _agents) if (a.role == ROLE_CIVILIAN && a.status == AgentStatus::Active) ++folk;
++        for (SimErrand const& e : _errands) if (!e.done && !e.player) ++open;
++        for (SimErrand& e : _errands)
++            if (open > folk / 7 && !e.done && !e.player) { e.done = true; e.expires = _clock; --open; }
++    }
+     for (auto& [id, a] : _agents)
+     {
+         if (a.role != ROLE_CIVILIAN || a.status != AgentStatus::Active) continue;
+         if (std::ranges::any_of(_errands, [&](SimErrand const& e) { return e.agent == id && !e.done; })) continue;
+         Rng r(_seed, id, _clock, P_BOUNTY + 300);
+-        if (!r.Chance(0.2f)) continue;
++        // most people need nothing from a stranger: about one in six or seven has something at any time (Nov 17: was
++        // 20% a tick, so more had a request than not)
++        if (!r.Chance(0.035f)) continue;
+         SimSite const* home = SiteById(a.home);
+         if (!home || !home->regionLevel) continue;
+         uint32 lvl = home->regionLevel;
+         SimErrand e; e.id = _nextErrand++; e.agent = id; e.expires = _clock + r.Range(48, 72) * MIN_PER_HOUR;
+-        e.reward = lvl * lvl * 12 + 150;
++        // ordinary folk pay what they can spare - well under a same-level quest (Nov 17: was lvl^2 x 12 + 150, so 11 silver
++        // for a short walk at level 7). Danger and distance raise it below.
++        e.reward = lvl * lvl * 3 + 40;
+         std::vector<MarketGood const*> goods;
+         for (MarketGood const& g : GOODS) if (lvl >= g.minLvl && lvl <= g.maxLvl) goods.push_back(&g);
+         std::vector<uint32> pests;
+@@ -4515,7 +4543,7 @@ void World::PostErrands()
+             SimRare const* x = nullptr;
+             for (SimRare const& y : _rares) if (y.entry == foe) x = &y;
+             e.kind = ERRAND_OLDFOE; e.target = foe; e.site = foeSite; e.count = 1;
+-            e.reward = uint32(x ? x->level : lvl) * (x ? x->level : lvl) * 20 + 300;
++            e.reward = uint32(x ? x->level : lvl) * (x ? x->level : lvl) * 6 + 100;
+         }
+         else if (lost && roll <= 40)
+         {
+@@ -4534,7 +4562,18 @@ void World::PostErrands()
+         else if (escortTo && roll > 42 && roll <= 56)
+         {
+             e.kind = ERRAND_ESCORT; e.site = escortTo; e.count = 1;
+-            e.reward = e.reward * 3 / 2;
++            // by the road's length and what's on it: camps and threats near the way, recent deaths at either end
++            SimSite const* to = SiteById(escortTo);
++            float danger = 1.0f;
++            for (SimCamp const& k : _camps)
++                if (!k.done && k.kind != CAMP_HERD && k.map == home->map && to && SegDist(k.x, k.y, home->x, home->y, to->x, to->y) < 400.0f)
++                    danger += 0.5f;
++            for (auto const& [tid, th] : _agents)
++                if (th.role == ROLE_THREAT && th.status == AgentStatus::Active)
++                    if (SimSite const* ts = SiteById(th.site); ts && to && ts->map == home->map && SegDist(ts->x, ts->y, home->x, home->y, to->x, to->y) < 800.0f)
++                        danger += 1.0f;
++            float distMul = std::clamp(escortD / 800.0f, 0.5f, 3.0f);
++            e.reward = uint32(float(e.reward) * distMul * std::min(danger, 3.0f));
+         }
+         else if ((r.Chance(0.5f) || pests.empty()) && !goods.empty())
+         {
+@@ -4660,7 +4699,18 @@ bool World::FinishErrand(uint32 agentId, uint32 guid, std::string const& name, u
+         if (e.kind == ERRAND_OLDFOE)
+             thanks = Acore::StringFormat("{} is dead? ...Good. I've been saving this for whoever did it.", RareName(e.target));
+         if (e.kind == ERRAND_ESCORT)
++        {
+             thanks = Acore::StringFormat("{} at last. I'd not have made it alone. Here - as promised.", SiteName(e.site));
++            // they came here for a reason (family, work, a buyer): they stay and make a life here (Nov 17 - they used to
++            // vanish on the spot, their sim self still living back where they started)
++            if (a && a->home != e.site)
++            {
++                std::string from = SiteName(a->home);
++                a->home = e.site; a->site = e.site; a->plan.clear(); a->doing = Verb::Idle; a->wakeAt = _clock + 30;
++                _requeue.push_back(a->id);
++                Log(EventType::MovedHome, *a, e.site, Acore::StringFormat("{} came to {} from {}, walked there by {}, and stayed.", a->FullName(), SiteName(e.site), from, name), true);
++            }
++        }
+         if (e.kind == ERRAND_MISSING)
+         {
+             static char const* const grief[] = { "So that's that, then. Thank you for going out there.", "I knew. I think I knew. Thank you for telling me.",
+@@ -4724,8 +4774,8 @@ void World::RebuildTownTalk()
+     _rumors.clear(); _notices.clear();
+     SimTime since = _clock > 14 * MIN_PER_DAY ? _clock - 14 * MIN_PER_DAY : 0;
+     std::vector<std::tuple<SimTime, uint32, std::string>> rows;
+-    if (QueryResult r = CharacterDatabase.Query("SELECT at, site, text FROM sim_event WHERE notable = 1 AND site <> 0 AND at >= {} ORDER BY id DESC LIMIT 6000", since))
+-        do { Field* f = r->Fetch(); rows.emplace_back(f[0].Get<uint32>(), f[1].Get<uint32>(), f[2].Get<std::string>()); } while (r->NextRow());
++    if (QueryResult r = CharacterDatabase.Query("SELECT at, site, text, type FROM sim_event WHERE notable = 1 AND site <> 0 AND at >= {} ORDER BY id DESC LIMIT 6000", since))
++        do { Field* f = r->Fetch(); if (Rumorworthy(EventType(f[3].Get<uint8>()))) rows.emplace_back(f[0].Get<uint32>(), f[1].Get<uint32>(), f[2].Get<std::string>()); } while (r->NextRow());
+     for (auto it = rows.rbegin(); it != rows.rend(); ++it)
+         if (uint32 town = TownOf(std::get<1>(*it)))
+         {
+diff --git a/src/server/game/SoloSim/solosim_civilians.cpp b/src/server/game/SoloSim/solosim_civilians.cpp
+index 7865a70..9771b31 100644
+--- a/src/server/game/SoloSim/solosim_civilians.cpp
++++ b/src/server/game/SoloSim/solosim_civilians.cpp
+@@ -270,6 +270,21 @@ namespace
+         }
+ 
+         // the player just took them on (an escort): stop what they're doing and look to the player
++        // someone is talking to them: stand and listen (Nov 17 - they used to walk off mid-sentence). Not while leading
++        // an escort. Each menu choice renews it; "Good day." lets them go.
++        void Hold(uint32 ms)
++        {
++            if (_following) return;
++            if (_moving || me->isMoving())
++            {
++                me->StopMoving();
++                me->GetMotionMaster()->Clear();
++                me->GetMotionMaster()->MoveIdle();
++                _moving = false;
++            }
++            _held = ms;
++        }
++
+         void Wake() { me->GetMotionMaster()->Clear(); me->GetMotionMaster()->MoveIdle(); _moving = false; _following = false; _home = false; _timer = 500; }
+ 
+         void MovementInform(uint32 type, uint32 id) override
+@@ -288,6 +303,11 @@ namespace
+                 DoMeleeAttackIfReady();
+                 return;
+             }
++            if (_held)
++            {
++                if (_held > diff) { _held -= diff; return; }
++                _held = 0; _timer = 500;
++            }
+             if (_timer > diff) { _timer -= diff; return; }
+             _timer = 0;
+             if (_moving)
+@@ -326,6 +346,7 @@ namespace
+                 {
+                     me->SetFacingToObject(npc);
+                     me->HandleEmoteCommand(urand(0, 2) ? EMOTE_ONESHOT_TALK : EMOTE_ONESHOT_POINT);
++                    Chatter(npc);
+                 }
+             if (_face >= 0.0f) me->SetFacingTo(_face);
+             if (_stand != UNIT_STAND_STATE_STAND) me->SetStandState(_stand);
+@@ -333,6 +354,45 @@ namespace
+             _timer = std::max<uint32>(1000, _stay);
+         }
+ 
++        // the talk animation with words to it: small talk for their work, or the town's news - only when someone is near
++        // enough to hear, at most once a minute each (templated lines; Nov 17)
++        void Chatter(Creature* npc)
++        {
++            if (GetMSTimeDiffToNow(_lastSaid) < 60000 && _lastSaid) return;
++            if (!me->SelectNearestPlayer(25.0f) || urand(1, 100) > 40) return;
++            _lastSaid = getMSTime();
++            uint8 job = 0; uint32 agent = _agent;
++            if (SoloSim::SimIntent in; sSoloSim->Intent(agent, in)) job = in.job;
++            if (urand(1, 100) <= 35)
++            {
++                std::string news = sSoloSim->Rumor(agent);
++                if (!news.empty()) { me->Say(news, LANG_UNIVERSAL); return; }
++            }
++            static char const* const any[] = {
++                "Morning. Or is it afternoon already? Days run together.", "Prices are up again. Don't ask me why.",
++                "Keep an eye on the road out of town. That's all I'm saying.", "You look like you've not slept either.",
++                "Same as yesterday, please. And the day before.", "Have you heard from anyone out east? No? Nor me.",
++                "Quiet today. I don't trust quiet.", "If the weather holds, it'll be a good week." };
++            static char const* const farm[] = {
++                "The fields won't wait, and neither will the crows.", "Lost another chicken last night. Something's about.",
++                "Hard ground this year. We'll see what comes up.", "Need a new handle for the hoe - this one's had it." };
++            static char const* const labor[] = {
++                "My back's not what it was. Don't get old.", "Three loads before noon, and they want three more.",
++                "Got any rope? Proper rope, not that frayed stuff.", "They pay by the day and work you by the hour." };
++            static char const* const market[] = {
++                "Slow morning at the stall. Picks up after noon, usually.", "Somebody tried to pay me in buttons. Buttons!",
++                "If you see anyone selling cheaper than me, they're lying.", "Fresh in this morning - well, fresh enough." };
++            static char const* const loafer[] = {
++                "Can't a body sit for five minutes?", "Spare a copper? No? Worth asking.", "I'm thinking. It's a kind of work.",
++                "Seen it all, me. Twice, some of it." };
++            auto pick = [](auto const& arr) { return arr[urand(0, uint32(std::size(arr)) - 1)]; };
++            char const* line = urand(0, 1) ? pick(any)
++                : job == SoloSim::JOB_FARMHAND ? pick(farm) : job == SoloSim::JOB_LABORER ? pick(labor)
++                : job == SoloSim::JOB_MARKET ? pick(market) : job == SoloSim::JOB_LOAFER ? pick(loafer) : pick(any);
++            me->Say(line, LANG_UNIVERSAL);
++            (void)npc;
++        }
++
+         bool RandomNear(float cx, float cy, float cz, float minR, float maxR, Position& out)
+         {
+             Map* map = me->GetMap();
+@@ -476,7 +536,7 @@ namespace
+         }
+ 
+         uint32 _agent;
+-        uint32 _timer = 0, _stay = 0, _emote = 0, _moveStart = 0;
++        uint32 _timer = 0, _stay = 0, _emote = 0, _moveStart = 0, _held = 0, _lastSaid = 0;
+         uint8 _stand = UNIT_STAND_STATE_STAND;
+         float _face = -1.0f;
+         ObjectGuid _npc;
+@@ -544,6 +604,7 @@ namespace
+         bool CanCreatureGossipHello(Player* player, Creature* c) override
+         {
+             if (!AgentOf(c)) return false;
++            if (TownsfolkAI* ai = dynamic_cast<TownsfolkAI*>(c->AI())) ai->Hold(45000);
+             c->StopMoving();
+             c->SetFacingToObject(player);
+             ShowMenu(player, c);
+@@ -554,6 +615,7 @@ namespace
+         {
+             uint32 agent = AgentOf(c);
+             if (!agent) return false;
++            if (TownsfolkAI* ai = dynamic_cast<TownsfolkAI*>(c->AI())) ai->Hold(action == ACT_BYE ? 1500 : 30000);
+             uint32 guid = player->GetGUID().GetCounter();
+             switch (action)
+             {
+@@ -584,8 +646,6 @@ namespace
+                         if (reward) player->ModifyMoney(int32(reward));
+                         c->Say(thanks, LANG_UNIVERSAL, player);
+                         c->HandleEmoteCommand(EMOTE_ONESHOT_BOW);
+-                        if (e.kind == SoloSim::ERRAND_ESCORT)
+-                            c->DespawnOrUnsummon(8s);             // off to whoever they came to see
+ 
+                     }
+                     break;
+-- 
+2.56.0.windows.2
+

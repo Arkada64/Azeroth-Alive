@@ -13,11 +13,13 @@ INSERT INTO `playercreateinfo` (`race`, `class`, `map`, `zone`, `position_x`, `p
 DELETE FROM `playercreateinfo_action` WHERE `race` = 15;
 INSERT INTO `playercreateinfo_action` (`race`, `class`, `button`, `action`, `type`)
 SELECT 15, `class`, `button`, `action`, `type` FROM `playercreateinfo_action`
-WHERE `race` = 5 AND `class` IN (1, 3, 4, 5, 7, 8) AND NOT (`type` = 0 AND `action` IN (20577, 7744));
+WHERE `race` = 8 AND `class` IN (1, 3, 4, 5, 7, 8)                         -- the Trolls' bars: all six murloc classes
+  AND NOT (`type` = 0 AND `action` IN (26297, 20554, 26296, 50621, 20555, 20557, 20558, 58943));   -- not troll racials
 
--- skills every Horde race shares (masks with both Orc and Undead) - languages, weapons
+-- skills the Trolls share with another Horde race - languages, weapons, class skills (Nov 17: was Orc+Undead, which left
+-- murloc shamans and hunters without their class skills)
 UPDATE `playercreateinfo_skills` SET `raceMask` = `raceMask` | 16384
-WHERE `raceMask` <> 0 AND (`raceMask` & 2) AND (`raceMask` & 16);
+WHERE `raceMask` <> 0 AND (`raceMask` & 128) AND (`raceMask` & (2 | 16 | 32));   -- what trolls share with the Horde (shaman, hunter too)
 
 -- racials (stock spells for now): Underwater Breathing, Nature Resistance, Quickness (dodge)
 DELETE FROM `playercreateinfo_spell_custom` WHERE `racemask` = 16384;
