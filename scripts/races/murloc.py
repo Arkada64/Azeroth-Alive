@@ -10,14 +10,18 @@ from dbcfile import Dbc
 RACE, BIT = 15, 1 << 14
 CLASSES = [1, 3, 4, 5, 7, 8]
 SKINS = ["Sahauginskin", "SahauginskinBlue", "SahauginskinGray", "SahauginskinOrange", "SahauginskinWhite"]
-SRC = r"C:\SoloWoW\server\data\dbc"
+SRC = r"C:\SoloWoW\build\races\source-dbc"   # the server's tables as they were before any murloc edit (see below)
 GLUE = r"C:\SoloWoW\core\modules\mod-worgoblin\data\patch\Interface\GlueXML"
 MODEL = r"C:\SoloWoW\reference\reforged-survey\extract_murloc\patch.MPQ\Creature\Murloc"
 OUT = r"C:\SoloWoW\build\races\patch-X"
 SDBC = r"C:\SoloWoW\build\races\server-dbc"
 UNDEAD, ORC = 1 << 4, 1 << 1
 
-shutil.rmtree(OUT, ignore_errors=True); shutil.rmtree(SDBC, ignore_errors=True)
+shutil.rmtree(OUT, ignore_errors=True); shutil.rmtree(SDBC, ignore_errors=True); shutil.rmtree(SRC, ignore_errors=True)
+# start from clean tables every time: the server's, with the pre-murloc copies of anything we changed before
+shutil.copytree(r"C:\SoloWoW\server\data\dbc", SRC)
+if os.path.isdir(r"C:\SoloWoW\server\data\dbc-before-murloc"):
+    for f in os.listdir(r"C:\SoloWoW\server\data\dbc-before-murloc"): shutil.copy(os.path.join(r"C:\SoloWoW\server\data\dbc-before-murloc", f), SRC)
 os.makedirs(OUT + r"\DBFilesClient"); os.makedirs(SDBC)
 def save(d, name):
     d.save(os.path.join(OUT, "DBFilesClient", name)); shutil.copy(os.path.join(OUT, "DBFilesClient", name), SDBC)
@@ -29,6 +33,12 @@ n, o = struct.unpack_from("<II", m2, 80)
 for i in range(n):
     t = struct.unpack_from("<I", m2, o + i * 16)[0]
     if t == 11: struct.pack_into("<II", m2, o + i * 16, 1, 3)       # monster skin 1 -> character skin, wrap x/y
+# ...and the replaceable-texture lookup (texture type -> texture index) must follow, or the game paints the wrong
+# texture on each part (bright green fins, chrome legs): type 1 now points where type 11 did
+n, o = struct.unpack_from("<II", m2, 104)
+lookup = [struct.unpack_from("<h", m2, o + 2 * i)[0] for i in range(n)]
+if n > 11 and lookup[11] >= 0:
+    struct.pack_into("<h", m2, o + 2 * 1, lookup[11]); struct.pack_into("<h", m2, o + 2 * 11, -1)
 for sex in ("Male", "Female"):
     open(OUT + rf"\Character\Murloc\{sex}\Murloc{sex}.m2", "wb").write(m2)
     shutil.copy(MODEL + r"\Murloc00.skin", OUT + rf"\Character\Murloc\{sex}\Murloc{sex}00.skin")
@@ -45,7 +55,7 @@ cdi = Dbc(SRC + r"\CreatureDisplayInfo.dbc")
 cbase = cdi.row(cdi.find(31))
 display = {}
 for sex in ("Male", "Female"):
-    r = list(cbase); r[0] = cdi.max_id() + 1; r[1] = model_ids[sex]; r[3] = 0; r[4] = 0x3F800000
+    r = list(cbase); r[0] = cdi.max_id() + 1; r[1] = model_ids[sex]; r[3] = 0; r[4] = struct.unpack("<I", struct.pack("<f", 0.7))[0]   # gnome-sized
     r[6] = r[7] = r[8] = 0
     cdi.add_row(r); display[sex] = r[0]
 save(cdi, "CreatureDisplayInfo.dbc")
@@ -123,7 +133,37 @@ open(OUT + r"\Interface\GlueXML\CharacterCreate.xml", "w", encoding="utf-8").wri
 lua = open(GLUE + r"\CharacterCreate.lua", encoding="utf-8").read().replace("MAX_RACES = 12;", "MAX_RACES = 13;", 1)
 lua += ('\n-- SoloWoW: murlocs borrow the Undead icon until they have their own\n'
         'RACE_ICON_TCOORDS["MURLOC_MALE"] = RACE_ICON_TCOORDS["SCOURGE_MALE"];\n'
-        'RACE_ICON_TCOORDS["MURLOC_FEMALE"] = RACE_ICON_TCOORDS["SCOURGE_FEMALE"];\n')
+        'RACE_ICON_TCOORDS["MURLOC_FEMALE"] = RACE_ICON_TCOORDS["SCOURGE_FEMALE"];\n'
+        '\n-- SoloWoW: race buttons laid out by faction to fit their banner, however many races each side has: each\n'
+        '-- side\'s buttons share the space between the banner title and the gender buttons, shrinking when needed.\n'
+        'local SOLO_RACE_TOP, SOLO_RACE_SPACE, SOLO_RACE_GAP = -50, 310, 10;\n'
+        'function SoloArrangeRaceButtons()\n'
+        '\tlocal sides = { Alliance = {}, Horde = {} };\n'
+        '\tfor i = 1, CharacterCreate.numRaces do\n'
+        '\t\tlocal _, faction = GetFactionForRace(i);\n'
+        '\t\ttinsert(sides[faction == "Horde" and "Horde" or "Alliance"], i);\n'
+        '\tend\n'
+        '\tfor side, list in pairs(sides) do\n'
+        '\t\tlocal n = #list;\n'
+        '\t\tif ( n > 0 ) then\n'
+        '\t\t\tlocal h = CharacterCreateRaceButton1:GetHeight();\n'
+        '\t\t\tlocal step = min(h + SOLO_RACE_GAP, SOLO_RACE_SPACE / n);\n'
+        '\t\t\tlocal scale = min(1, (step - 4) / h);\n'
+        '\t\t\tlocal x = side == "Horde" and 50 or -50;\n'
+        '\t\t\tfor k, index in ipairs(list) do\n'
+        '\t\t\t\tlocal b = _G["CharacterCreateRaceButton"..index];\n'
+        '\t\t\t\tb:SetScale(scale);\n'
+        '\t\t\t\tb:ClearAllPoints();\n'
+        '\t\t\t\tb:SetPoint("TOP", b:GetParent(), "TOP", x / scale, (SOLO_RACE_TOP - (k - 1) * step) / scale);\n'
+        '\t\t\tend\n'
+        '\t\tend\n'
+        '\tend\n'
+        'end\n'
+        'local SoloEnumerateRaces = CharacterCreateEnumerateRaces;\n'
+        'function CharacterCreateEnumerateRaces(...)\n'
+        '\tSoloEnumerateRaces(...);\n'
+        '\tSoloArrangeRaceButtons();\n'
+        'end\n')
 open(OUT + r"\Interface\GlueXML\CharacterCreate.lua", "w", encoding="utf-8").write(lua)
 gp = open(GLUE + r"\GlueParent.lua", encoding="utf-8").read()
 gp = gp.replace("function SetBackgroundModel(model, name)\n", "function SetBackgroundModel(model, name)\n    if ( name == \"Murloc\" ) then name = \"Scourge\"; end   -- SoloWoW: no murloc scene yet\n", 1)
