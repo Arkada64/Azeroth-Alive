@@ -1,0 +1,157 @@
+From c40629b062ae901e08eb1f5bc429e9e95ff81fa8 Mon Sep 17 00:00:00 2001
+From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 05:25:04 -0600
+Subject: [PATCH 17/17] SoloSim: a world born full - every town filled with
+ adventurers at once, experienced arrivals replace the dead where hands are
+ short
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01JU37XfnHTvru3VVz2sNN7z
+---
+ src/server/game/SoloSim/solosim.cpp | 90 +++++++++++++++++++++++++++--
+ src/server/game/SoloSim/solosim.h   |  3 +
+ 2 files changed, 89 insertions(+), 4 deletions(-)
+
+diff --git a/src/server/game/SoloSim/solosim.cpp b/src/server/game/SoloSim/solosim.cpp
+index 58e0b0e..ff10852 100644
+--- a/src/server/game/SoloSim/solosim.cpp
++++ b/src/server/game/SoloSim/solosim.cpp
+@@ -860,6 +860,7 @@ std::string World::EnsureReady()
+         ExpandRegion();
+         FindRares();
+         EnsureCivilians();
++        FillAdventurers();
+         CharacterDatabase.DirectExecute("DELETE FROM sim_event WHERE notable = 0");   // older saves kept every routine step
+         RebuildTownTalk();
+         return Acore::StringFormat("loaded {} sites and {} people at {}", uint32(_sites.size()), uint32(_agents.size()), Clock(_clock));
+@@ -876,6 +877,7 @@ std::string World::EnsureReady()
+     ExpandRegion();
+     FindRares();
+     EnsureCivilians();
++    FillAdventurers();                                  // born full: every town has its adventurers from the first day
+     // a fortnight of history before anyone arrives: people have levels, friends, grudges and a few graves
+     SimTime start = _clock;
+     uint32 wakes = 0;
+@@ -1274,10 +1276,87 @@ void World::Socialize(SimAgent& a)
+     Log(EventType::Socialized, a, a.site, Acore::StringFormat("{} spent a quiet evening at {}.", a.FullName(), SiteName(a.site)), false);
+ }
+ 
++// how many adventurers call a town home: by its size, and a capital's shared between its inns (Nov 17)
++uint32 World::AdventurerTarget(SimSite const& h) const
++{
++    if (h.type != SiteType::Hub || !(h.services & SVC_INN) || !h.regionLevel) return 0;
++    for (Capital const& c : CAPITALS)
++        if (c.zone == h.zone)
++        {
++            uint32 inns = 0;
++            for (SimSite const& s : _sites) if (s.type == SiteType::Hub && (s.services & SVC_INN) && s.zone == h.zone) ++inns;
++            return 120 / std::max<uint32>(1, inns) + 1;
++        }
++    // a populated world, like a live realm's: thousands out and about, a few hundred in a busy area (the user, Nov 17)
++    uint32 folk = TownTarget(h);                          // 3-30 townsfolk: villages to towns
++    return folk >= 30 ? 30 : folk >= 18 ? 24 : folk >= 10 ? 18 : 14;
++}
++
++// someone who already knows the world: an adventurer at the level of the land around a town, born there or passing
++// through (both sides in neutral towns)
++SimAgent World::MakeSettler(SimSite const& h, uint32 id, uint32 salt)
++{
++    Rng r(_seed, id, h.id ^ salt, P_GEN + 210);
++    int32 lvl = int32(h.regionLevel) + int32(r.Range(0, 10)) - 5;
++    if (r.Chance(0.15f)) lvl += int32(r.Range(0, 16)) - 8;        // a few far from the land's level, either way
++    uint8 level = uint8(std::clamp<int32>(lvl, 1, 60));
++    uint8 race = NativeRace(h, r, false);
++    if (!race && h.side == SIDE_NEUTRAL && r.Chance(0.5f)) race = r.Chance(0.5f) ? 2 : 6;
++    if (!race && DWARF_ZONES.contains(h.zone)) race = r.Chance(0.7f) ? 3 : (r.Chance(0.7f) ? 7 : 0);
++    if (!race && ELF_ZONES.contains(h.zone)) race = r.Chance(0.75f) ? 4 : 0;
++    SimAgent a = MakeAgent(id, level, h.id, _clock, salt, race);
++    SetAmbition(a);
++    return a;
++}
++
++// every town up to its adventurers at once: a new world is born full, an older one is topped up (Nov 17 - the world
++// used to start with ~100 and drip one newcomer a day)
++uint32 World::FillAdventurers()
++{
++    std::map<uint32, uint32> living;
++    for (auto const& [id, a] : _agents)
++        if (a.role == ROLE_ADVENTURER && (a.status == AgentStatus::Active || a.status == AgentStatus::Recovering || a.status == AgentStatus::Hired)) ++living[a.home];
++    uint32 made = 0;
++    for (SimSite const& h : _sites)
++        for (uint32 i = living[h.id], n = AdventurerTarget(h); i < n; ++i)
++        {
++            uint32 id = _nextAgent++;
++            _agents[id] = MakeSettler(h, id, 0);
++            ++made;
++        }
++    if (made)
++    {
++        MakeRelations();
++        LOG_INFO("server.loading", "SoloWoW sim: {} adventurers settled across the world's towns", made);
++    }
++    return made;
++}
++
+ void World::SpawnNewcomer(uint32 minDelay, uint32 maxDelay)
+ {
+     uint32 id = _nextAgent++;
+     Rng r(_seed, id, _clock, P_NEWCOMER);
++    // three in ten are people who already know the world, arriving where hands are short (the land's level)
++    if (r.Chance(0.3f))
++    {
++        std::map<uint32, uint32> living;
++        for (auto const& [oid, o] : _agents)
++            if (o.role == ROLE_ADVENTURER && (o.status == AgentStatus::Active || o.status == AgentStatus::Recovering || o.status == AgentStatus::Hired)) ++living[o.home];
++        SimSite const* best = nullptr; int32 short_ = 0;
++        for (SimSite const& h : _sites)
++            if (int32 d = int32(AdventurerTarget(h)) - int32(living[h.id]); d > short_ || (d == short_ && d > 0 && r.Chance(0.3f))) { short_ = d; best = &h; }
++        if (best)
++        {
++            SimAgent a = MakeSettler(*best, id, uint32(_clock));
++            SimTime arrive = _clock + r.Range(minDelay, maxDelay);
++            a.born = arrive; a.wakeAt = std::max(a.wakeAt, arrive);
++            _agents[id] = a;
++            SimEvent e; e.id = _nextEvent++; e.at = arrive; e.type = EventType::Newcomer; e.actor = id; e.site = a.home; e.notable = true;
++            e.text = Acore::StringFormat("{} came to {} from distant roads.", Who(a), SiteName(a.home));
++            _pending.push_back(e);
++            return;
++        }
++    }
+     std::vector<uint32> starts;
+     for (SimSite const& s : _sites)
+         if (s.type == SiteType::Hub && (s.services & SVC_INN) && s.regionLevel && s.regionLevel <= 12 && s.side != SIDE_NEUTRAL) starts.push_back(s.id);
+@@ -1321,10 +1400,13 @@ void World::DailyTick()
+         static char const* const how[] = { "", "has grown strong from the fields", "has grown strong from the hauling", "has a shrewd eye for trade now", "has somehow got tougher" };
+         if (g.Chance(chance)) CivilianGrow(a, how[std::min<uint8>(a.job, 4)]);
+     }
+-    Rng r(_seed, 0, _clock, P_NEWCOMER + 1000);
+-    uint32 towns = uint32(std::ranges::count_if(_sites, [](SimSite const& s) { return s.type == SiteType::Hub && (s.services & SVC_INN) && s.regionLevel; }));
+-    if (alive < std::max<uint32>(130, towns * 18) && r.Chance(0.6f))
+-        SpawnNewcomer(0, 24 * 60);
++    // the dead and the departed are replaced as they go (Die, PickNewHome); whatever shortfall is left - retirements,
++    // towns that grew - is closed by a tenth a day
++    uint32 target = 0;
++    for (SimSite const& s : _sites) target += AdventurerTarget(s);
++    if (alive < target)
++        for (uint32 i = 0, n = std::max<uint32>(1, (target - alive) / 10); i < n; ++i)
++            SpawnNewcomer(0, 24 * 60);
+ }
+ 
+ // =====================================================================================================
+diff --git a/src/server/game/SoloSim/solosim.h b/src/server/game/SoloSim/solosim.h
+index 6c78435..7ddedb8 100644
+--- a/src/server/game/SoloSim/solosim.h
++++ b/src/server/game/SoloSim/solosim.h
+@@ -419,6 +419,9 @@ namespace SoloSim
+         bool Clash(SimAgent& a, SimSite const& site);
+         bool RoadClash(SimAgent& a, SimSite const& from, SimSite const& to);   // the other side on a road close to yours
+         bool Duel(SimAgent& a, SimAgent& foe, SimSite const& site, uint32 ground, bool sought, Rng& r, std::string const& over, std::string const& seen);   // the other side hunting the same ground: blows, or distance kept
++        uint32 AdventurerTarget(SimSite const& h) const;   // how many adventurers call a town home
++        SimAgent MakeSettler(SimSite const& h, uint32 id, uint32 salt);   // an adventurer at the land's level
++        uint32 FillAdventurers();                      // every town up to its adventurers
+         void FileCapitals();                           // towns inside the Horde's capitals belong to the city
+         uint32 DockTown(uint32 map, float x, float y, SimAgent const& a) const;   // the town serving a boat or zeppelin dock
+         bool HasFittingHunt(SimAgent const& a, uint32 nearHub, float radius) const;
+-- 
+2.56.0.windows.2
+

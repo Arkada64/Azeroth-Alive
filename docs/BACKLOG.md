@@ -33,8 +33,13 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
     places to go and things to do (stalls, benches, wells, doors, each other), one person per seat.
   - Embodied count: 40 bodies at a time feels empty (even at night); live WoW areas had hundreds - optimise toward
     hundreds (lighter bodies far away, sleepers indoors, townsfolk cheap).
-  - New world fills at once: a fresh world (the user will restart theirs at the end) should be fully populated from
-    the first start, not dripped in.
+  - New world fills at once - **done Nov 17 (05:25), not yet seen in game:** every inn town has an adventurer
+    population (14/18/24/30 by size, 120 per capital shared between its inns) and is filled to it at once - on a new
+    world before its fortnight of history, and on load for an older one (this world: 770 -> 1636 adventurers, 3165
+    people with the townsfolk; levels <10: 569, 10-29: 655, 30-49: 343, 40+: 226). Replacement: the dead and departed
+    are still replaced one for one, but three in ten newcomers now arrive experienced, at the land's level, in the
+    towns most short of hands (the rest set out at 1-6 from the starting towns); any other shortfall closes by a tenth
+    a day (was one newcomer on 60% of days). Cost: 48 sim hours in 28 s (a week's catch-up after time away ~100 s).
   - Danger recognition (adventurers and townsfolk): leave areas, avoid roads or sneak through when a place is judged
     too dangerous (camps, threats, war, recent deaths) - builds on immigration's push and the route costs.
   - Crafters: people working the professions - goods, armour, weapons, potions - who gather or buy every ingredient,
