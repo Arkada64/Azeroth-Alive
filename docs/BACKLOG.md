@@ -29,7 +29,9 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
     them; townsfolk play the talk animation but nothing shows in /say; bounty boards float (a wall board standing in
     the open) - a better model, or the same one placed against a wall where it makes sense. **Boards, Nov 17 (05:40):**
     hung on a wall near the town centre (solid behind at chest and knee height, room to stand in front, not a corner),
-    flat against it and facing out; the old open spot only when no wall is found.
+    flat against it and facing out; the old open spot only when no wall is found. Finding one (the user couldn't find Stormwind's): ask any
+    townsperson "Where's the bounty board?", or type .bounty - a map flag at the nearest board within 800 yd; the log
+    records where each board went up.
   - Generated quests/requests: a quest marker (map/minimap POI) where to go - vague is fine, an idea is the point.
     **Done Nov 17 (05:40), not yet seen in game:** taking a townsperson's request or a board bounty puts a red flag on
     your map and minimap (the guards' direction marker), named for what's there; "remind me" shows it again. Searches

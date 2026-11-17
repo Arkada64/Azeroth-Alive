@@ -1,0 +1,109 @@
+From bd93b89344ebaa0de9bd9a8f1ad2fbd3add3b835 Mon Sep 17 00:00:00 2001
+From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 06:06:21 -0600
+Subject: [PATCH 21/21] Find the bounty board: ask a townsperson or .bounty for
+ a map flag; board spots in the log
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01JU37XfnHTvru3VVz2sNN7z
+---
+ src/server/game/SoloSim/solosim_boards.cpp    | 14 +++++++++++++-
+ src/server/game/SoloSim/solosim_boards.h      |  2 ++
+ src/server/game/SoloSim/solosim_civilians.cpp |  9 ++++++++-
+ src/server/game/SoloSim/solosim_commands.cpp  |  1 +
+ 4 files changed, 24 insertions(+), 2 deletions(-)
+
+diff --git a/src/server/game/SoloSim/solosim_boards.cpp b/src/server/game/SoloSim/solosim_boards.cpp
+index 45cea6d..752302b 100644
+--- a/src/server/game/SoloSim/solosim_boards.cpp
++++ b/src/server/game/SoloSim/solosim_boards.cpp
+@@ -201,6 +201,18 @@ namespace
+ 
+ namespace SoloBoards
+ {
++    bool MarkNearestBoard(Player* player)
++    {
++        if (!player) return false;
++        GameObject const* best = nullptr;
++        for (auto const& [town, guid] : boards)
++            if (GameObject const* go = player->GetMap()->GetGameObject(guid))
++                if (go->GetExactDist2d(player) < 800.0f && (!best || go->GetExactDist2d(player) < best->GetExactDist2d(player))) best = go;
++        if (!best) return false;
++        SendMarker(player, player->GetMapId(), best->GetPositionX(), best->GetPositionY(), "Bounty Board");
++        return true;
++    }
++
+     void SendMarker(Player* player, uint32 map, float x, float y, std::string const& name)
+     {
+         if (!player || player->GetMapId() != map) return;           // the flag only makes sense on your own map
+@@ -235,7 +247,7 @@ namespace SoloBoards
+             if (GameObject* go = map->SummonGameObject(BOARD_ENTRY, spot.GetPositionX(), spot.GetPositionY(), spot.GetPositionZ(), spot.GetOrientation(), 0, 0, 0, 0, 0))
+             {
+                 boards[town.id] = go->GetGUID();
+-                LOG_INFO("server.loading", "SoloWoW: bounty board put up in {}", town.name);
++                LOG_INFO("server.loading", "SoloWoW: bounty board put up in {} at {:.0f} {:.0f} {:.0f}", town.name, spot.GetPositionX(), spot.GetPositionY(), spot.GetPositionZ());
+             }
+         }
+     }
+diff --git a/src/server/game/SoloSim/solosim_boards.h b/src/server/game/SoloSim/solosim_boards.h
+index c112327..985a152 100644
+--- a/src/server/game/SoloSim/solosim_boards.h
++++ b/src/server/game/SoloSim/solosim_boards.h
+@@ -14,6 +14,8 @@ namespace SoloBoards
+     void Update(Player* player);                        // world thread: put up boards in inn towns near the player
+     // a flag on the player's map and minimap (the guards' direction marker), named
+     void SendMarker(Player* player, uint32 map, float x, float y, std::string const& name);
++    // the nearest bounty board that's up within 800 yd: a flag on the map for it; false if none (Nov 17)
++    bool MarkNearestBoard(Player* player);
+ }
+ 
+ void AddSC_solosim_boards();
+diff --git a/src/server/game/SoloSim/solosim_civilians.cpp b/src/server/game/SoloSim/solosim_civilians.cpp
+index 3566795..4589a2d 100644
+--- a/src/server/game/SoloSim/solosim_civilians.cpp
++++ b/src/server/game/SoloSim/solosim_civilians.cpp
+@@ -692,7 +692,7 @@ namespace
+ // ----------------------------------------------------------------------------------------------- talking to them
+ namespace
+ {
+-    enum : uint32 { ACT_NEWS = 1, ACT_TAKE = 2, ACT_FINISH = 3, ACT_REMIND = 4, ACT_BYE = 5, ACT_ASK = 6, ACT_ADVICE = 7 };
++    enum : uint32 { ACT_NEWS = 1, ACT_TAKE = 2, ACT_FINISH = 3, ACT_REMIND = 4, ACT_BYE = 5, ACT_ASK = 6, ACT_ADVICE = 7, ACT_BOARD = 8 };
+ 
+     uint32 AgentOf(Creature const* c) { return c && c->GetEntry() >= ENTRY_BASE && c->GetEntry() < ENTRY_BASE + 100000 ? c->GetEntry() - ENTRY_BASE : 0; }
+ 
+@@ -710,6 +710,7 @@ namespace
+         AddGossipItemFor(player, GOSSIP_ICON_CHAT, "What's the news?", GOSSIP_SENDER_MAIN, ACT_NEWS);
+         AddGossipItemFor(player, GOSSIP_ICON_CHAT, "Have you seen someone?", GOSSIP_SENDER_MAIN, ACT_ASK, "Who are you looking for?", 0, true);
+         AddGossipItemFor(player, GOSSIP_ICON_CHAT, "Any advice for the road?", GOSSIP_SENDER_MAIN, ACT_ADVICE);
++        AddGossipItemFor(player, GOSSIP_ICON_CHAT, "Where's the bounty board?", GOSSIP_SENDER_MAIN, ACT_BOARD);
+         SoloSim::SimErrand e;
+         if (sSoloSim->ErrandFor(agent, e))
+         {
+@@ -770,6 +771,12 @@ namespace
+                 case ACT_ADVICE:
+                     c->Say(sSoloSim->Advice(agent), LANG_UNIVERSAL, player);
+                     break;
++                case ACT_BOARD:
++                    if (SoloBoards::MarkNearestBoard(player))
++                        c->Say(urand(0, 1) ? "Just over there - I'll show you." : "That way. Can't miss it, if you look.", LANG_UNIVERSAL, player);
++                    else
++                        c->Say("No board this close, I'm afraid. Try the inn.", LANG_UNIVERSAL, player);
++                    break;
+                 case ACT_TAKE:
+                 {
+                     std::string reply = sSoloSim->TakeErrand(agent, guid, player->GetName());
+diff --git a/src/server/game/SoloSim/solosim_commands.cpp b/src/server/game/SoloSim/solosim_commands.cpp
+index d3e0086..ba33fdd 100644
+--- a/src/server/game/SoloSim/solosim_commands.cpp
++++ b/src/server/game/SoloSim/solosim_commands.cpp
+@@ -191,6 +191,7 @@ public:
+     {
+         Player* p = handler->GetPlayer();
+         Say(handler, sSoloSim->PlayerBoard(p->GetMapId(), p->GetPositionX(), p->GetPositionY(), p->GetGUID().GetCounter()));
++        SoloBoards::MarkNearestBoard(p);                     // and a flag on the map for where it hangs (Nov 17)
+         return true;
+     }
+ 
+-- 
+2.56.0.windows.2
+

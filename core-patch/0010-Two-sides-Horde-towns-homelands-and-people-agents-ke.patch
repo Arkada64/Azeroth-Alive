@@ -1,7 +1,7 @@
 From 5fe4c8c271d2e7e2979155cfea36c19e031194cb Mon Sep 17 00:00:00 2001
 From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
 Date: Tue, 17 Nov 2026 00:35:15 -0600
-Subject: [PATCH 10/20] Two sides: Horde towns, homelands and people; agents
+Subject: [PATCH 10/21] Two sides: Horde towns, homelands and people; agents
  keep to their own side's towns
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
