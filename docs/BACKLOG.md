@@ -185,6 +185,16 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
   helmets (see RACES-SURVEY.md). Both must work as NPCs too: our own CreatureDisplayInfoExtra looks in our patch,
   the race in the sim's race pools (townsfolk, adventurers, NPCBots), and faction/reputation so guards and
   townsfolk treat them as their side.
+- **Worgen, server side done Nov 16 (late night):** heyitsbench/mod-worgoblin (AGPL, same as AzerothCore) in
+  core/modules/mod-worgoblin (not in our core patch - the installer must fetch it); its 30 DBCs copied into
+  server/data/dbc (old ones in server/data/dbc-before-worgoblin); its SQL applied by the core updater (our copy uses
+  REPLACE INTO so a re-run can't fail); Announce off. Worgen = race 12, start in Shadowglen (Teldrassil) with the night
+  elves - what we wanted; Two Forms (human/worgen, wolf in combat) and Darkflight scripted. Goblin (race 9) comes
+  with it, starting with the orcs in Durotar. Client: its patch folder packed as Data/patch-W.MPQ
+  (scripts/make-mpq.py). Still needed: Wow.exe with the interface signature check removed (the module's
+  recommended patcher, run by the player on the clean 12340 exe) so the new character-creation screen loads; then
+  worgen NPCs (NPCBots' race tables stop at 11; looks; sim race pools) and the class list (the module also allows
+  Death Knight).
 - Classes (the user's convention, Nov 16): follow what Reforged allows in play, then adjust by each race's lore
   and nature as we go. Murloc: Warrior, Hunter, Rogue, Priest, Shaman, Mage (no Paladin, Death Knight, Warlock,
   Druid - as seen in their game; their file tables still list Warlock, so their server trims it). Worgen:
