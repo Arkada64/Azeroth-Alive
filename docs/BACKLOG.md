@@ -207,6 +207,13 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
   a 13th race button, Undead icon/background for now. Unknowns to test: whether the stock exe lists a 13th race,
   animations missing from the creature model (jump, emotes, sitting), the camera. Next: our own racial spells, an icon,
   murloc NPCs (friendly murloc townsfolk), the 25 skeleton looks.
+- **Murloc in game, Nov 17:** works - creation screen, entering the world, fighting. Fixed on the way: the skin is now
+  baked into the model (the composited character skin came out blank), full customization grids (switching races
+  crashed the client on missing entries), clothes left out of the creation preview, sheath points added on the back
+  and hips. Start moved to Deathknell (Brightwater Lake was ringed by level 5-7s). Still: no jump/sit/emote
+  animations (the creature model has none - needs animation merging from the murloc costume model or new ones), skin
+  colours (one model per colour, or a working composite), our own racials and icon, the customization rows that do
+  nothing, unsheathing outside combat to check.
 - Classes (the user's convention, Nov 16): follow what Reforged allows in play, then adjust by each race's lore
   and nature as we go. Murloc: Warrior, Hunter, Rogue, Priest, Shaman, Mage (no Paladin, Death Knight, Warlock,
   Druid - as seen in their game; their file tables still list Warlock, so their server trims it). Worgen:

@@ -1,13 +1,13 @@
 -- SoloWoW: Murloc (race 15) server rows. Re-runnable.
--- Start: the east shore of Brightwater Lake in Tirisfal (the clearest spot there, ~60 yd from the nearest hostile).
+-- Start: Deathknell, with the Undead (Brightwater Lake was ringed by level 5-7s - too much for a level 1, Nov 17).
 DELETE FROM `playercreateinfo` WHERE `race` = 15;
 INSERT INTO `playercreateinfo` (`race`, `class`, `map`, `zone`, `position_x`, `position_y`, `position_z`, `orientation`) VALUES
-(15, 1, 0, 85, 2685.8, 8.2, 29.7, 3.1),
-(15, 3, 0, 85, 2685.8, 8.2, 29.7, 3.1),
-(15, 4, 0, 85, 2685.8, 8.2, 29.7, 3.1),
-(15, 5, 0, 85, 2685.8, 8.2, 29.7, 3.1),
-(15, 7, 0, 85, 2685.8, 8.2, 29.7, 3.1),
-(15, 8, 0, 85, 2685.8, 8.2, 29.7, 3.1);
+(15, 1, 0, 85, 1676.71, 1678.31, 121.67, 2.70526),
+(15, 3, 0, 85, 1676.71, 1678.31, 121.67, 2.70526),
+(15, 4, 0, 85, 1676.71, 1678.31, 121.67, 2.70526),
+(15, 5, 0, 85, 1676.71, 1678.31, 121.67, 2.70526),
+(15, 7, 0, 85, 1676.71, 1678.31, 121.67, 2.70526),
+(15, 8, 0, 85, 1676.71, 1678.31, 121.67, 2.70526);
 
 -- action bars: the Undead's, without the Undead racials (Cannibalize, Will of the Forsaken)
 DELETE FROM `playercreateinfo_action` WHERE `race` = 15;

@@ -39,6 +39,26 @@ for i in range(n):
     if t == 11:
         at = len(m2); m2 += skin_name
         struct.pack_into("<IIII", m2, o + i * 16, 0, 0, len(skin_name), at)
+# Sheathed weapons hang from attachment points the creature model doesn't have (they vanished when sheathed, Nov 17):
+# add the back and hip sheath points on the back bone the "chest blood back" point uses. The new attachment list and
+# lookup go at the end of the file; the header is pointed at them.
+SHEATHS = {26: (-0.26, -0.08, 0.95), 27: (-0.26, 0.08, 0.95), 28: (-0.28, 0.0, 0.85),
+           30: (-0.26, 0.06, 0.95), 31: (-0.26, -0.06, 0.95), 32: (-0.05, 0.24, 0.60), 33: (-0.05, -0.24, 0.60)}
+an, ao = struct.unpack_from("<II", m2, 0xF0)
+atts = [bytearray(m2[ao + i * 40: ao + (i + 1) * 40]) for i in range(an)]
+back = next(a for a in atts if struct.unpack_from("<I", a)[0] == 16)
+have = {struct.unpack_from("<I", a)[0] for a in atts}
+for aid, pos in SHEATHS.items():
+    if aid in have: continue
+    a = bytearray(back); struct.pack_into("<I", a, 0, aid); struct.pack_into("<3f", a, 8, *pos); atts.append(a)
+ln, lo = struct.unpack_from("<II", m2, 0xF8)
+lookup = [struct.unpack_from("<h", m2, lo + 2 * i)[0] for i in range(ln)]
+lookup += [-1] * max(0, 35 - len(lookup))
+for i, a in enumerate(atts): lookup[struct.unpack_from("<I", a)[0]] = i
+while len(m2) % 16: m2 += b"\0"
+at = len(m2); m2 += b"".join(atts); struct.pack_into("<II", m2, 0xF0, len(atts), at)
+while len(m2) % 16: m2 += b"\0"
+at = len(m2); m2 += struct.pack(f"<{len(lookup)}h", *lookup); struct.pack_into("<II", m2, 0xF8, len(lookup), at)
 for sex in ("Male", "Female"):
     open(OUT + rf"\Character\Murloc\{sex}\Murloc{sex}.m2", "wb").write(m2)
     shutil.copy(MODEL + r"\Murloc00.skin", OUT + rf"\Character\Murloc\{sex}\Murloc{sex}00.skin")
