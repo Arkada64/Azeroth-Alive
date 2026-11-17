@@ -50,4 +50,10 @@ Copy-Item "$bin\configs\*.dist" "$Server\configs" -Force
 Copy-Item "$MySql\lib\libmysql.dll", "$Ssl\bin\libssl-3-x64.dll", "$Ssl\bin\libcrypto-3-x64.dll" $Server -Force
 $legacy = Get-ChildItem $Ssl -Recurse -Filter legacy.dll -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($legacy) { Copy-Item $legacy.FullName $Server -Force } else { Write-Host 'WARNING: legacy.dll not found' }
+# a running server keeps its exe locked: the new one compiled but wasn't put in place - say so (Nov 17)
+$fresh = (Get-Item "$bin\worldserver.exe").LastWriteTime
+if ((Get-Item "$Server\worldserver.exe").LastWriteTime -lt $fresh) {
+    Write-Host 'BUILD-RESULT: BUILT BUT NOT INSTALLED - the world server is running; stop it and run build.ps1 again'
+    exit 2
+}
 Write-Host ("BUILD-RESULT: OK in {0:n1} min -> {1}" -f ((Get-Date) - $t0).TotalMinutes, $Server)
