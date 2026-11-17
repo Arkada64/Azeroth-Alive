@@ -1,7 +1,7 @@
 From bd93b89344ebaa0de9bd9a8f1ad2fbd3add3b835 Mon Sep 17 00:00:00 2001
 From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
 Date: Tue, 17 Nov 2026 06:06:21 -0600
-Subject: [PATCH 21/32] Find the bounty board: ask a townsperson or .bounty for
+Subject: [PATCH 21/33] Find the bounty board: ask a townsperson or .bounty for
  a map flag; board spots in the log
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

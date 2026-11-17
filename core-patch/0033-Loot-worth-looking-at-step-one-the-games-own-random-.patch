@@ -1,0 +1,279 @@
+From afbd2f5f39947a3c55c12e48bc46d44d776e6ec4 Mon Sep 17 00:00:00 2001
+From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 14:25:24 -0600
+Subject: [PATCH 33/33] Loot worth looking at, step one: the games own random
+ suffixes on drops and quest rewards that had none (harder quests likelier),
+ magic whites, rare world-drop greens on foes near your level
+
+SoloSim/solosim_loot.cpp; GenerateEnchSuffixFactorAny in ItemEnchantmentMgr (stock items unchanged); SoloWoW.Loot.Enable.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01JU37XfnHTvru3VVz2sNN7z
+---
+ src/server/game/Entities/Item/Item.cpp        |   2 +-
+ .../game/Entities/Item/ItemEnchantmentMgr.cpp |  14 +-
+ .../game/Entities/Item/ItemEnchantmentMgr.h   |   1 +
+ src/server/game/SoloSim/solosim_commands.cpp  |   2 +
+ src/server/game/SoloSim/solosim_loot.cpp      | 170 ++++++++++++++++++
+ 5 files changed, 186 insertions(+), 3 deletions(-)
+ create mode 100644 src/server/game/SoloSim/solosim_loot.cpp
+
+diff --git a/src/server/game/Entities/Item/Item.cpp b/src/server/game/Entities/Item/Item.cpp
+index 27db71a..5e6f637 100644
+--- a/src/server/game/Entities/Item/Item.cpp
++++ b/src/server/game/Entities/Item/Item.cpp
+@@ -699,7 +699,7 @@ void Item::SetItemRandomProperties(int32 randomPropId)
+ 
+ void Item::UpdateItemSuffixFactor()
+ {
+-    uint32 suffixFactor = GenerateEnchSuffixFactor(GetEntry());
++    uint32 suffixFactor = GenerateEnchSuffixFactorAny(GetEntry());   // SoloWoW: suffixes on items whose template has none
+     if (GetItemSuffixFactor() == suffixFactor)
+         return;
+     SetUInt32Value(ITEM_FIELD_PROPERTY_SEED, suffixFactor);
+diff --git a/src/server/game/Entities/Item/ItemEnchantmentMgr.cpp b/src/server/game/Entities/Item/ItemEnchantmentMgr.cpp
+index c50d099..a265a75 100644
+--- a/src/server/game/Entities/Item/ItemEnchantmentMgr.cpp
++++ b/src/server/game/Entities/Item/ItemEnchantmentMgr.cpp
+@@ -123,13 +123,21 @@ uint32 GetItemEnchantMod(int32 entry)
+ }
+ 
+ uint32 GenerateEnchSuffixFactor(uint32 item_id)
++{
++    ItemTemplate const* itemProto = sObjectMgr->GetItemTemplate(item_id);
++    if (!itemProto || !itemProto->RandomSuffix)
++        return 0;
++    return GenerateEnchSuffixFactorAny(item_id);
++}
++
++// SoloWoW (Nov 17): the factor for an item that carries a suffix, whether its template offers one or not (suffixes are
++// rolled onto items that never had them - SoloSim/solosim_loot.cpp): by the item's level, slot and quality alone
++uint32 GenerateEnchSuffixFactorAny(uint32 item_id)
+ {
+     ItemTemplate const* itemProto = sObjectMgr->GetItemTemplate(item_id);
+ 
+     if (!itemProto)
+         return 0;
+-    if (!itemProto->RandomSuffix)
+-        return 0;
+ 
+     RandomPropertiesPointsEntry const* randomProperty = sRandomPropertiesPointsStore.LookupEntry(itemProto->ItemLevel);
+     if (!randomProperty)
+@@ -186,6 +194,8 @@ uint32 GenerateEnchSuffixFactor(uint32 item_id)
+     // Select rare/epic modifier
+     switch (itemProto->Quality)
+     {
++        case ITEM_QUALITY_NORMAL:                            // SoloWoW: a "magic" white - two thirds of a green's
++            return randomProperty->UncommonPropertiesPoints[suffixFactor] * 2 / 3;
+         case ITEM_QUALITY_UNCOMMON:
+             return randomProperty->UncommonPropertiesPoints[suffixFactor];
+         case ITEM_QUALITY_RARE:
+diff --git a/src/server/game/Entities/Item/ItemEnchantmentMgr.h b/src/server/game/Entities/Item/ItemEnchantmentMgr.h
+index 0634bcc..a4dff54 100644
+--- a/src/server/game/Entities/Item/ItemEnchantmentMgr.h
++++ b/src/server/game/Entities/Item/ItemEnchantmentMgr.h
+@@ -22,5 +22,6 @@
+ 
+ void LoadRandomEnchantmentsTable();
+ uint32 GetItemEnchantMod(int32 entry);
++uint32 GenerateEnchSuffixFactorAny(uint32 item_id);   // SoloWoW: any armour or weapon carrying a suffix
+ uint32 GenerateEnchSuffixFactor(uint32 item_id);
+ #endif
+diff --git a/src/server/game/SoloSim/solosim_commands.cpp b/src/server/game/SoloSim/solosim_commands.cpp
+index da23272..d6aa445 100644
+--- a/src/server/game/SoloSim/solosim_commands.cpp
++++ b/src/server/game/SoloSim/solosim_commands.cpp
+@@ -302,12 +302,14 @@ public:
+ namespace SoloPlainsrunning { void AddScripts(); }
+ void AddSC_solosim_xp();
+ void AddSC_solosim_quests();
++void AddSC_solosim_loot();
+ 
+ void AddSC_solosim_commands()
+ {
+     SoloPlainsrunning::AddScripts();
+     AddSC_solosim_xp();
+     AddSC_solosim_quests();
++    AddSC_solosim_loot();
+     new solosim_commands();
+     new solosim_bounty_commands();
+     new solosim_player();
+diff --git a/src/server/game/SoloSim/solosim_loot.cpp b/src/server/game/SoloSim/solosim_loot.cpp
+new file mode 100644
+index 0000000..b00bde8
+--- /dev/null
++++ b/src/server/game/SoloSim/solosim_loot.cpp
+@@ -0,0 +1,170 @@
++// SoloWoW: loot worth looking at (Nov 17), the user's design, first and safest step - WoW's own random suffixes ("of the
++// Bear", "of the Owl"...), which scale with an item's level, put on things that never had them:
++//   - ordinary drops: armour and weapons that drop with no random stats may roll a suffix (uncommon and rare: often;
++//     a plain white piece now and then - a "magic" white, as in Diablo);
++//   - quest rewards: the reward armour or weapon may roll one too - likelier the harder the quest (its level over yours,
++//     elite, group, dungeon);
++//   - rare finds: any foe near your level may, rarely, carry a world-drop green (which rolls its own random stats) -
++//     elites and rares more often.
++// The suffix pools are the game's own: the groups items of the same kind already use. Truly generated items are later.
++// Re-infested dungeons as a source wait for that system. Never copies another project's files.
++#include "Config.h"
++#include "Creature.h"
++#include "Item.h"
++#include "ItemEnchantmentMgr.h"
++#include "LootMgr.h"
++#include "ObjectAccessor.h"
++#include "ObjectMgr.h"
++#include "Player.h"
++#include "QuestDef.h"
++#include "Random.h"
++#include "ScriptMgr.h"
++#include <map>
++#include <mutex>
++#include <vector>
++
++namespace
++{
++    std::map<uint32, std::vector<uint32>> suffixGroups;       // (class, subclass, inventory type) / (class, subclass) -> RandomSuffix groups
++    std::map<uint32, std::vector<uint32>> worldGreens;        // required level -> world-drop greens that roll random stats
++    std::once_flag built;
++
++    uint32 Key(uint32 cls, uint32 sub, uint32 inv) { return (cls << 16) | (sub << 8) | inv; }
++
++    void Build()
++    {
++        for (auto const& [id, t] : *sObjectMgr->GetItemTemplateStore())
++        {
++            if (t.Class != ITEM_CLASS_ARMOR && t.Class != ITEM_CLASS_WEAPON) continue;
++            if (t.RandomSuffix)
++            {
++                for (uint32 k : { Key(t.Class, t.SubClass, t.InventoryType), Key(t.Class, t.SubClass, 0xFF) })
++                {
++                    auto& v = suffixGroups[k];
++                    if (std::find(v.begin(), v.end(), t.RandomSuffix) == v.end()) v.push_back(t.RandomSuffix);
++                }
++            }
++            if ((t.RandomProperty || t.RandomSuffix) && t.Quality == ITEM_QUALITY_UNCOMMON && t.Bonding == BIND_WHEN_EQUIPPED
++                && t.RequiredLevel >= 3 && t.ItemLevel >= 5 && !(t.Flags & ITEM_FLAG_IS_BOUND_TO_ACCOUNT) && t.SellPrice > 0)
++                worldGreens[t.RequiredLevel].push_back(id);
++        }
++        LOG_INFO("server.loading", "SoloWoW loot: {} suffix pools, world-drop greens for {} levels", suffixGroups.size(), worldGreens.size());
++    }
++
++    bool Enabled()
++    {
++        static bool const on = sConfigMgr->GetOption<bool>("SoloWoW.Loot.Enable", true);
++        std::call_once(built, Build);
++        return on;
++    }
++
++    // a suffix of the game's own for this kind of item, or 0
++    int32 RollSuffix(ItemTemplate const* t)
++    {
++        if (!t || (t->Class != ITEM_CLASS_ARMOR && t->Class != ITEM_CLASS_WEAPON) || t->RandomProperty || t->RandomSuffix) return 0;
++        if (t->Quality < ITEM_QUALITY_NORMAL || t->Quality > ITEM_QUALITY_RARE || t->ItemLevel < 5) return 0;
++        if (t->InventoryType == INVTYPE_NON_EQUIP || t->InventoryType == INVTYPE_BAG || t->InventoryType == INVTYPE_TABARD
++            || t->InventoryType == INVTYPE_AMMO || t->InventoryType == INVTYPE_QUIVER || t->InventoryType == INVTYPE_RELIC || t->InventoryType == INVTYPE_BODY) return 0;
++        std::vector<uint32> const* groups = nullptr;
++        for (uint32 k : { Key(t->Class, t->SubClass, t->InventoryType), Key(t->Class, t->SubClass, 0xFF) })
++            if (auto it = suffixGroups.find(k); it != suffixGroups.end() && !it->second.empty()) { groups = &it->second; break; }
++        if (!groups) return 0;
++        uint32 suffix = GetItemEnchantMod(int32((*groups)[urand(0, uint32(groups->size()) - 1)]));
++        return suffix ? -int32(suffix) : 0;
++    }
++
++    void Mark(LootItem& li, int32 suffix)
++    {
++        li.randomPropertyId = suffix;
++        li.randomSuffix = GenerateEnchSuffixFactorAny(li.itemid);
++    }
++
++    class solosim_loot_misc : public MiscScript
++    {
++    public:
++        solosim_loot_misc() : MiscScript("solosim_loot_misc", { MISCHOOK_ON_AFTER_LOOT_TEMPLATE_PROCESS }) { }
++
++        void OnAfterLootTemplateProcess(Loot* loot, LootTemplate const* /*tab*/, LootStore const& store, Player* owner, bool /*personal*/, bool /*noEmptyError*/, uint16 /*lootMode*/) override
++        {
++            if (!loot || !owner || !Enabled()) return;
++            bool creature = &store == &LootTemplates_Creature;
++            if (!creature && &store != &LootTemplates_Gameobject && &store != &LootTemplates_Item) return;
++            // ordinary drops: a suffix on what had none
++            for (LootItem& li : loot->items)
++            {
++                if (li.needs_quest || li.randomPropertyId) continue;
++                ItemTemplate const* t = sObjectMgr->GetItemTemplate(li.itemid);
++                if (!t) continue;
++                uint32 chance = t->Quality >= ITEM_QUALITY_UNCOMMON ? 35 : 6;
++                if (urand(1, 100) > chance) continue;
++                if (int32 s = RollSuffix(t)) Mark(li, s);
++            }
++            // a rare find on a foe near your level
++            if (!creature) return;
++            Creature const* c = ObjectAccessor::GetCreature(*owner, loot->sourceWorldObjectGUID);
++            if (!c || c->GetCreatureTemplate()->type == CREATURE_TYPE_CRITTER || (c->GetCreatureTemplate()->flags_extra & CREATURE_FLAG_EXTRA_NO_XP)) return;
++            if (int32(c->GetLevel()) < int32(owner->GetLevel()) - 6) return;
++            uint32 rank = c->GetCreatureTemplate()->rank;
++            uint32 per10k = rank == CREATURE_ELITE_RARE || rank == CREATURE_ELITE_RAREELITE || rank == CREATURE_ELITE_WORLDBOSS ? 1000 : rank == CREATURE_ELITE_ELITE ? 250 : 60;
++            if (urand(1, 10000) > per10k) return;
++            uint32 lvl = c->GetLevel();
++            std::vector<uint32> pool;
++            for (uint32 l = lvl > 3 ? lvl - 3 : 1; l <= lvl + 1; ++l)
++                if (auto it = worldGreens.find(l); it != worldGreens.end()) pool.insert(pool.end(), it->second.begin(), it->second.end());
++            if (pool.empty()) return;
++            LootItem li;
++            li.itemid = pool[urand(0, uint32(pool.size()) - 1)];
++            li.itemIndex = uint32(loot->items.size());
++            li.count = 1;
++            li.randomPropertyId = Item::GenerateItemRandomPropertyId(li.itemid);
++            li.randomSuffix = GenerateEnchSuffixFactor(li.itemid);
++            li.is_looted = false; li.is_blocked = false; li.freeforall = false; li.is_underthreshold = false;
++            li.is_counted = false; li.needs_quest = false; li.follow_loot_rules = true; li.groupid = 0;
++            loot->items.push_back(li);
++            ++loot->unlootedCount;
++        }
++    };
++
++    class solosim_loot_player : public PlayerScript
++    {
++    public:
++        solosim_loot_player() : PlayerScript("solosim_loot_player", { PLAYERHOOK_ON_QUEST_REWARD_ITEM }) { }
++
++        // a quest's reward armour or weapon: the harder the quest, the likelier it comes with something extra
++        void OnPlayerQuestRewardItem(Player* player, Item* item, uint32 /*count*/) override
++        {
++            if (!player || !item || item->GetItemRandomPropertyId() || !Enabled()) return;
++            ItemTemplate const* t = item->GetTemplate();
++            Quest const* q = nullptr;
++            for (auto const& [qid, st] : player->getQuestStatusMap())
++            {
++                if (st.Status != QUEST_STATUS_COMPLETE) continue;
++                Quest const* x = sObjectMgr->GetQuestTemplate(qid);
++                if (!x) continue;
++                for (uint32 i = 0; i < QUEST_REWARD_CHOICES_COUNT && !q; ++i) if (x->RewardChoiceItemId[i] == t->ItemId) q = x;
++                for (uint32 i = 0; i < QUEST_REWARDS_COUNT && !q; ++i) if (x->RewardItemId[i] == t->ItemId) q = x;
++                if (q) break;
++            }
++            int32 chance = t->Quality >= ITEM_QUALITY_UNCOMMON ? 25 : 8;
++            if (q)
++            {
++                int32 over = int32(q->GetQuestLevel() > 0 ? q->GetQuestLevel() : player->GetLevel()) - int32(player->GetLevel());
++                chance += std::clamp(over, -3, 5) * 5;
++                if (q->GetType() == QUEST_TYPE_ELITE || q->GetSuggestedPlayers() > 1) chance += 15;
++                if (q->GetType() == QUEST_TYPE_DUNGEON || q->GetType() == QUEST_TYPE_HEROIC || q->GetType() == QUEST_TYPE_RAID) chance += 20;
++            }
++            if (urand(1, 100) > uint32(std::clamp(chance, 0, 85))) return;
++            if (int32 s = RollSuffix(t))
++            {
++                item->SetItemRandomProperties(s);
++                item->SetState(ITEM_CHANGED, player);
++            }
++        }
++    };
++}
++
++void AddSC_solosim_loot()
++{
++    new solosim_loot_misc();
++    new solosim_loot_player();
++}
+-- 
+2.56.0.windows.2
+

@@ -1,7 +1,7 @@
 From 069e27681f332898cf3b99b9d5605f8540cca839 Mon Sep 17 00:00:00 2001
 From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
 Date: Tue, 17 Nov 2026 12:40:21 -0600
-Subject: [PATCH 27/32] Remove the custom races (murloc, naga, tuskarr,
+Subject: [PATCH 27/33] Remove the custom races (murloc, naga, tuskarr,
  furbolg): Worgen and Goblin only
 
 Their slots' NPC looks would draw on the new bodies; solosim_races.cpp and the loot delay go.

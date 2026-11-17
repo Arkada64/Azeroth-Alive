@@ -329,6 +329,15 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
   The aim: loot exciting again, like Diablo. Rolled suffixes on WoW's items are the safe first step; truly generated
   items (own names, stat rolls, item levels, made from existing models/icons) are the likely direction after it.
   New named uniques (option B) stay parked until then.
+  **Step one built Nov 17 (14:25), not yet seen in game** (SoloSim/solosim_loot.cpp, SoloWoW.Loot.Enable = 1): the
+  game's own random suffixes ("of the Bear"...) on things that never had them - armour and weapons dropped with no
+  random stats roll one (greens and blues 35%, whites 6% - a "magic" white at two thirds of a green's points); quest
+  reward armour and weapons roll one (25% green+, 8% white; +5% a level the quest is over you, +15 elite or group,
+  +20 dungeon or raid); any foe within six levels below you or above may carry a rare find - a world-drop green that
+  rolls its own stats (0.6% normal, 2.5% elite, 10% rare or boss). Suffix pools are the groups the same kind of item
+  already uses (56 groups, 57 kinds); 3188 world greens for levels 5-80. Core: GenerateEnchSuffixFactorAny (the
+  suffix's strength for any armour or weapon; stock items unchanged). Still to come: re-infested dungeons as a source,
+  truly generated items, PvP gear drops (sim gear only).
 - **World-PvP gear drops (the user's design):** when someone is killed in world PvP (never in battlegrounds or
   Wintergrasp), there's a chance they drop one random piece of their equipped gear, which someone else can loot.
   **Sim people's gear only - never the player's.** Fits the war track (enemy bodies near you, sim clashes off-screen).
