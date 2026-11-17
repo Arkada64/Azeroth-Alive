@@ -100,6 +100,9 @@ foreach ($c in 'Blademaster','ObsidianDestroyer','Archmage','Dreadlord','SpellBr
 # -NoEra restores stock rates. The DB half (quest map areas, riding levels) is scripts\era-db.ps1.
 $xp = if ($NoEra) { '1' } else { '0.5' }
 $w['Rate.XP.Kill'] = $xp; $w['Rate.XP.Quest'] = $xp; $w['Rate.XP.Explore'] = $xp
+# XP bands (Nov 17, the user's OK): vanilla's pace for 1-60 by band, replacing the flat rate above for players and the
+# sim's adventurers (SoloWoW.XPBands holds the numbers; see solosim_xp.cpp)
+$w['SoloWoW.XPBands.Enable'] = if ($NoEra) { '0' } else { '1' }
 $w['DungeonFinder.OptionsMask'] = if ($NoEra) { '7' } else { '0' }   # 0 = no queue-and-teleport; walk there with hired bots
 # Hiring is free: people come along for their own reasons (regard - see BotBubble::InviteByName / World::HireRefusal), not for gold.
 $w['NpcBot.Cost.Hire'] = '0'

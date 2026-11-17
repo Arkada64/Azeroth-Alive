@@ -159,7 +159,7 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
   gear lost or brought back).
 
 ## 6. Difficulty and pacing
-- **XP bands, built Nov 16 (late), OFF until you choose:** SoloWoW.XPBands.Enable = 1 replaces the flat Rate.XP.*
+- **XP bands, built Nov 16 (late), ON since Nov 17 (the user approved the numbers):** SoloWoW.XPBands.Enable = 1 replaces the flat Rate.XP.*
   (0.5) for players, and sim adventurers level on the same curve. Default bands (kill/quest):
   1-10 1.0/0.85, 10-20 0.94/0.75, 20-30 0.85/0.65, 30-60 0.82/0.62, 60-80 1.0/1.0 - the kill numbers are this server's
   XP table as a share of vanilla's (vanilla needed 4.3M XP to 60, this table 3.38M), so grinding takes vanilla's time;
