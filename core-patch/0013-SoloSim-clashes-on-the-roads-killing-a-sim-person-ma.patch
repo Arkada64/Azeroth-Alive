@@ -1,0 +1,240 @@
+From 894ac72c2fa68601f0ad9f5a46b80cf9a07ecd2a Mon Sep 17 00:00:00 2001
+From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 01:09:48 -0600
+Subject: [PATCH 13/13] SoloSim: clashes on the roads; killing a sim person
+ marks you (memory, war news); /invite never reaches the other side
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01JU37XfnHTvru3VVz2sNN7z
+---
+ src/server/game/AI/NpcBots/botbubble.cpp | 25 ++++++---
+ src/server/game/SoloSim/solosim.cpp      | 66 +++++++++++++++++++++---
+ src/server/game/SoloSim/solosim.h        |  7 ++-
+ 3 files changed, 84 insertions(+), 14 deletions(-)
+
+diff --git a/src/server/game/AI/NpcBots/botbubble.cpp b/src/server/game/AI/NpcBots/botbubble.cpp
+index a3efdb5..74cd0a1 100644
+--- a/src/server/game/AI/NpcBots/botbubble.cpp
++++ b/src/server/game/AI/NpcBots/botbubble.cpp
+@@ -108,19 +108,19 @@ namespace
+ 
+     // deaths of bodies in the game world, reported from map threads, handed to the sim on the world thread
+     std::mutex fallenLock;
+-    std::vector<std::tuple<uint32, std::string, bool>> fallen;     // agent, killer, died in a dungeon
++    std::vector<std::tuple<uint32, std::string, bool, uint32, bool>> fallen;     // agent, killer, died in a dungeon, player (guid low) who did it, on the Horde's side
+     std::unordered_map<uint32, std::pair<uint32, std::string>> hiredBy;   // sim agent -> (player guid low, name)
+ 
+     void UpdateSimBodies(Player* player, uint32 mapId, uint32 zoneId, std::unordered_set<uint32> const& bubble)
+     {
+         {
+-            std::vector<std::tuple<uint32, std::string, bool>> deaths;
++            std::vector<std::tuple<uint32, std::string, bool, uint32, bool>> deaths;
+             {
+                 std::lock_guard<std::mutex> guard(fallenLock);
+                 deaths.swap(fallen);
+             }
+-            for (auto const& [agent, killer, dungeon] : deaths)
+-                sSoloSim->BodyFell(agent, killer, dungeon);
++            for (auto const& [agent, killer, dungeon, pguid, phorde] : deaths)
++                sSoloSim->BodyFell(agent, killer, dungeon, pguid, phorde);
+         }
+ 
+         // 0. hiring: a body that got an owner is hired in the sim; free again (dismissed) -> back to their own life
+@@ -724,7 +724,7 @@ void BotBubble::ReleaseInnSeat(uint32 entry)
+ void BotBubble::ReportFallen(uint32 agent, std::string const& killer)
+ {
+     std::lock_guard<std::mutex> guard(fallenLock);
+-    fallen.emplace_back(agent, killer, false);
++    fallen.emplace_back(agent, killer, false, 0u, false);
+ }
+ 
+ void BotBubble::OnBodyDied(Creature const* bot, Unit const* killer)
+@@ -742,8 +742,19 @@ void BotBubble::OnBodyDied(Creature const* bot, Unit const* killer)
+     std::string who = killer ? (killer->IsPlayer() ? killer->GetName() : std::string(killer->GetName())) : std::string("something in the wilds");
+     if (killer && killer->IsCreature() && !killer->IsNPCBotOrPet())
+         who = (killer->ToCreature()->GetCreatureTemplate()->rank >= 1 ? "the " : "a ") + who;
++    // the player's own hand - or their pet's, or a companion's - counts as theirs
++    Player const* by = nullptr;
++    if (killer)
++    {
++        if (killer->IsPlayer()) by = killer->ToPlayer();
++        else if (Unit const* owner = killer->GetCharmerOrOwnerOrSelf(); owner && owner->IsPlayer()) by = owner->ToPlayer();
++        else if (killer->IsNPCBot() && killer->ToCreature()->GetBotOwner() && killer->ToCreature()->GetBotOwner()->IsPlayer())
++            by = killer->ToCreature()->GetBotOwner();
++    }
++    if (by)
++        who = by->GetName();
+     std::lock_guard<std::mutex> guard(fallenLock);
+-    fallen.emplace_back(agent, who, dungeon);
++    fallen.emplace_back(agent, who, dungeon, by ? by->GetGUID().GetCounter() : 0u, by && by->GetTeamId() == TEAM_HORDE);
+ }
+ 
+ uint32 BotBubble::SimAgentOf(uint32 botEntry)
+@@ -758,6 +769,8 @@ bool BotBubble::InviteByName(Player* player, std::string const& name)
+ {
+     if (!player || !sSoloSim->IsLive()) return false;
+     std::vector<uint32> agents = sSoloSim->AgentsNamed(name);
++    bool horde = player->GetTeamId() == TEAM_HORDE;               // the other side's people don't answer you
++    std::erase_if(agents, [horde](uint32 a) { return sSoloSim->AgentIsHorde(a) != horde; });
+     if (agents.empty()) return false;
+     Creature* body = nullptr; uint32 agent = 0; float bestD = 60.0f;
+     for (uint32 a : agents)
+diff --git a/src/server/game/SoloSim/solosim.cpp b/src/server/game/SoloSim/solosim.cpp
+index cb071f7..086d152 100644
+--- a/src/server/game/SoloSim/solosim.cpp
++++ b/src/server/game/SoloSim/solosim.cpp
+@@ -1875,6 +1875,14 @@ bool World::Clash(SimAgent& a, SimSite const& site)
+     Rng r(_seed, a.id ^ (foe->id << 12), _clock, P_FIGHT + 950);
+     bool sought = (a.ambition == AmbitionType::Revenge && a.avengeFor == foe->id) || (foe->ambition == AmbitionType::Revenge && foe->avengeFor == a.id);
+     if (!sought && !r.Chance(0.15f)) return false;                 // the ground is wide: often they never cross paths
++    return Duel(a, *foe, site, site.id, sought, r, Acore::StringFormat("over the {} hunting", site.creatureName), Acore::StringFormat("hunting {}", site.creatureName));
++}
++
++// the fight itself, wherever they met. `ground` (a hunting site, or 0) is where a bold loser will look for the winner again.
++bool World::Duel(SimAgent& a, SimAgent& foeRef, SimSite const& site, uint32 ground, bool sought, Rng& r, std::string const& over, std::string const& seen)
++{
++    SimAgent* foe = &foeRef;
++    bool horde = IsHordeRace(a.race);
+     _lastClash[a.id] = _lastClash[foe->id] = _clock;
+     uint32 na = PartySize(a), nf = PartySize(*foe);
+     auto strength = [&](SimAgent const& x, uint32 n) { return float(x.level) * 4.0f + x.gearTier / 10.0f + float(n - 1) * 14.0f + r.Float() * 20.0f; };
+@@ -1887,8 +1895,8 @@ bool World::Clash(SimAgent& a, SimSite const& site)
+     {
+         _memories.push_back({ a.id, 1, foe->id, uint8(EventType::Clash), -30, 40, _clock });
+         _memories.push_back({ foe->id, 1, a.id, uint8(EventType::Clash), -30, 40, _clock });
+-        Log(EventType::Clash, weaker, site.id, Acore::StringFormat("{} saw {} of {} hunting {} and kept their distance.", Who(weaker),
+-            Who(&weaker == &a ? *foe : a), &weaker == &a ? them : (horde ? "the Horde" : "the Alliance"), site.creatureName), false, (&weaker == &a ? *foe : a).id);
++        Log(EventType::Clash, weaker, site.id, Acore::StringFormat("{} saw {} of {} {} and kept their distance.", Who(weaker),
++            Who(&weaker == &a ? *foe : a), &weaker == &a ? them : (horde ? "the Horde" : "the Alliance"), seen), false, (&weaker == &a ? *foe : a).id);
+         return false;
+     }
+     SimAgent& win = sa >= sf ? a : *foe;
+@@ -1897,7 +1905,7 @@ bool World::Clash(SimAgent& a, SimSite const& site)
+     _memories.push_back({ lose.id, 1, win.id, uint8(EventType::Clash), -90, 90, _clock });
+     _memories.push_back({ win.id, 1, lose.id, uint8(EventType::Clash), -40, 60, _clock });
+     ++win.kills;
+-    Log(EventType::Clash, win, site.id, Acore::StringFormat("{} fought {} over the {} hunting near {} and won.", Who(win), Who(lose), site.creatureName, place),
++    Log(EventType::Clash, win, site.id, Acore::StringFormat("{} fought {} {} near {} and won.", Who(win), Who(lose), over, place),
+         true, lose.id);
+     lose.wounds = uint8(std::min<uint32>(100, lose.wounds + r.Range(50, 90)));
+     if (lose.wounds >= 100 || r.Chance(0.6f))
+@@ -1914,9 +1922,9 @@ bool World::Clash(SimAgent& a, SimSite const& site)
+         SetAmbition(win);
+     }
+     // the beaten and the bold swear to pay it back - on the same ground, where the other side hunts
+-    if (lose.status != AgentStatus::Dead && lose.ambition != AmbitionType::Revenge && lose.bravery > 45 && r.Chance(lose.bravery / 100.0f))
++    if (ground && lose.status != AgentStatus::Dead && lose.ambition != AmbitionType::Revenge && lose.bravery > 45 && r.Chance(lose.bravery / 100.0f))
+     {
+-        lose.ambition = AmbitionType::Revenge; lose.ambitionTarget = site.id; lose.ambitionProgress = 0; lose.avengeFor = win.id;
++        lose.ambition = AmbitionType::Revenge; lose.ambitionTarget = ground; lose.ambitionProgress = 0; lose.avengeFor = win.id;
+         Log(EventType::AmbitionSet, lose, site.id, Acore::StringFormat("{} swore to pay {} back for what happened near {}.", lose.FullName(), win.FullName(), place), true, win.id);
+     }
+     return &lose == &a && a.status != AgentStatus::Active;           // beaten (or worse); a bloodied loser hunts on
+@@ -1933,7 +1941,7 @@ std::string World::Culprit(SimSite const& site) const
+ }
+ 
+ // A body was killed in the game world, in front of the player: in the sim that is a defeat like any other.
+-void World::BodyFell(uint32 agentId, std::string const& killer, bool dungeon)
++void World::BodyFell(uint32 agentId, std::string const& killer, bool dungeon, uint32 playerGuid, bool playerHorde)
+ {
+     struct Scale { float& s; float old; ~Scale() { s = old; } } scale{ _deathScale, _deathScale };
+     if (dungeon) _deathScale = 0.15f;
+@@ -1957,6 +1965,14 @@ void World::BodyFell(uint32 agentId, std::string const& killer, bool dungeon)
+     if (!site) return;
+     SimSite here = *site;
+     _culprit = Acore::StringFormat("{} near {}", killer, AreaOf(SiteName(site->id)));
++    if (playerGuid && !dungeon && a->role == ROLE_ADVENTURER)
++    {
++        // struck down by a player: they won't forget the face (no hiring them, cold words), and if the player is of the
++        // other side, the town tells it as the war it is
++        RememberPlayer(*a, playerGuid, -90, 95, EventType::Clash);
++        if (playerHorde != IsHordeRace(a->race))
++            _culprit = Acore::StringFormat("{} of {} near {}", killer, playerHorde ? "the Horde" : "the Alliance", AreaOf(SiteName(site->id)));
++    }
+     a->wounds = 100;
+     Defeat(*a, here);
+     _culprit.clear();
+@@ -2609,10 +2625,41 @@ void World::WildlifeTick()
+     }
+ }
+ // an adventurer's road went past a camp: strong ones cut their way through, the rest take a beating (or worse)
++// on the roads: someone of the other side travelling a road that runs close to yours (Nov 17). Roads are narrower than
++// hunting grounds but you're passing, not staying: 6%, 12% at night when you see each other late; the grudge-bound
++// always stop. Returns true when `a` came off worse and their journey is over.
++bool World::RoadClash(SimAgent& a, SimSite const& f, SimSite const& t)
++{
++    if (a.role != ROLE_ADVENTURER || f.map != t.map) return false;
++    if (auto it = _lastClash.find(a.id); it != _lastClash.end() && it->second + MIN_PER_DAY > _clock) return false;
++    bool horde = IsHordeRace(a.race);
++    SimAgent* foe = nullptr; bool sought = false;
++    for (auto& [id, o] : _agents)
++    {
++        if (o.status != AgentStatus::Active || o.role != ROLE_ADVENTURER || o.doing != Verb::Goto || o.plan.empty()) continue;
++        if (IsHordeRace(o.race) == horde || std::abs(int32(o.level) - int32(a.level)) > 12) continue;
++        SimSite const* of = SiteById(o.site); SimSite const* ot = SiteById(o.plan.front().site);
++        if (!of || !ot || of->map != f.map || ot->map != f.map) continue;
++        float mx = (of->x + ot->x) * 0.5f, my = (of->y + ot->y) * 0.5f;
++        float d = std::min({ SegDist(of->x, of->y, f.x, f.y, t.x, t.y), SegDist(ot->x, ot->y, f.x, f.y, t.x, t.y), SegDist(mx, my, f.x, f.y, t.x, t.y) });
++        if (d > 300.0f) continue;
++        if (auto it = _lastClash.find(o.id); it != _lastClash.end() && it->second + MIN_PER_DAY > _clock) continue;
++        bool grudge = (a.ambition == AmbitionType::Revenge && a.avengeFor == o.id) || (o.ambition == AmbitionType::Revenge && o.avengeFor == a.id);
++        if (grudge) { foe = &o; sought = true; break; }
++        if (!foe || o.level > foe->level) foe = &o;
++    }
++    if (!foe) return false;
++    Rng r(_seed, a.id ^ (foe->id << 12), _clock, P_FIGHT + 960);
++    bool night = HourOf(_clock) >= 21 || HourOf(_clock) < 5;
++    if (!sought && !r.Chance(night ? 0.12f : 0.06f)) return false;
++    return Duel(a, *foe, t, 0, sought, r, "on the road", "on the road");
++}
++
+ void World::RoadDanger(SimAgent& a, uint32 from, uint32 to)
+ {
+     SimSite const* f = SiteById(from); SimSite const* t = SiteById(to);
+     if (!f || !t || f->map != t->map) return;
++    if (RoadClash(a, *f, *t)) return;
+     for (SimCamp& k : _camps)
+     {
+         if (k.done || k.kind == CAMP_HERD || k.map != f->map || SegDist(k.x, k.y, f->x, f->y, t->x, t->y) > 400.0f) continue;
+@@ -4103,6 +4150,13 @@ void World::HelpedBy(uint32 agentId, uint32 guid, std::string const& name)
+ // Would they travel with this player? "" = yes; otherwise what they say instead. People who trust you always come;
+ // a grudge, a big gap in experience, a cautious stranger or a hunting party of friends can each be a no.
+ // The answer holds for the day (asking again won't re-roll it).
++bool World::AgentIsHorde(uint32 agentId)
++{
++    std::lock_guard<std::mutex> guard(sBodyLock);
++    SimAgent const* a = AgentById(agentId);
++    return a && IsHordeRace(a->race);
++}
++
+ std::string World::HireRefusal(uint32 agentId, uint32 guid, uint8 playerLevel)
+ {
+     std::lock_guard<std::mutex> guard(sBodyLock);
+diff --git a/src/server/game/SoloSim/solosim.h b/src/server/game/SoloSim/solosim.h
+index 19c1277..786521b 100644
+--- a/src/server/game/SoloSim/solosim.h
++++ b/src/server/game/SoloSim/solosim.h
+@@ -241,7 +241,8 @@ namespace SoloSim
+         uint32 GoalNode(uint32 agentId);
+         bool Intent(uint32 agentId, SimIntent& out);
+         // an embodied person was killed in the game world (call on the world thread)
+-        void BodyFell(uint32 agentId, std::string const& killer, bool dungeon = false);   // dungeon: far less likely to be final
++        void BodyFell(uint32 agentId, std::string const& killer, bool dungeon = false, uint32 playerGuid = 0, bool playerHorde = false);   // dungeon: far less likely to be final; playerGuid: a player's hand
++        bool AgentIsHorde(uint32 agentId);                 // which side a sim person is on (for hiring)
+         WanderNode const* StepToward(WanderNode const* cur, uint32 goalNodeId);
+         // who is out and about: nearest = the 12 nearest to (x, y) with what they're doing, else a count per zone
+         std::string People(uint32 mapId, float x, float y, bool nearest, uint32 guid = 0);
+@@ -415,7 +416,9 @@ namespace SoloSim
+         uint32 PickHuntSite(SimAgent& a);
+         uint32 PickNewHome(SimAgent const& a) const;
+         uint32 TravelMinutes(uint32 fromSite, uint32 toSite, SimAgent const& a) const;
+-        bool Clash(SimAgent& a, SimSite const& site);   // the other side hunting the same ground: blows, or distance kept
++        bool Clash(SimAgent& a, SimSite const& site);
++        bool RoadClash(SimAgent& a, SimSite const& from, SimSite const& to);   // the other side on a road close to yours
++        bool Duel(SimAgent& a, SimAgent& foe, SimSite const& site, uint32 ground, bool sought, Rng& r, std::string const& over, std::string const& seen);   // the other side hunting the same ground: blows, or distance kept
+         uint32 DockTown(uint32 map, float x, float y, SimAgent const& a) const;   // the town serving a boat or zeppelin dock
+         bool HasFittingHunt(SimAgent const& a, uint32 nearHub, float radius) const;
+         Rng R(SimAgent const& a, uint32 purpose) const { return Rng(_seed, a.id, _clock, purpose); }
+-- 
+2.56.0.windows.2
+

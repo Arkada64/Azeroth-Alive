@@ -61,7 +61,15 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
   hears of it. Revenge: the beaten (bold ones, by bravery) swear to pay back the one who beat them - they hunt that ground
   again, a meeting is then certain and no one walks away; won = revenge had, the foe gone = grudge let go, 80 kills there
   without finding them = given up. Test on a copy (48 h): at 35% there were 45 clashes (80% of all defeats, 2 deaths) -
-  lowered to 15%. Not yet: clashes on the roads, enemy bodies hostile near you, crossings not yet seen in the log.
+  lowered to 15%. Crossings not yet seen in the log (arrivals aren't kept).
+  **Roads and you, Nov 17 (01:10):** clashes on the roads too - someone of the other side travelling a road within 300 yd
+  of yours (6% by day, 12% at night; the grudge-bound always stop); test copy at 12%: 22 road clashes in 48 h, halved.
+  Enemy bodies near you were already hostile (NPCBots wanderers carry their race's faction and attack any hostile in
+  reach, players included; NpcBot.PvP = 1) and fight each other for real, their deaths reaching the sim. New: a sim
+  adventurer killed by you (or your pet or companion) remembers it (-90: no hiring, cold words), and when you're of the
+  other side the news names you as the Horde/Alliance; /invite never reaches the other side's people.
+  Still open: World-PvP gear drops (looting a piece off a sim body - needs in-game testing of NPCBot corpse loot), sim
+  people seeking out a player who killed them, the Horde side's war news.
 - Stage 1, a two-sided world: both factions' towns (side from guard/service hostility), Horde zones and races (orc,
   troll, tauren, undead, blood elf; goblins neutral), Horde townsfolk looks; danger-aware routes (enemy towns and
   contested roads cost more; the brave or vengeful take them); clashes resolved like threats, feeding grudges,
