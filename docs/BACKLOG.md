@@ -194,8 +194,9 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
   (low-level murloc camps by Brill, matches Reforged's undead/troll starter kits) as Horde, or a neutral murloc
   village if we want them outside the war.
 - Later, after Worgen and Murloc: **Furbolg** and **Naga**. Furbolg can start in the draenei area - the Stillpine
-  furbolgs of Azuremyst Isle (Stillpine Hold) are already the draenei's allies there (needs map 530). Naga: start
-  and side to decide (coastal; Reforged made them Horde).
+  furbolgs of Azuremyst Isle (Stillpine Hold) are already the draenei's allies there (needs map 530). Naga: Horde,
+  starting in Eversong Woods (the user's pick) - Highborne kin of the blood elves, and Vashj's naga stood with
+  Kael'thas; the Eversong coast suits them (also map 530).
 - Murloc (and naga): understand how an existing custom-race client does it (survey their patch, diff tables against
   stock, find what their Wow.exe changes and why), then build our own from scripts - table edits, model conversion
   (creature model -> character model), creation screen, an exe patcher written from that understanding and public
