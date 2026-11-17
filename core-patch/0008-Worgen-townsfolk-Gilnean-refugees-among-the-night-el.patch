@@ -1,0 +1,156 @@
+From 3275264a63a84d117caccf4268a03358d5fbf366 Mon Sep 17 00:00:00 2001
+From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 23:46:24 -0600
+Subject: [PATCH 8/8] Worgen townsfolk: Gilnean refugees among the night elves
+ and in Stormwind
+
+- Race 12 (worgen, from mod-worgoblin) townsfolk in their human form, titled Gilnean Farmhand/Laborer/Trader/Refugee
+- A world made before worgen were playable gets its refugees once (about 1 in 7 in Darnassus, 1 in 10 elsewhere in elf lands)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01JU37XfnHTvru3VVz2sNN7z
+---
+ src/server/game/SoloSim/solosim.cpp           | 32 ++++++++++++++++---
+ src/server/game/SoloSim/solosim.h             |  2 +-
+ src/server/game/SoloSim/solosim_civilians.cpp | 17 +++++++---
+ 3 files changed, 41 insertions(+), 10 deletions(-)
+
+diff --git a/src/server/game/SoloSim/solosim.cpp b/src/server/game/SoloSim/solosim.cpp
+index 8680784..84096ae 100644
+--- a/src/server/game/SoloSim/solosim.cpp
++++ b/src/server/game/SoloSim/solosim.cpp
+@@ -72,7 +72,7 @@ namespace
+ 
+     char const* RaceName(uint8 r)
+     {
+-        switch (r) { case 1: return "human"; case 3: return "dwarf"; case 4: return "night elf"; case 7: return "gnome"; case 11: return "draenei"; default: return "stranger"; }
++        switch (r) { case 1: return "human"; case 3: return "dwarf"; case 4: return "night elf"; case 7: return "gnome"; case 11: return "draenei"; case 12: return "worgen"; default: return "stranger"; }
+     }
+     char const* ClassName(uint8 c)
+     {
+@@ -1843,7 +1843,7 @@ static uint8 CivilianLevel(uint64 seed, SimAgent const& a, SimSite const& home)
+ }
+ 
+ // one townsperson of h (their look, name, job and nature); age is set by the caller when it matters
+-SimAgent World::MakeCivilian(SimSite const& h, uint32 id)
++SimAgent World::MakeCivilian(SimSite const& h, uint32 id, uint8 forceRace)
+ {
+     bool dwarven = DWARF_ZONES.contains(h.zone), elven = ELF_ZONES.contains(h.zone);
+     Rng r(_seed, id, h.id, P_GEN + 500);
+@@ -1854,9 +1854,11 @@ SimAgent World::MakeCivilian(SimSite const& h, uint32 id)
+         Rng mix(_seed, id, h.id, P_GEN + 510);
+         uint32 roll = mix.Range(1, 100);
+         if (dwarven) a.race = roll <= 30 ? 7 : 3;
+-        else if (elven) a.race = (h.zone == 1657 && roll <= 10) ? 1 : 4;
+-        else if (h.zone == 1519) a.race = roll <= 7 ? 3 : roll <= 13 ? 7 : roll <= 18 ? 4 : 1;
++        // Gilnean refugees (worgen, seen in their human form) were taken in by the night elves; a few reached Stormwind
++        else if (elven) a.race = (h.zone == 1657 && roll <= 10) ? 1 : roll >= (h.zone == 1657 ? 86u : 92u) ? 12 : 4;
++        else if (h.zone == 1519) a.race = roll <= 7 ? 3 : roll <= 13 ? 7 : roll <= 18 ? 4 : roll >= 98 ? 12 : 1;
+         else a.race = roll <= 5 ? 3 : roll <= 8 ? 7 : roll <= 10 ? 4 : 1;
++        if (forceRace) a.race = forceRace;
+     }
+     uint32 roll = r.Range(1, 100);
+     a.job = h.zone == 1519 ? (roll <= 45 ? JOB_MARKET : roll <= 75 ? JOB_LABORER : JOB_LOAFER)
+@@ -1948,6 +1950,26 @@ void World::EnsureCivilians()
+         }
+     }
+     LOG_INFO("server.loading", "SoloWoW sim: {} townsfolk moved into the region's towns", made);
++    // a world that was made before worgen were playable: the Gilnean refugees arrive once, among the night elves
++    // (about one in seven in Darnassus, one in ten in Teldrassil's other towns) and a handful in Stormwind
++    if (sObjectMgr->GetPlayerInfo(12, 1) &&
++        std::none_of(_agents.begin(), _agents.end(), [](auto const& kv) { return kv.second.role == ROLE_CIVILIAN && kv.second.race == 12; }))
++    {
++        uint32 refugees = 0;
++        for (SimSite const& h : _sites)
++        {
++            if (h.type != SiteType::Hub || !(h.services & SVC_INN)) continue;
++            uint32 share = h.zone == 1657 ? 7 : ELF_ZONES.contains(h.zone) ? 10 : h.zone == 1519 ? 50 : 0;
++            for (uint32 i = 0, n = share ? std::max<uint32>(1, TownTarget(h) / share) : 0; i < n; ++i)
++            {
++                uint32 id = _nextAgent++;
++                _agents[id] = MakeCivilian(h, id, 12);
++                _agents[id].born = _clock;
++                ++refugees;
++            }
++        }
++        if (refugees) LOG_INFO("server.loading", "SoloWoW sim: {} Gilnean refugees (worgen) settled among the night elves and in Stormwind", refugees);
++    }
+     // levels start from town and work (a floor: what they've grown into since is kept)
+     uint32 lo = 255, hi = 0;
+     for (auto& [id, ag] : _agents)
+@@ -2650,7 +2672,7 @@ void World::RetireAdventurers()
+     {
+         if (retired >= 3) break;
+         if (a.role != ROLE_ADVENTURER || a.status != AgentStatus::Active || a.party || a.doing == Verb::Fight) continue;
+-        if (a.race != 1 && a.race != 3 && a.race != 4) continue;        // townsfolk looks exist for humans, dwarves, night elves
++        if (a.race != 1 && a.race != 3 && a.race != 4 && a.race != 12) continue;   // townsfolk looks: humans (and worgen in human form), dwarves, night elves
+         SimSite const* h = SiteById(a.home);
+         if (!h || h->type != SiteType::Hub || !(h->services & SVC_INN)) continue;
+         uint32 age = Age(a);
+diff --git a/src/server/game/SoloSim/solosim.h b/src/server/game/SoloSim/solosim.h
+index f2e1ffc..8c69741 100644
+--- a/src/server/game/SoloSim/solosim.h
++++ b/src/server/game/SoloSim/solosim.h
+@@ -301,7 +301,7 @@ namespace SoloSim
+         uint32 InnkeeperOf(uint32 hub) const;
+         void PostErrands();
+         void CivilianGrow(SimAgent& a, char const* how);
+-        SimAgent MakeCivilian(SimSite const& h, uint32 id);
++        SimAgent MakeCivilian(SimSite const& h, uint32 id, uint8 forceRace = 0);
+         void AssignAges();
+         void TownsfolkGenerations();
+         void RebuildTownTalk();
+diff --git a/src/server/game/SoloSim/solosim_civilians.cpp b/src/server/game/SoloSim/solosim_civilians.cpp
+index db54ef4..7865a70 100644
+--- a/src/server/game/SoloSim/solosim_civilians.cpp
++++ b/src/server/game/SoloSim/solosim_civilians.cpp
+@@ -49,9 +49,17 @@ namespace
+ 
+     uint32 Hash(uint32 agent, uint32 salt) { return uint32(SoloSim::Mix((uint64(agent) << 24) ^ salt)); }
+ 
+-    char const* JobTitle(uint8 job, bool veteran = false)
++    char const* JobTitle(uint8 job, bool veteran = false, uint8 race = 0)
+     {
+         if (veteran) return "Retired Adventurer";
++        if (race == 12)                       // worgen townsfolk: the refugees of Gilneas, in their human form
++            switch (job)
++            {
++                case SoloSim::JOB_FARMHAND: return "Gilnean Farmhand";
++                case SoloSim::JOB_LABORER:  return "Gilnean Laborer";
++                case SoloSim::JOB_MARKET:   return "Gilnean Trader";
++                default:                    return "Gilnean Refugee";
++            }
+         switch (job)
+         {
+             case SoloSim::JOB_FARMHAND: return "Farmhand";
+@@ -119,7 +127,7 @@ namespace
+                 // they've grown since we last made their body: the next one comes out at their new level
+                 uint8 lvl = std::max<uint8>(1, b.level);
+                 if (it->second.minlevel != lvl) it->second.minlevel = it->second.maxlevel = lvl;
+-                it->second.SubName = JobTitle(b.job, b.veteran);          // an elder who gave up their work
++                it->second.SubName = JobTitle(b.job, b.veteran, b.race);          // an elder who gave up their work
+                 return entry;
+             }
+         }
+@@ -128,7 +136,7 @@ namespace
+         CreatureTemplate t = *src;
+         t.Entry = entry;
+         t.Name = b.name;
+-        t.SubName = JobTitle(b.job, b.veteran);
++        t.SubName = JobTitle(b.job, b.veteran, b.race);
+         uint32 idx = uint32(SoloSim::Mix(0x5010C0DEull ^ (uint64(b.agent) * 0x27D4EB2Full)) % src->Models.size());
+         // a body of their own sex: the borrowed townsfolk often come in both
+         for (uint32 k = 0; k < src->Models.size(); ++k)
+@@ -139,7 +147,8 @@ namespace
+         }
+         t.Models = { CreatureModel(src->Models[idx].CreatureDisplayID, 1.0f, 1.0f) };
+         // their own look from everyone the game has of their race and sex, and a little height of their own (94-106%)
+-        if (auto it = Looks().find({ b.race, b.gender }); it != Looks().end() && !it->second.empty())
++        // worgen townsfolk go about in their human form (the game's race-12 looks are fel orcs and wolf-men)
++        if (auto it = Looks().find({ uint8(b.race == 12 ? 1 : b.race), b.gender }); it != Looks().end() && !it->second.empty())
+         {
+             float scale = 0.94f + float(Hash(b.agent, 0x5CA1E) % 13) / 100.0f;
+             t.Models = { CreatureModel(it->second[Hash(b.agent, 0x100C) % it->second.size()], scale, 1.0f) };
+-- 
+2.56.0.windows.2
+
