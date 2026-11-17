@@ -1,7 +1,7 @@
 From c5beebf9647678c3b88ed1b551559cf40972dfc5 Mon Sep 17 00:00:00 2001
 From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
 Date: Mon, 16 Nov 2026 22:03:28 -0600
-Subject: [PATCH 06/24] Thinned spawns, tauren Plainsrunning, healing potions
+Subject: [PATCH 06/26] Thinned spawns, tauren Plainsrunning, healing potions
 
 - The game's own creatures stay dead longer on hard-hunted grounds; player kills count as hunting
 - Plainsrunning (spell 12821, still in the client) as a stacking run-speed aura: a stack per 35 yd, -1/s standing, -6 per hit, max 30; SoloWoW.Plainsrunning.* settings

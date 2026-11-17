@@ -4,3 +4,8 @@
 INSERT IGNORE INTO `quest_template` (`ID`, `QuestType`, `QuestLevel`, `MinLevel`, `LogTitle`)
 WITH RECURSIVE n AS (SELECT 95000 AS id UNION ALL SELECT id + 1 FROM n WHERE id < 95999)
 SELECT id, 2, 1, 1, '' FROM n;
+
+-- board bounties: 96000-96999
+INSERT IGNORE INTO `quest_template` (`ID`, `QuestType`, `QuestLevel`, `MinLevel`, `LogTitle`)
+WITH RECURSIVE n AS (SELECT 96000 AS id UNION ALL SELECT id + 1 FROM n WHERE id < 96999)
+SELECT id, 2, 1, 1, '' FROM n;

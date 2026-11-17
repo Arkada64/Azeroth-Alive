@@ -1,7 +1,7 @@
 From fe92200abbf0a22bfc65758f5ba1a8bcec55dc18 Mon Sep 17 00:00:00 2001
 From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
 Date: Mon, 16 Nov 2026 21:28:49 -0600
-Subject: [PATCH 02/24] Townsfolk sizes, districts, looks and immigration;
+Subject: [PATCH 02/26] Townsfolk sizes, districts, looks and immigration;
  party-invite hiring; safer deaths and catch-up
 
 - Deaths by place (raids exempt, dungeons rarely final), SoloSim.Permadeath switch

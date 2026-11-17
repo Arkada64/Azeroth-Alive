@@ -1,0 +1,71 @@
+From 494bbef97f261c04a234206dd88586cfa63a3324 Mon Sep 17 00:00:00 2001
+From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 07:30:27 -0600
+Subject: [PATCH 26/26] Naga, Tuskarr and Furbolg: armour hidden, login repair,
+ furbolg weapons drawn and loot delay
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01JU37XfnHTvru3VVz2sNN7z
+---
+ src/server/game/Handlers/LootHandler.cpp  |  2 +-
+ src/server/game/SoloSim/solosim_races.cpp | 10 +++++++---
+ 2 files changed, 8 insertions(+), 4 deletions(-)
+
+diff --git a/src/server/game/Handlers/LootHandler.cpp b/src/server/game/Handlers/LootHandler.cpp
+index 9092a60..f09d5f3 100644
+--- a/src/server/game/Handlers/LootHandler.cpp
++++ b/src/server/game/Handlers/LootHandler.cpp
+@@ -370,7 +370,7 @@ void WorldSession::HandleLootOpcode(WorldPacket& recvData)
+ 
+     // SoloWoW: murlocs (race 15) have no kneel-to-loot animation, so the window opened at once - give the corpse the same
+     // moment of rummaging every other race spends (Nov 17)
+-    if (player->getRace() == 15)
++    if (player->getRace() == 15 || player->getRace() == 20)   // murloc, furbolg: creature bodies
+     {
+         player->StopMoving();
+         player->m_Events.AddEventAtOffset([player, guid]()
+diff --git a/src/server/game/SoloSim/solosim_races.cpp b/src/server/game/SoloSim/solosim_races.cpp
+index a2fb459..4cb8a9f 100644
+--- a/src/server/game/SoloSim/solosim_races.cpp
++++ b/src/server/game/SoloSim/solosim_races.cpp
+@@ -12,6 +12,10 @@ namespace SoloRaces
+ namespace
+ {
+     constexpr uint8 RACE_MURLOC = 15;
++    // our races (Nov 17): armour isn't drawn on any of these bodies; the creature-model ones (murloc, furbolg) also
++    // keep their weapons in hand (no sheath animations or points)
++    inline bool OurRace(uint8 r) { return r == 15 || r == 13 || r == 17 || r == 20; }
++    inline bool CreatureBody(uint8 r) { return r == 15 || r == 20; }
+ 
+     class solosim_race_looks : public PlayerScript
+     {
+@@ -22,7 +26,7 @@ namespace
+         // whatever their race and class should start with and they don't have, they get on logging in
+         void OnPlayerLogin(Player* player) override
+         {
+-            if (player->getRace() != RACE_MURLOC) return;
++            if (!OurRace(player->getRace())) return;
+             player->LearnDefaultSkills();
+             player->LearnCustomSpells();                     // the racials (playercreateinfo_spell_custom)
+         }
+@@ -31,7 +35,7 @@ namespace
+         // in hand, like every murloc you've ever met (Nov 17). Ranged stays ranged while shooting.
+         void OnPlayerUpdate(Player* player, uint32 diff) override
+         {
+-            if (player->getRace() != RACE_MURLOC) return;
++            if (!CreatureBody(player->getRace())) return;
+             if (player->GetSheath() == SHEATH_STATE_UNARMED)
+             {
+                 if (player->GetWeaponForAttack(BASE_ATTACK, true) || player->GetWeaponForAttack(OFF_ATTACK, true))
+@@ -50,7 +54,7 @@ namespace
+ 
+         void OnPlayerAfterSetVisibleItemSlot(Player* player, uint8 slot, Item* /*item*/) override
+         {
+-            if (player->getRace() != RACE_MURLOC) return;
++            if (!OurRace(player->getRace())) return;
+             if (slot == EQUIPMENT_SLOT_MAINHAND || slot == EQUIPMENT_SLOT_OFFHAND || slot == EQUIPMENT_SLOT_RANGED) return;
+             player->SetUInt32Value(PLAYER_VISIBLE_ITEM_1_ENTRYID + (slot * 2), 0);
+             player->SetUInt32Value(PLAYER_VISIBLE_ITEM_1_ENCHANTMENT + (slot * 2), 0);
+-- 
+2.56.0.windows.2
+

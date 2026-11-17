@@ -1,0 +1,669 @@
+From daadcab6030c9459d37926df3572098c87cab594 Mon Sep 17 00:00:00 2001
+From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 07:30:27 -0600
+Subject: [PATCH 25/26] Crafters and cooks, board bounties in the quest log,
+ rain talk only in the rain
+
+Smiths, alchemists, leatherworkers and cooks work at real stations and stock their town; adventurers and shops draw on that stock.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01JU37XfnHTvru3VVz2sNN7z
+---
+ src/server/game/SoloSim/solosim.cpp           | 258 +++++++++++++++++-
+ src/server/game/SoloSim/solosim.h             |  18 +-
+ src/server/game/SoloSim/solosim_boards.cpp    |   6 +-
+ src/server/game/SoloSim/solosim_civilians.cpp |  29 +-
+ src/server/game/SoloSim/solosim_quests.cpp    |  70 ++++-
+ src/server/game/SoloSim/solosim_quests.h      |   6 +
+ 6 files changed, 375 insertions(+), 12 deletions(-)
+
+diff --git a/src/server/game/SoloSim/solosim.cpp b/src/server/game/SoloSim/solosim.cpp
+index e54a6f0..49da841 100644
+--- a/src/server/game/SoloSim/solosim.cpp
++++ b/src/server/game/SoloSim/solosim.cpp
+@@ -3,6 +3,7 @@
+ // visits and rainy days.
+ #include "solosim.h"
+ #include "ItemTemplate.h"
++#include "GameObjectData.h"
+ #include <filesystem>
+ #include <cstring>
+ #include "botdatamgr.h"
+@@ -181,7 +182,7 @@ namespace
+ // setup
+ // =====================================================================================================
+ static char const* const SIM_TABLES[] = { "sim_state", "sim_site", "sim_agent", "sim_relation", "sim_memory", "sim_event",
+-                                          "sim_bounty", "sim_news", "sim_hub_news", "sim_market", "sim_errand", "sim_camp", "sim_ground" };
++                                          "sim_bounty", "sim_news", "sim_hub_news", "sim_market", "sim_errand", "sim_camp", "sim_ground", "sim_crafted" };
+ 
+ void World::CreateTables()
+ {
+@@ -250,6 +251,7 @@ void World::CreateTables()
+     CharacterDatabase.DirectExecute("CREATE TABLE IF NOT EXISTS sim_news (id INT UNSIGNED NOT NULL PRIMARY KEY, subject INT UNSIGNED NOT NULL, site INT UNSIGNED NOT NULL, at INT UNSIGNED NOT NULL) ENGINE=InnoDB");
+     CharacterDatabase.DirectExecute("CREATE TABLE IF NOT EXISTS sim_hub_news (hub INT UNSIGNED NOT NULL, news INT UNSIGNED NOT NULL, PRIMARY KEY (hub, news)) ENGINE=InnoDB");
+     CharacterDatabase.DirectExecute("CREATE TABLE IF NOT EXISTS sim_market (hub INT UNSIGNED NOT NULL PRIMARY KEY, ore INT UNSIGNED NOT NULL, herbs INT UNSIGNED NOT NULL, hides INT UNSIGNED NOT NULL, fish INT UNSIGNED NOT NULL) ENGINE=InnoDB");
++    CharacterDatabase.DirectExecute("CREATE TABLE IF NOT EXISTS sim_crafted (hub INT UNSIGNED NOT NULL PRIMARY KEY, potions INT UNSIGNED NOT NULL, food INT UNSIGNED NOT NULL, arms INT UNSIGNED NOT NULL, leather INT UNSIGNED NOT NULL) ENGINE=InnoDB");
+ }
+ 
+ void World::BootstrapSites(std::set<uint32> const& zones, bool hubsOnly)
+@@ -739,6 +741,11 @@ void World::Save()
+     for (auto const& [hub, g] : _market)
+         rows.push_back(Acore::StringFormat("({},{},{},{},{})", hub, g[PROF_MINING], g[PROF_HERBALISM], g[PROF_SKINNING], g[PROF_FISHING]));
+     Chunked("INSERT INTO sim_market VALUES ", rows);
++    CharacterDatabase.DirectExecute("DELETE FROM sim_crafted");
++    rows.clear();
++    for (auto const& [hub, c] : _crafted)
++        rows.push_back(Acore::StringFormat("({},{},{},{},{})", hub, c[CRAFT_POTION], c[CRAFT_FOOD], c[CRAFT_ARMS], c[CRAFT_LEATHER]));
++    Chunked("INSERT INTO sim_crafted VALUES ", rows);
+ 
+     // only what's worth remembering is kept (the chronicle's events), and only for a season: 90 game days
+     if (_clock > 90 * MIN_PER_DAY)
+@@ -840,6 +847,9 @@ bool World::Load()
+         do { Field* f = r->Fetch(); _news.push_back({ f[0].Get<uint32>(), f[1].Get<uint32>(), f[2].Get<uint32>(), f[3].Get<uint32>() }); } while (r->NextRow());
+     if (QueryResult r = CharacterDatabase.Query("SELECT hub, news FROM sim_hub_news ORDER BY hub, news"))
+         do { Field* f = r->Fetch(); _hubNews[f[0].Get<uint32>()].push_back(f[1].Get<uint32>()); } while (r->NextRow());
++    _crafted.clear();
++    if (QueryResult r = CharacterDatabase.Query("SELECT hub, potions, food, arms, leather FROM sim_crafted"))
++        do { Field* f = r->Fetch(); auto& c = _crafted[f[0].Get<uint32>()]; for (uint8 k = 0; k < CRAFT_COUNT; ++k) c[k] = f[1 + k].Get<uint32>(); } while (r->NextRow());
+     if (QueryResult r = CharacterDatabase.Query("SELECT hub, ore, herbs, hides, fish FROM sim_market"))
+         do
+         {
+@@ -1399,6 +1409,11 @@ void World::DailyTick()
+     RollWeather();
+     for (auto& [hub, g] : _market)                     // the town uses up its goods: crafters, cooks, tanners
+         for (uint32& v : g) v = v * 7 / 10;
++    for (auto& [hub, c] : _crafted)                    // the inn serves the cooks' food; the rest sells slowly to passers-by
++    {
++        c[CRAFT_FOOD] = c[CRAFT_FOOD] * 6 / 10;
++        c[CRAFT_POTION] = c[CRAFT_POTION] * 9 / 10; c[CRAFT_ARMS] = c[CRAFT_ARMS] * 9 / 10; c[CRAFT_LEATHER] = c[CRAFT_LEATHER] * 9 / 10;
++    }
+     uint32 alive = 0;
+     for (auto const& [id, a] : _agents)
+         if ((a.status == AgentStatus::Active || a.status == AgentStatus::Recovering) && a.role == ROLE_ADVENTURER) ++alive;
+@@ -2396,6 +2411,7 @@ void World::EnsureCivilians()
+             }
+     if (hi) LOG_INFO("server.loading", "SoloWoW sim: townsfolk are levels {} to {}", lo, hi);
+     AssignAges();
++    AssignCrafters();
+ }
+ 
+ // =====================================================================================================
+@@ -3490,6 +3506,9 @@ void World::FinishStep(SimAgent& a, PlanStep const& s)
+         case Verb::Gather:
+             ResolveGather(a, s.site, s.minutes);
+             break;
++        case Verb::Work:
++            if (a.role == ROLE_CIVILIAN && a.job >= JOB_SMITH) CraftWork(a, s.minutes);   // the crafters' work fills the shelves
++            break;
+         case Verb::Sleep:
+             a.fatigue = 0;
+             a.wounds = uint8(a.wounds > 50 ? a.wounds - 50 : 0);
+@@ -3521,13 +3540,33 @@ void World::FinishStep(SimAgent& a, PlanStep const& s)
+             uint32 restock = uint32(a.level) * 15 * (100 - a.supplies) / 100;
+             uint32 paid = 0;
+             if (a.money >= repair) { a.money -= repair; paid += repair; a.durability = 100; }
+-            if (a.money >= restock) { a.money -= restock; paid += restock; a.supplies = 100; }
+-            // healing potions: the careful carry more; nobody spends more than a quarter of their purse on them
++            auto& made = _crafted[a.site];
++            if (a.money >= restock)
++            {
++                a.money -= restock; paid += restock;
++                // food comes from the town's cooks: none in, and they set out on hard bread and what they can find
++                if (made[CRAFT_FOOD]) { --made[CRAFT_FOOD]; a.supplies = 100; } else a.supplies = std::max<uint8>(a.supplies, 70);
++            }
++            // healing potions: the careful carry more; nobody spends more than a quarter of their purse on them - and only
++            // what the alchemists have made (Nov 17)
+             {
+                 uint32 price = 10 + uint32(a.level) * a.level;
+                 uint8 want = uint8(2 + a.caution / 25);
+                 uint32 budget = a.money / 4;
+-                while (a.potions < want && budget >= price) { ++a.potions; budget -= price; a.money -= price; paid += price; }
++                while (a.potions < want && budget >= price && made[CRAFT_POTION]) { ++a.potions; --made[CRAFT_POTION]; budget -= price; a.money -= price; paid += price; }
++            }
++            // a piece of new kit from the smith or the leatherworker, when the purse allows
++            {
++                uint32 price = 50 + uint32(a.level) * a.level * 8;
++                uint8 kind = (a.cls == 1 || a.cls == 2 || a.cls == 6) ? CRAFT_ARMS : (a.cls == 3 || a.cls == 4 || a.cls == 7 || a.cls == 11) ? CRAFT_LEATHER : CRAFT_COUNT;
++                if (kind < CRAFT_COUNT && made[kind] && a.gearTier < 85 && a.money >= price * 3)
++                {
++                    --made[kind]; a.money -= price; paid += price;
++                    a.gearTier = uint8(std::min<uint32>(100, a.gearTier + 6));
++                    a.gearDue = uint8(std::min<uint32>(6, a.gearDue + 1u));
++                    Log(EventType::Traded, a, a.site, Acore::StringFormat("{} bought new {} from the {} in {}.", a.FullName(),
++                        kind == CRAFT_ARMS ? "steel" : "leathers", kind == CRAFT_ARMS ? "smith" : "leatherworker", SiteName(a.site)), false);
++                }
+             }
+             if (a.durability < 100 || a.supplies < 100)
+                 Log(EventType::Broke, a, a.site, Acore::StringFormat("{} couldn't afford repairs and supplies at {} and had to make do.", a.FullName(), SiteName(a.site)), true);
+@@ -3962,7 +4001,9 @@ std::string World::Doing(SimAgent const& a) const
+         case Verb::Fight:     return Acore::StringFormat("hunting {}", SiteName(a.site));
+         case Verb::Gather:    return Acore::StringFormat("gathering {}", PlaceOnly(SiteName(a.site)));
+         case Verb::Sleep:     return std::string(a.role == ROLE_CIVILIAN ? "asleep at home in " : "asleep in ") + SiteName(a.site);
+-        case Verb::Work:      return std::string(a.job == JOB_FARMHAND ? "working the fields by " : a.job == JOB_LABORER ? "hauling timber in " : "helping at the market in ") + SiteName(a.site);
++        case Verb::Work:      return std::string(a.job == JOB_FARMHAND ? "working the fields by " : a.job == JOB_LABORER ? "hauling timber in "
++                                  : a.job == JOB_SMITH ? "at the forge in " : a.job == JOB_ALCHEMIST ? "brewing potions in " : a.job == JOB_COOK ? "cooking in "
++                                  : a.job == JOB_LEATHERWORKER ? "working leather in " : "helping at the market in ") + SiteName(a.site);
+         case Verb::Trade:     return Acore::StringFormat("trading in {}", SiteName(a.site));
+         case Verb::Socialize: return Acore::StringFormat("at the inn in {}", SiteName(a.site));
+         case Verb::Train:     return Acore::StringFormat("with the trainers in {}", SiteName(a.site));
+@@ -4598,6 +4639,93 @@ static uint32 ShelfCount(std::array<uint32, PROF_COUNT> const& g, MarketGood con
+     return std::min<uint32>(SHELF_CAP, g[good.prof] / UNITS_PER_ITEM);
+ }
+ 
++// ---------------------------------------------------------------------------------------------------------------------
++// crafters (Nov 17): what they make, by the land's level - the game's own items (potions and food sold in the shops)
++struct Product { uint32 item; uint8 minLvl, maxLvl; };
++static Product const POTIONS[] = { { 118, 1, 14 }, { 858, 8, 24 }, { 929, 18, 34 }, { 1710, 28, 44 }, { 3928, 38, 54 }, { 13446, 48, 60 } };
++static Product const FOODS[] = { { 2680, 1, 10 }, { 2684, 8, 18 }, { 3220, 14, 24 }, { 3666, 20, 30 }, { 12210, 28, 40 }, { 13851, 38, 50 }, { 18045, 46, 60 } };
++static uint32 ProductFor(Product const* list, size_t n, uint8 level)
++{
++    for (size_t i = 0; i < n; ++i) if (level >= list[i].minLvl && level <= list[i].maxLvl) return list[i].item;
++    return list[n - 1].item;
++}
++constexpr uint32 CRAFT_CAP = 60;                          // a town keeps at most this many of each made thing
++
++uint8 World::StationsOf(uint32 hub)
++{
++    if (_stations.empty())                                 // once: anvils, forges and cooking fires near each town
++    {
++        for (auto const& [guid, g] : sObjectMgr->GetAllGOData())
++        {
++            if (!SIM_MAPS.contains(g.mapid)) continue;
++            GameObjectTemplate const* t = sObjectMgr->GetGameObjectTemplate(g.id);
++            if (!t || t->type != GAMEOBJECT_TYPE_SPELL_FOCUS) continue;
++            uint8 bit = (t->spellFocus.focusId == 1 || t->spellFocus.focusId == 3) ? 1 : t->spellFocus.focusId == 4 ? 2 : 0;
++            if (!bit) continue;
++            for (SimSite const& h : _sites)
++                if (h.type == SiteType::Hub && h.map == g.mapid && Dist2d(h.x, h.y, g.posX, g.posY) < 90.0f) _stations[h.id] |= bit;
++        }
++        _stations[0];                                       // built
++    }
++    auto it = _stations.find(hub);
++    return it == _stations.end() ? 0 : it->second;
++}
++
++// each town that can keep one gets a smith (an anvil or forge in town), a cook (an inn), an alchemist
++// (10+) and a leatherworker (10+) - taken from its labourers and market hands, once, so the crafts stay with the people
++void World::AssignCrafters()
++{
++    uint32 made = 0;
++    for (SimSite const& h : _sites)
++    {
++        if (h.type != SiteType::Hub || !(h.services & SVC_INN)) continue;
++        uint32 folk = TownTarget(h);
++        std::vector<Job> want;
++        if (StationsOf(h.id) & 1) want.push_back(JOB_SMITH);
++        want.push_back(JOB_COOK);
++        if (folk >= 10) want.push_back(JOB_ALCHEMIST);
++        if (folk >= 10) want.push_back(JOB_LEATHERWORKER);
++        for (Job j : want)
++        {
++            bool have = false; SimAgent* pick = nullptr;
++            for (auto& [id, a] : _agents)
++            {
++                if (a.role != ROLE_CIVILIAN || a.home != h.id || a.status == AgentStatus::Dead || a.status == AgentStatus::Gone) continue;
++                if (a.job == j) { have = true; break; }
++                if (!pick && (a.job == JOB_LABORER || a.job == JOB_MARKET) && Age(a) < 60) pick = &a;
++            }
++            if (have || !pick) continue;
++            pick->job = j; ++made;
++        }
++    }
++    if (made) LOG_INFO("server.loading", "SoloWoW sim: {} townsfolk took up a craft (smiths, cooks, alchemists, leatherworkers)", made);
++}
++
++// a working session: so many batches, each turning the market's raw goods into something made. A cook with nothing to
++// cook goes down to the water for fish; the others wait for the gatherers.
++void World::CraftWork(SimAgent& a, uint32 minutes)
++{
++    uint8 craft; uint8 input; uint32 per, yield;          // per batch: so many lots in, so many things out (a brew fills several vials)
++    switch (a.job)
++    {
++        case JOB_SMITH:         craft = CRAFT_ARMS;    input = PROF_MINING;    per = 3; yield = 2; break;
++        case JOB_ALCHEMIST:     craft = CRAFT_POTION;  input = PROF_HERBALISM; per = 3; yield = 5; break;
++        case JOB_LEATHERWORKER: craft = CRAFT_LEATHER; input = PROF_SKINNING;  per = 3; yield = 2; break;
++        case JOB_COOK:          craft = CRAFT_FOOD;    input = PROF_FISHING;   per = 1; yield = 4; break;
++        default: return;
++    }
++    auto& market = _market[a.home];
++    auto& made = _crafted[a.home];
++    uint32 batches = std::max<uint32>(1, minutes / 40), n = 0;
++    for (uint32 b = 0; b < batches && made[craft] < CRAFT_CAP; ++b)
++    {
++        if (market[input] >= per) { market[input] -= per; made[craft] = std::min<uint32>(CRAFT_CAP, made[craft] + yield); ++n; continue; }
++        if (a.job == JOB_COOK && market[PROF_SKINNING] >= 2) { market[PROF_SKINNING] -= 2; made[craft] = std::min<uint32>(CRAFT_CAP, made[craft] + yield); ++n; continue; }   // meat off the hunters' kills
++        if (a.job == JOB_COOK) { market[PROF_FISHING] += 2; continue; }   // nothing in: off to fish for it
++        break;
++    }
++}
++
+ void World::SyncMarkets()
+ {
+     if (hubVendors.empty())
+@@ -4652,6 +4780,24 @@ void World::SyncMarkets()
+                 }
+             }
+         }
++        // what the town's crafters made: potions at the shops, food at the inn (Nov 17)
++        std::array<uint32, CRAFT_COUNT> c{};
++        if (auto it = _crafted.find(hub); it != _crafted.end()) c = it->second;
++        auto shelve = [&](uint32 v, uint32 item, bool stocked) {
++            auto key = std::make_pair(v, item);
++            bool shown = listed.contains(key);
++            if (stocked && !shown)
++            {
++                VendorItemData const* items = sObjectMgr->GetNpcVendorItemList(v);
++                if (items && items->FindItemCostPair(item, 0)) return;
++                sObjectMgr->AddVendorItem(v, item, 0, 0, 0, false);
++                listed.insert(key); vendorHub.try_emplace(v, hub);
++            }
++            else if (!stocked && shown) { sObjectMgr->RemoveVendorItem(v, item, false); listed.erase(key); }
++        };
++        uint32 potion = ProductFor(POTIONS, std::size(POTIONS), h->regionLevel), food = ProductFor(FOODS, std::size(FOODS), h->regionLevel);
++        for (uint32 v : vendors) shelve(v, potion, c[CRAFT_POTION] > 0);
++        if (auto k = hubInnkeeper.find(hub); k != hubInnkeeper.end()) shelve(k->second, food, c[CRAFT_FOOD] > 0);
+     }
+ }
+ 
+@@ -4670,6 +4816,19 @@ bool World::MarketSoldOut(uint32 vendorEntry, uint32 item, uint32 count)
+         units -= count * UNITS_PER_ITEM;
+         return false;
+     }
++    // the crafters' potions and food: as many as they've made
++    auto check = [&](Product const* list, size_t n, uint8 kind) -> int {
++        for (size_t i = 0; i < n; ++i)
++            if (list[i].item == item)
++            {
++                uint32& have = _crafted[vh->second][kind];
++                if (have < count) return 1;
++                have -= count; return 0;
++            }
++        return -1;
++    };
++    if (int r = check(POTIONS, std::size(POTIONS), CRAFT_POTION); r >= 0) return r == 1;
++    if (int r = check(FOODS, std::size(FOODS), CRAFT_FOOD); r >= 0) return r == 1;
+     return false;
+ }
+ 
+@@ -5526,4 +5685,93 @@ std::string World::TownWorry(uint32 agentId)
+     return Acore::StringFormat(band[r.Range(0, 2)], closest->name, where);
+ }
+ 
++bool World::RainingFor(uint32 agentId)
++{
++    std::lock_guard<std::mutex> guard(sBodyLock);
++    SimAgent const* a = AgentById(agentId);
++    return a && Rainy(a->home);
++}
++
++// ---------------------------------------------------------------------------------------------------------------------
++// board bounties as quests (Nov 17): thinning and packs count kills of the ground's creature, a rare or a camp the
++// named creature, a roaming threat is an event the sim marks when you put it down
++bool World::BountyQuestInfo(uint32 bountyId, uint32 guid, ErrandQuest& out)
++{
++    std::lock_guard<std::mutex> guard(sBodyLock);
++    SimBounty const* b = nullptr;
++    for (SimBounty const& x : _bounties) if (x.id == bountyId && !x.done && x.player == guid) b = &x;
++    if (!b) return false;
++    SimSite const* hub = SiteById(b->hub); SimSite const* s = SiteById(b->site);
++    if (!hub || !s) return false;
++    out = {};
++    out.errand = b->id; out.reward = b->reward; out.count = b->count;
++    out.giverMap = hub->map; out.giverZone = hub->zone; out.giverX = hub->x; out.giverY = hub->y;
++    out.hasPlace = true; out.map = s->map; out.zone = s->zone; out.x = s->x; out.y = s->y;
++    out.level = std::max<uint32>(1, (s->minLevel + s->maxLevel) / 2);
++    std::string town = SiteName(b->hub), area = AreaOf(SiteName(s->id));
++    out.request = "The board's still up. Done yet?"; out.offer = "Paid in full - the town thanks you.";
++    if (b->kind == BOUNTY_RARE)
++    {
++        std::string name = RareName(b->target);
++        if (b->target & THREAT_MARK)
++        {
++            out.kind = 0;                                           // an event: the sim marks it
++            if (SimAgent const* t = AgentById(b->target & ~THREAT_MARK)) out.level = t->level;
++            out.title = Acore::StringFormat("Wanted: {}", name);
++            out.objective = Acore::StringFormat("Put down {}, last seen near {}, then collect at the board in {}.", name, area, town);
++        }
++        else if (b->target & CAMP_MARK)
++        {
++            out.kind = ERRAND_CULL;
++            for (SimCamp const& k : _camps)
++                if (k.id == (b->target & ~CAMP_MARK)) { out.entry = k.entry; out.level = k.level; out.x = k.x; out.y = k.y; out.creatureName = k.name; }
++            out.title = Acore::StringFormat("Bounty: {}", name);
++            out.objective = Acore::StringFormat("Break up {} near {} ({} of them), then collect at the board in {}.", name, area, b->count, town);
++        }
++        else
++        {
++            out.kind = ERRAND_OLDFOE; out.entry = b->target; if (b->targetLevel) out.level = b->targetLevel;
++            out.title = Acore::StringFormat("Wanted: {}", name);
++            out.objective = Acore::StringFormat("Kill {} near {}, then collect at the board in {}.", name, area, town);
++        }
++    }
++    else
++    {
++        out.kind = ERRAND_CULL; out.creatureName = s->creatureName; out.minLevel = s->minLevel; out.maxLevel = s->maxLevel;
++        out.title = b->kind == BOUNTY_PACK ? Acore::StringFormat("Bounty: the {} Pack", s->creatureName) : Acore::StringFormat("Bounty: {}", s->creatureName);
++        out.objective = Acore::StringFormat("Kill {} {} near {}{}, then collect at the board in {}.", b->count, s->creatureName, area,
++            b->party > 1 ? " - bring friends" : "", town);
++    }
++    out.details = Acore::StringFormat("A notice on the board in {}: {}\n\nThe town pays {} on proof.", town, out.objective, Money(b->reward));
++    return true;
++}
++
++bool World::BountyBySlot(uint32 guid, uint32 slot, uint32 pool, SimBounty& out)
++{
++    std::lock_guard<std::mutex> guard(sBodyLock);
++    for (SimBounty const& b : _bounties)
++        if (!b.done && b.player == guid && b.id % pool == slot) { out = b; return true; }
++    return false;
++}
++
++void World::ForceBountyProgress(uint32 bountyId)
++{
++    std::lock_guard<std::mutex> guard(sBodyLock);
++    for (SimBounty& b : _bounties) if (b.id == bountyId && !b.done) b.playerProgress = std::max(b.playerProgress, b.count);
++}
++
++uint32 World::BoardHubAt(uint32 map, float x, float y)
++{
++    std::lock_guard<std::mutex> guard(sBodyLock);
++    return _ready ? HubNear(map, x, y, 120.0f) : 0;
++}
++
++uint32 World::NewestBountyOf(uint32 guid)
++{
++    std::lock_guard<std::mutex> guard(sBodyLock);
++    uint32 best = 0;
++    for (SimBounty const& b : _bounties) if (!b.done && b.player == guid && b.id > best) best = b.id;
++    return best;
++}
++
+ } // namespace SoloSim
+diff --git a/src/server/game/SoloSim/solosim.h b/src/server/game/SoloSim/solosim.h
+index e4ae94a..8d3513e 100644
+--- a/src/server/game/SoloSim/solosim.h
++++ b/src/server/game/SoloSim/solosim.h
+@@ -79,7 +79,9 @@ namespace SoloSim
+     // A band that has made camp by a road where its kind isn't normally found; spawned for real when a player comes near.
+     enum CampKind : uint8 { CAMP_BAND = 0, CAMP_HERD = 1, CAMP_PACK = 2 };   // a camp by the road / grazers that move / predators that follow them
+     struct SimCamp { uint32 id = 0, map = 0, entry = 0, town = 0, site = 0; float x = 0, y = 0, z = 0; std::string name; uint8 level = 1, size = 0, alive = 0; SimTime made = 0, until = 0; bool done = false; uint8 kind = CAMP_BAND; uint32 home = 0; };   // a bounty target with this bit is a threat's agent id, not a creature entry
+-    enum Job : uint8 { JOB_NONE = 0, JOB_FARMHAND = 1, JOB_LABORER = 2, JOB_MARKET = 3, JOB_LOAFER = 4 };
++    enum Job : uint8 { JOB_NONE = 0, JOB_FARMHAND = 1, JOB_LABORER = 2, JOB_MARKET = 3, JOB_LOAFER = 4,
++                       JOB_SMITH = 5, JOB_ALCHEMIST = 6, JOB_COOK = 7, JOB_LEATHERWORKER = 8 };   // crafters (Nov 17)
++    enum CraftKind : uint8 { CRAFT_POTION = 0, CRAFT_FOOD = 1, CRAFT_ARMS = 2, CRAFT_LEATHER = 3, CRAFT_COUNT = 4 };
+     enum Profession : uint8 { PROF_NONE = 0, PROF_MINING = 1, PROF_HERBALISM = 2, PROF_SKINNING = 3, PROF_FISHING = 4, PROF_COUNT = 5 };
+ 
+     struct PlanStep { Verb verb = Verb::Idle; uint32 site = 0; uint32 minutes = 0; bool announce = false; }; // announce: a journey with a purpose (chronicle)
+@@ -284,7 +286,7 @@ namespace SoloSim
+         // a request as a quest in the player's log (Nov 17): what it says and what it asks
+         struct ErrandQuest
+         {
+-            uint32 errand = 0, agent = 0; uint8 kind = 0; uint32 reward = 0, count = 0, item = 0, level = 1;
++            uint32 errand = 0, agent = 0; uint8 kind = 0; uint32 reward = 0, count = 0, item = 0, level = 1, entry = 0;   // entry: the creature, when known
+             std::string title, details, objective, request, offer, creatureName; uint8 minLevel = 0, maxLevel = 0;
+             uint32 map = 0, zone = 0; float x = 0, y = 0; bool hasPlace = false;
+             uint32 giverMap = 0, giverZone = 0; float giverX = 0, giverY = 0;
+@@ -292,12 +294,19 @@ namespace SoloSim
+         bool ErrandQuestInfo(uint32 errandId, uint32 guid, ErrandQuest& out);
+         bool ErrandBySlot(uint32 guid, uint32 slot, uint32 pool, SimErrand& out);   // the player's open request in this pool slot
+         void ForceErrandProgress(uint32 errandId);                                  // the quest log says it's done
++        // board bounties as quests too (Nov 17)
++        bool BountyQuestInfo(uint32 bountyId, uint32 guid, ErrandQuest& out);
++        bool BountyBySlot(uint32 guid, uint32 slot, uint32 pool, SimBounty& out);
++        void ForceBountyProgress(uint32 bountyId);
++        uint32 BoardHubAt(uint32 map, float x, float y);
++        uint32 NewestBountyOf(uint32 guid);             // the bounty the player took last (0 = none)
+         // where to go for what you took on, roughly (a map flag; Nov 17): an errand from a townsperson, or your newest bounty
+         bool ErrandPlace(uint32 agentId, uint32 guid, uint32& map, float& x, float& y, std::string& name);
+         bool BountyPlace(uint32 guid, uint32& map, float& x, float& y, std::string& name);
+         std::string TakeErrand(uint32 agentId, uint32 guid, std::string const& name);
+         bool FinishErrand(uint32 agentId, uint32 guid, std::string const& name, uint32& reward, std::string& thanks);
+         std::string Rumor(uint32 agentId);
++        bool RainingFor(uint32 agentId);                   // is it raining where they live right now (Nov 17)
+         std::string TownWorry(uint32 agentId);             // a camp, pack or threat near their town, in their words (or "")
+         std::string Notices(uint32 map, float x, float y);   // the bounty board's notices: recent happenings near this town
+         std::string AskAfter(std::string const& name);
+@@ -411,6 +420,9 @@ namespace SoloSim
+         void FormParty(SimAgent& leader, uint32 site, uint32 minutes, uint32 want = 2, bool open = false);
+         void FindRares();
+         void EnsureCivilians();
++        void AssignCrafters();                         // a smith, an alchemist, a cook, a leatherworker where a town can keep one
++        void CraftWork(SimAgent& a, uint32 minutes);   // a crafter's working session: inputs from the market, goods to the shelf
++        uint8 StationsOf(uint32 hub);
+         void CivilianDecide(SimAgent& a);
+         bool RareFight(SimAgent& a, SimBounty& b, SimSite const& site);
+         SimBounty* BountyOf(SimAgent const& a);
+@@ -477,6 +489,8 @@ namespace SoloSim
+         std::vector<SimNews> _news;
+         std::map<uint32, std::vector<uint32>> _hubNews;            // hub site -> news ids known there
+         std::map<uint32, std::array<uint32, PROF_COUNT>> _market; // hub site -> goods brought in (units) per profession
++        std::map<uint32, std::array<uint32, CRAFT_COUNT>> _crafted; // hub site -> what its crafters made (potions, food, arms, leather)
++        std::map<uint32, uint8> _stations;                         // hub site -> 1 anvil/forge, 2 cooking fire (from the world's objects)
+         std::map<uint32, bool> _rain;                              // zone -> raining today
+         std::vector<SimRare> _rares;
+         std::map<uint32, SimTime> _rareDownUntil;                  // rare entry -> slain, back after this time
+diff --git a/src/server/game/SoloSim/solosim_boards.cpp b/src/server/game/SoloSim/solosim_boards.cpp
+index f37795e..175f020 100644
+--- a/src/server/game/SoloSim/solosim_boards.cpp
++++ b/src/server/game/SoloSim/solosim_boards.cpp
+@@ -3,6 +3,7 @@
+ // Finished bounties pay out by mail from the town's innkeeper (solosim.cpp PlayerKill / DeliverMail).
+ #include "solosim_boards.h"
+ #include "solosim.h"
++#include "solosim_quests.h"
+ #include "AllGameObjectScript.h"
+ #include "Chat.h"
+ #include "GameObject.h"
+@@ -178,12 +179,15 @@ namespace
+                 Say(player, sSoloSim->PlayerTake(player->GetMapId(), x, y, guid, player->GetName(), action - ACT_TAKE));
+                 uint32 m = 0; float px = 0, py = 0; std::string where;
+                 if (sSoloSim->BountyPlace(guid, m, px, py, where)) SoloBoards::SendMarker(player, m, px, py, where);
++                if (uint32 b = sSoloSim->NewestBountyOf(guid)) SoloQuests::OfferBounty(player, go, b);   // into the quest log (Nov 17)
+             }
+             else if (action == ACT_TURNIN)
+             {
++                // finished bounty quests are rewarded through the quest log (money and experience); the rest as before
++                uint32 viaQuests = SoloQuests::TurnInBounties(player, go);
+                 uint32 reward = 0;
+                 Say(player, sSoloSim->PlayerTurnIn(player->GetMapId(), x, y, guid, player->GetName(), reward));
+-                if (reward) player->ModifyMoney(int32(reward));
++                if (reward > viaQuests) player->ModifyMoney(int32(reward - viaQuests));
+             }
+             else if (action == ACT_SHOPS)
+             {
+diff --git a/src/server/game/SoloSim/solosim_civilians.cpp b/src/server/game/SoloSim/solosim_civilians.cpp
+index c390656..61b3aa9 100644
+--- a/src/server/game/SoloSim/solosim_civilians.cpp
++++ b/src/server/game/SoloSim/solosim_civilians.cpp
+@@ -69,6 +69,10 @@ namespace
+             case SoloSim::JOB_FARMHAND: return "Farmhand";
+             case SoloSim::JOB_LABORER:  return "Laborer";
+             case SoloSim::JOB_MARKET:   return "Market Hand";
++            case SoloSim::JOB_SMITH:    return "Blacksmith";
++            case SoloSim::JOB_ALCHEMIST: return "Alchemist";
++            case SoloSim::JOB_COOK:     return "Cook";
++            case SoloSim::JOB_LEATHERWORKER: return "Leatherworker";
+             default:                    return "Townsfolk";
+         }
+     }
+@@ -489,6 +493,14 @@ namespace
+                 "If you see anyone selling cheaper than me, they're lying.", "Fresh in this morning - well, fresh enough.",
+                 "Best prices this side of the river, I swear it.", "No haggling before I've had breakfast.",
+                 "The gatherers didn't bring much in this week.", "Everything must go! Well. Most things." };
++            static char const* const smith[] = { "Iron's short this week. Tell the miners.", "Mind the sparks.",
++                "A good blade's worth three cheap ones.", "Hammer, quench, hammer again. That's the trade.", "My arms ache. Good ache, though." };
++            static char const* const alchemist[] = { "Don't touch that. Or that. Especially not that.", "Peacebloom's getting scarce.",
++                "One part silverleaf, two parts patience.", "If it bubbles green, stand back.", "The adventurers drink them faster than I brew them." };
++            static char const* const cook[] = { "Stew's on. Don't ask what's in it.", "Fresh fish today, if the fishers come back.",
++                "The inn wants twice what I can make.", "A little salt fixes most things.", "Boar again. Always boar." };
++            static char const* const leather[] = { "Good hides are hard to come by.", "Stitch, pull, stitch.",
++                "Tanning's a smelly business. You get used to it.", "These boots will outlast their owner.", "The hunters bring me the worst pelts." };
+             static char const* const loafer[] = {
+                 "Can't a body sit for five minutes?", "Spare a copper? No? Worth asking.", "I'm thinking. It's a kind of work.",
+                 "Seen it all, me. Twice, some of it.", "Back in my day, the roads were safe. Mostly.", "Shh. I'm resting my eyes.",
+@@ -497,11 +509,13 @@ namespace
+             uint32 hour = 0;
+             { time_t now = time(nullptr); tm lt{}; localtime_s(&lt, &now); hour = uint32(lt.tm_hour); }
+             uint32 roll = urand(0, 99);
+-            (void)wet;                                                             // rain talk: only when it rains (to do)
+-            char const* line = roll < 22 ? (hour < 10 ? pick(morning) : hour >= 21 || hour < 5 ? pick(night) : hour >= 17 ? pick(evening) : pick(any))
++            bool raining = sSoloSim->RainingFor(agent);                               // rain talk only when it rains
++            char const* line = raining && roll < 30 ? pick(wet) : roll < 22 ? (hour < 10 ? pick(morning) : hour >= 21 || hour < 5 ? pick(night) : hour >= 17 ? pick(evening) : pick(any))
+                 : roll < 55 ? pick(any)
+                 : job == SoloSim::JOB_FARMHAND ? pick(farm) : job == SoloSim::JOB_LABORER ? pick(labor)
+-                : job == SoloSim::JOB_MARKET ? pick(market) : job == SoloSim::JOB_LOAFER ? pick(loafer) : pick(any);
++                : job == SoloSim::JOB_MARKET ? pick(market) : job == SoloSim::JOB_LOAFER ? pick(loafer)
++                : job == SoloSim::JOB_SMITH ? pick(smith) : job == SoloSim::JOB_ALCHEMIST ? pick(alchemist)
++                : job == SoloSim::JOB_COOK ? pick(cook) : job == SoloSim::JOB_LEATHERWORKER ? pick(leather) : pick(any);
+             me->Say(line, Tongue());
+             Reply(npc);
+         }
+@@ -657,6 +671,15 @@ namespace
+                     if (in.job == SoloSim::JOB_FARMHAND && RandomNear(cx, cy, cz, 35.0f, 80.0f, p))
+                         return Go(p, urand(40000, 90000), UNIT_STAND_STATE_STAND, urand(0, 1) ? EMOTE_STATE_WORK : EMOTE_STATE_USE_STANDING);
+                     if (in.job == SoloSim::JOB_LABORER && urand(0, 99) < 35 && UseThing(cx, cy, THING_ANVIL)) return;   // at the forge
++                    // the crafters at their stations (Nov 17): the smith at the anvil, the cook at a fire or the inn's kitchen
++                    if (in.job == SoloSim::JOB_SMITH && UseThing(cx, cy, THING_ANVIL)) return;
++                    if (in.job == SoloSim::JOB_COOK && UseThing(cx, cy, THING_FIRE)) return;
++                    if (in.job == SoloSim::JOB_COOK)
++                        if (Creature* npc = SomeNpc(cx, cy, UNIT_NPC_FLAG_INNKEEPER))
++                            return Go(InFrontOf(npc), urand(40000, 90000), UNIT_STAND_STATE_STAND, EMOTE_STATE_USE_STANDING, -1.0f, npc->GetGUID());
++                    if (in.job == SoloSim::JOB_ALCHEMIST || in.job == SoloSim::JOB_LEATHERWORKER)
++                        if (Creature* npc = SomeNpc(cx, cy, UNIT_NPC_FLAG_VENDOR))
++                            return Go(InFrontOf(npc), urand(40000, 90000), UNIT_STAND_STATE_STAND, EMOTE_STATE_WORK, -1.0f, npc->GetGUID());
+                     if (in.job == SoloSim::JOB_LABORER && RandomNear(cx, cy, cz, 15.0f, 55.0f, p))
+                         return Go(p, urand(40000, 90000), UNIT_STAND_STATE_STAND, urand(0, 1) ? EMOTE_STATE_WORK_CHOPWOOD : EMOTE_STATE_WORK);
+                     if (Creature* npc = SomeNpc(cx, cy, UNIT_NPC_FLAG_VENDOR | UNIT_NPC_FLAG_REPAIR))
+diff --git a/src/server/game/SoloSim/solosim_quests.cpp b/src/server/game/SoloSim/solosim_quests.cpp
+index 13de5d9..bf46338 100644
+--- a/src/server/game/SoloSim/solosim_quests.cpp
++++ b/src/server/game/SoloSim/solosim_quests.cpp
+@@ -109,7 +109,19 @@ namespace
+         if (!sSoloSim->ErrandQuestInfo(errandId, guid, in)) return false;
+         Quest const* q = sObjectMgr->GetQuestTemplate(QuestId(errandId));
+         if (!q) { LOG_ERROR("server.loading", "SoloWoW: quest pool row {} is missing - apply scripts/sim_quests.sql", QuestId(errandId)); return false; }
+-        uint32 entry = in.creatureName.empty() ? 0 : CreatureFor(in.creatureName, in.minLevel, in.maxLevel);
++        uint32 entry = in.entry ? in.entry : in.creatureName.empty() ? 0 : CreatureFor(in.creatureName, in.minLevel, in.maxLevel);
++        SoloQuestWriter::Write(const_cast<Quest*>(q), in, entry);
++        SetArea(q->GetQuestId(), in);
++        return true;
++    }
++
++    bool FillBounty(uint32 bountyId, uint32 guid)
++    {
++        SoloSim::World::ErrandQuest in;
++        if (!sSoloSim->BountyQuestInfo(bountyId, guid, in)) return false;
++        Quest const* q = sObjectMgr->GetQuestTemplate(BountyQuestId(bountyId));
++        if (!q) { LOG_ERROR("server.loading", "SoloWoW: bounty quest row {} is missing - apply scripts/sim_quests.sql", BountyQuestId(bountyId)); return false; }
++        uint32 entry = in.entry ? in.entry : in.creatureName.empty() ? 0 : CreatureFor(in.creatureName, in.minLevel, in.maxLevel);
+         SoloQuestWriter::Write(const_cast<Quest*>(q), in, entry);
+         SetArea(q->GetQuestId(), in);
+         return true;
+@@ -146,6 +158,39 @@ bool TurnIn(Player* player, Creature* giver, uint32 errandId)
+     return true;
+ }
+ 
++bool OfferBounty(Player* player, Object* board, uint32 bountyId)
++{
++    if (!player || !FillBounty(bountyId, player->GetGUID().GetCounter())) return false;
++    Quest const* q = sObjectMgr->GetQuestTemplate(BountyQuestId(bountyId));
++    QuestStatus st = player->GetQuestStatus(q->GetQuestId());
++    if (st == QUEST_STATUS_INCOMPLETE || st == QUEST_STATUS_COMPLETE) return true;
++    if (st == QUEST_STATUS_REWARDED) player->RemoveRewardedQuest(q->GetQuestId());
++    if (!player->CanAddQuest(q, true)) return false;
++    player->AddQuestAndCheckCompletion(q, board);
++    ChatHandler(player->GetSession()).PSendSysMessage("Quest accepted: {}", q->GetTitle());
++    return true;
++}
++
++uint32 TurnInBounties(Player* player, Object* board)
++{
++    uint32 paid = 0, guid = player->GetGUID().GetCounter();
++    uint32 hub = sSoloSim->BoardHubAt(player->GetMapId(), player->GetPositionX(), player->GetPositionY());
++    std::vector<uint32> done;
++    for (auto const& [qid, st] : player->getQuestStatusMap())
++        if (IsBounty(qid) && st.Status == QUEST_STATUS_COMPLETE) done.push_back(qid);
++    for (uint32 qid : done)
++    {
++        SoloSim::SimBounty b;
++        if (!sSoloSim->BountyBySlot(guid, qid - BOUNTY_BASE, QUEST_POOL, b) || b.hub != hub) continue;   // collect where it was posted
++        Quest const* q = sObjectMgr->GetQuestTemplate(qid);
++        if (!q || !player->CanRewardQuest(q, true)) continue;
++        sSoloSim->ForceBountyProgress(b.id);
++        paid += uint32(std::max<int32>(0, q->GetRewOrReqMoney(player->GetLevel())));
++        player->RewardQuest(q, 0, board);
++    }
++    return paid;
++}
++
+ void Sync(Player* player)
+ {
+     if (!player) return;
+@@ -169,6 +214,24 @@ void Sync(Player* player)
+             && e.progress >= e.count && player->GetQuestStatus(qid) == QUEST_STATUS_INCOMPLETE)
+             player->AreaExploredOrEventHappens(qid);                             // the sim saw it done
+     }
++    // the board's bounties: lapsed (someone else got there, or it ran out) off the log; a threat put down ticks it
++    std::vector<uint32> bounties;
++    for (auto const& [qid, st] : player->getQuestStatusMap())
++        if (IsBounty(qid) && (st.Status == QUEST_STATUS_INCOMPLETE || st.Status == QUEST_STATUS_COMPLETE)) bounties.push_back(qid);
++    for (uint32 qid : bounties)
++    {
++        SoloSim::SimBounty b;
++        if (!sSoloSim->BountyBySlot(guid, qid - BOUNTY_BASE, QUEST_POOL, b))
++        {
++            player->RemoveActiveQuest(qid);
++            ChatHandler(player->GetSession()).SendSysMessage("A bounty you took is off the board.");
++            continue;
++        }
++        Quest const* q = sObjectMgr->GetQuestTemplate(qid);
++        if (q && q->GetTitle().empty()) FillBounty(b.id, guid);
++        if (q && q->HasSpecialFlag(QUEST_SPECIAL_FLAGS_EXPLORATION_OR_EVENT) && b.playerProgress >= b.count && player->GetQuestStatus(qid) == QUEST_STATUS_INCOMPLETE)
++            player->AreaExploredOrEventHappens(qid);
++    }
+ }
+ 
+ namespace
+@@ -187,6 +250,11 @@ namespace
+                     SoloSim::SimErrand e;
+                     if (sSoloSim->ErrandBySlot(guid, qid - QUEST_BASE, QUEST_POOL, e)) Fill(e.id, guid);
+                 }
++                else if (IsBounty(qid) && (st.Status == QUEST_STATUS_INCOMPLETE || st.Status == QUEST_STATUS_COMPLETE))
++                {
++                    SoloSim::SimBounty b;
++                    if (sSoloSim->BountyBySlot(guid, qid - BOUNTY_BASE, QUEST_POOL, b)) FillBounty(b.id, guid);
++                }
+         }
+     };
+ }
+diff --git a/src/server/game/SoloSim/solosim_quests.h b/src/server/game/SoloSim/solosim_quests.h
+index 616a2d7..2e5173d 100644
+--- a/src/server/game/SoloSim/solosim_quests.h
++++ b/src/server/game/SoloSim/solosim_quests.h
+@@ -6,17 +6,23 @@
+ 
+ class Player;
+ class Creature;
++class Object;
+ 
+ namespace SoloQuests
+ {
+     constexpr uint32 QUEST_BASE = 95000, QUEST_POOL = 1000;   // reserved ids 95000-95999 (scripts/sim_quests.sql)
+     inline uint32 QuestId(uint32 errandId) { return QUEST_BASE + errandId % QUEST_POOL; }
+     inline bool IsOurs(uint32 questId) { return questId >= QUEST_BASE && questId < QUEST_BASE + QUEST_POOL; }
++    constexpr uint32 BOUNTY_BASE = 96000;                       // board bounties: 96000-96999 (scripts/sim_quests.sql)
++    inline uint32 BountyQuestId(uint32 bountyId) { return BOUNTY_BASE + bountyId % QUEST_POOL; }
++    inline bool IsBounty(uint32 questId) { return questId >= BOUNTY_BASE && questId < BOUNTY_BASE + QUEST_POOL; }
+ 
+     bool Offer(Player* player, Creature* giver, uint32 errandId);    // fill the quest and put it in the log
+     bool TurnIn(Player* player, Creature* giver, uint32 errandId);   // complete + reward if the log says it's done
+     bool InLog(Player* player, uint32 errandId);
+     void Sync(Player* player);                                       // event objectives, expired requests, restore texts
++    bool OfferBounty(Player* player, Object* board, uint32 bountyId);
++    uint32 TurnInBounties(Player* player, Object* board);           // every finished bounty of this board: money paid via quests
+ }
+ 
+ void AddSC_solosim_quests();
+-- 
+2.56.0.windows.2
+

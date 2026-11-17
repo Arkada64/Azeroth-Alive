@@ -105,6 +105,14 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
   - Crafters: people working the professions - goods, armour, weapons, potions - who gather or buy every ingredient,
     need the right place (forge and anvil, alchemy lab...) and sell what they make (shops, markets, the player).
   - Cooks: buy ingredients or hunt for them, cook, sell to taverns and shops (the inns' food comes from someone).
+    **Crafters and cooks done Nov 17 (07:20), not yet seen in game:** every town gets a cook; a smith where there's
+    an anvil or forge within 90 yd of the square; an alchemist and a leatherworker in towns of 10+. They work at their
+    station (anvil, forge, fire) turning ore, herbs, hides and fish (cooks fish when they have nothing) into stock
+    per town (sim_crafted: potions, food, arms, leather; capped at 60, food spoils fastest). Adventurers buy food,
+    potions and gear from that stock - with no food in town supplies only reach 70%, no potions means none - and the
+    shops and innkeeper shelve the town's potions and food (bought out, the stock drops). 48 h test: 143 crafters,
+    stocks steady, adventurers carry ~0.8 potions. **Bounties as quests:** taking a board bounty puts it in your
+    quest log (96000+) with its place on the map and progress; turn-in pays once. **Rain talk** only when it rains.
   - Adventurers: interact with the world around them and talk with each other (in /say, near you).
     **Talk done Nov 17 (05:50), not yet seen in game:** within 30 yd of you, now and then (one line every few seconds
     at most, a minute between lines each) an adventurer body speaks: to the sim person beside them by name - friends,
@@ -446,7 +454,23 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
   3.3.5's Gilneas terrain isn't playable) unless the module's own start is better; Murloc on Tirisfal's north coast
   (low-level murloc camps by Brill, matches Reforged's undead/troll starter kits) as Horde, or a neutral murloc
   village if we want them outside the war.
-- Later, after Worgen and Murloc: **Furbolg** and **Naga**. Furbolg can start in the draenei area - the Stillpine
+- **Naga, Tuskarr, Furbolg v1, built Nov 17 (07:30), not yet seen in game** - scripts/races/newraces.py (run after
+  murloc.py) and its generated newraces.sql, everything the murloc's second pass needed, from the start:
+  - Naga, race 13, Horde: the game's naga body; Warrior, Hunter, Priest, Shaman, Mage; starts on Sunstrider Isle
+    (Eversong); kits/bars from the trolls (warrior, shaman) and blood elves (the rest); Orcish; blood-elf and troll
+    quests; racials Underwater Breathing, Frost Resistance.
+  - Tuskarr, race 17, Alliance (balancing the goblins): the game's tuskarr body (the female is the male model -
+    the game has no other); Warrior, Hunter, Priest, Shaman, Mage; **starts in Coldridge Valley (Dun Morogh) - to
+    confirm**; kits from dwarves (warrior, hunter, priest), draenei (shaman), gnomes (mage); Common; dwarf and gnome
+    quests; racials Frost Resistance, Endurance.
+  - Furbolg, race 20 (was "Northrend Skeleton"; its 37 NPC looks moved to the Undead body), Alliance: the creature
+    furbolg with its brown skin baked in, weapons in hand like the murloc (it has jump/sit animations already);
+    Warrior, Hunter, Shaman, Druid; starts in Ammen Vale beside the draenei (Stillpine Hold is just north);
+    draenei kits (night-elf for druids); Common; draenei and night-elf quests; racials Nature Resistance, Endurance.
+  - All three: armour hidden on the body, language/skill repair at login, full customization grids (no crash on
+    switching), own icons on the creation screen (Lady Vashj, Tuskarr and Timbermaw achievement icons), borrowed
+    backgrounds (Blood Elf, Dwarf, Draenei), lore text. Still open: one skin each, own racials, own scenes.
+- Earlier plan: **Furbolg** and **Naga**. Furbolg can start in the draenei area - the Stillpine
   furbolgs of Azuremyst Isle (Stillpine Hold) are already the draenei's allies there (needs map 530). Naga: Horde,
   starting in Eversong Woods (the user's pick) - Highborne kin of the blood elves, and Vashj's naga stood with
   Kael'thas; the Eversong coast suits them (also map 530).
