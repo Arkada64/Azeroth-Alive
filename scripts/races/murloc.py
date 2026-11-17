@@ -30,15 +30,15 @@ def save(d, name):
 os.makedirs(OUT + r"\Character\Murloc\Male"); os.makedirs(OUT + r"\Character\Murloc\Female")
 m2 = bytearray(open(MODEL + r"\Murloc.m2", "rb").read())
 n, o = struct.unpack_from("<II", m2, 80)
+# The character-skin route (texture type 1, composited from CharSections) left the skin blank in game - only the shiny
+# "wet" layer showed (neon green, chrome legs), Nov 17. So v1 bakes the murloc skin into the model as a fixed texture
+# (type 0 + file name, appended to the end of the file): it looks exactly like the game's murlocs; skin colours wait.
+skin_name = (r"Creature\Murloc\%s.blp" % SKINS[0]).encode() + b"\0"
 for i in range(n):
     t = struct.unpack_from("<I", m2, o + i * 16)[0]
-    if t == 11: struct.pack_into("<II", m2, o + i * 16, 1, 3)       # monster skin 1 -> character skin, wrap x/y
-# ...and the replaceable-texture lookup (texture type -> texture index) must follow, or the game paints the wrong
-# texture on each part (bright green fins, chrome legs): type 1 now points where type 11 did
-n, o = struct.unpack_from("<II", m2, 104)
-lookup = [struct.unpack_from("<h", m2, o + 2 * i)[0] for i in range(n)]
-if n > 11 and lookup[11] >= 0:
-    struct.pack_into("<h", m2, o + 2 * 1, lookup[11]); struct.pack_into("<h", m2, o + 2 * 11, -1)
+    if t == 11:
+        at = len(m2); m2 += skin_name
+        struct.pack_into("<IIII", m2, o + i * 16, 0, 0, len(skin_name), at)
 for sex in ("Male", "Female"):
     open(OUT + rf"\Character\Murloc\{sex}\Murloc{sex}.m2", "wb").write(m2)
     shutil.copy(MODEL + r"\Murloc00.skin", OUT + rf"\Character\Murloc\{sex}\Murloc{sex}00.skin")
@@ -113,7 +113,8 @@ for raw in so.raw:
     if raw[4] == RACE:
         for k in range(24):
             if struct.unpack_from("<I", raw, 200 + 4 * k)[0] not in WEAPON_SLOTS:
-                struct.pack_into("<I", raw, 104 + 4 * k, 0)
+                # the whole slot goes, not just its look: an item with no display crashes the client (Nov 17)
+                for at in (8, 104, 200): struct.pack_into("<I", raw, at + 4 * k, 0)
 so.save(os.path.join(OUT, "DBFilesClient", "CharStartOutfit.dbc"))
 
 # ---- everything the Horde shares (masks with both Orc and Undead): languages, skills, reputations
