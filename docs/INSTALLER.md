@@ -19,7 +19,10 @@ client. Nothing from Blizzard is ever downloaded or shipped by us - game data is
 9. **Patch the client** - with a backup of everything touched *(working)*:
    - realmlist set to 127.0.0.1;
    - Large Address Aware flag on Wow.exe (4 GB instead of 2) - backup `Wow.exe.aa-backup`;
-   - later: our patch MPQ (races, looks, Plainsrunning...), DXVK/ReShade as options.
+   - graphics (default on, Nov 17): `scripts\graphics\install-graphics.ps1` fetches the latest Project Reforged HD
+     packs, LuxVelum, DXVK, the light shaders and Lexara, and re-patches Wow.exe with St0ny's patcher (preset Reforged,
+     which includes the 4 GB patch and custom GlueXML); then `scripts\graphics\merge-dbc.py` fits our patch-W to their
+     models (Data\patch-Y.MPQ + the server's tables). See docs/GRAPHICS.md.
 10. **Uninstall** - restores the client from the backups and removes the install folder.
 
 ## Developer path

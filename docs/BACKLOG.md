@@ -186,6 +186,15 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
     water, per-zone looks, longer view distance; copies files next to Wow.exe, hooks Direct3D in memory) into the
     installer (fetched, not vendored). Check its docs/INSTALL.md against our DXVK + ReShade setup and our MPQs first.
     "Could be used with Project Reforged models": their HD packs are their files - we don't ship or copy them.
+    **Done Nov 17 (15:00), the user's pick: LuxVelum (Project Reforged's fork of CoAVolFog) rather than Lumenveil -
+    both hook Direct3D, one at a time.** scripts/graphics/install-graphics.ps1 fetches the latest of each from its own
+    project: St0ny's EXE patcher (preset Reforged - 4 GB, custom GlueXML, DLL loaders...) on the original Wow.exe,
+    DXVK (Raz0r1337), LuxVelum + Reforged's preset, the 8-light shaders (Data\patch-5.MPQ\), Lexara HD fonts, and the
+    Reforged packs A B C D E G (~15.5 GB; -Extras for M N P U S, -Interface for I, -SD). scripts/graphics/merge-dbc.py
+    fits our patch-W to their models: 9 tables both carry rebuilt on Reforged's with our new races' rows added
+    (Data\patch-Y.MPQ + the server's tables, originals in server\data\dbc-before-graphics); 8 helmet-geoset rows both
+    changed stay Reforged's. Checked: the server boots and runs on the merged tables; the client starts and runs (45 s,
+    LuxVelum hooked, DXVK in use) - not yet looked at in game. docs/GRAPHICS.md.
 
 - **Audit fixes, done Nov 17 (05:10):** the sim covers the whole old world now - 17 more zones (Alterac, Hinterlands,
   Searing Gorge, Burning Steppes, Blasted Lands, Deadwind Pass, both Plaguelands | Thousand Needles, Feralas, Tanaris,
