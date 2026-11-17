@@ -43,6 +43,14 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
   safety, kin, own people - not absolute), they travel the roads; refugees after camps/threats/raids; mixed towns.
 
 ## 3. Factions and the war
+- **Stage 1 started Nov 17 (00:35):** towns have a side (sim_site.side: Alliance / Horde / neutral, from their service
+  NPCs' factions; vendors who serve anyone don't count). The Horde homelands joined the region (Durotar, Orgrimmar,
+  Mulgore, Thunder Bluff, Tirisfal, the Undercity, Silverpine), and an older world gains the Horde towns of zones it
+  already had (the Crossroads, Camp Taurajo, Tarren Mill, Stonard...): 83 Horde towns, 180 Horde adventurers (orcs,
+  tauren, Forsaken, trolls by homeland), 274 Horde/goblin townsfolk (Orc/Troll/Tauren/Forsaken/Goblin Commoner bodies,
+  their own name sets). Agents only live, trade, rest, move or settle in their own side's towns or neutral ones;
+  newcomers are born as their start town's people. Backup of the pre-Horde world: db/sim-before-horde.sql. Not yet:
+  zeppelins (Horde can't cross the sea), clashes, enemy bodies hostile near you, mixed parties in neutral towns.
 - Stage 1, a two-sided world: both factions' towns (side from guard/service hostility), Horde zones and races (orc,
   troll, tauren, undead, blood elf; goblins neutral), Horde townsfolk looks; danger-aware routes (enemy towns and
   contested roads cost more; the brave or vengeful take them); clashes resolved like threats, feeding grudges,
@@ -141,6 +149,9 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
 - Vanilla difficulty beyond XP: tougher mobs, slower regen, scarcer gear (to design).
 
 ## 7. Memory and performance
+- **Server manager (the user's ask, Nov 17):** the server shutdown doesn't really work (the launcher leaves MySQL and
+  servers in odd states; the PC felt slow after many restarts). Move to a launcher that manages the servers properly,
+  like D:\AzerothManager: start/stop/restart each process, status, logs, clean shutdown with save, no orphans.
 - Grid unloading: built, not yet seen in play (watch for "let go of N idle grids"). MySQL buffer pool 128M (done).
 - Load spawn data only for the player's continent; fold authserver into worldserver; target ~1 GB idle, < 2 GB playing.
 

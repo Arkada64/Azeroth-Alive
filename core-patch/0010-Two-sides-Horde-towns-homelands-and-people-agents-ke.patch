@@ -1,0 +1,410 @@
+From 5fe4c8c271d2e7e2979155cfea36c19e031194cb Mon Sep 17 00:00:00 2001
+From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 00:35:15 -0600
+Subject: [PATCH 10/10] Two sides: Horde towns, homelands and people; agents
+ keep to their own side's towns
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01JU37XfnHTvru3VVz2sNN7z
+---
+ src/server/game/SoloSim/solosim.cpp | 173 +++++++++++++++++++++++-----
+ src/server/game/SoloSim/solosim.h   |  11 +-
+ 2 files changed, 157 insertions(+), 27 deletions(-)
+
+diff --git a/src/server/game/SoloSim/solosim.cpp b/src/server/game/SoloSim/solosim.cpp
+index 84096ae..47ab9c6 100644
+--- a/src/server/game/SoloSim/solosim.cpp
++++ b/src/server/game/SoloSim/solosim.cpp
+@@ -61,7 +61,8 @@ namespace
+     // was added get it on their next load (ExpandRegion).
+     // v4 (Kalimdor): Teldrassil, Darnassus, Darkshore, Ashenvale, Stonetalon Mountains, Dustwallow Marsh, the Barrens, Desolace.
+     const std::set<uint32> REGION_ZONES = { 12, 40, 44, 10, 1519, 1, 1537, 38, 11, 267, 45, 33, 3, 8,
+-                                            141, 1657, 148, 331, 406, 15, 17, 405 };
++                                            141, 1657, 148, 331, 406, 15, 17, 405,
++                                            14, 1637, 215, 1638, 85, 1497, 130 };   // the Horde's homelands (Nov 17)
+     const std::set<uint32> ELF_ZONES = { 141, 1657, 148 };   // where night elves are most of the folk
+     const std::set<uint32> PORT_ZONES = { 1519, 11, 148, 15 }; // Stormwind, Menethil Harbor | Auberdine, Theramore: the boats
+     const std::set<uint32> DWARF_ZONES = { 1, 1537, 38 };   // where dwarves and gnomes are most of the folk
+@@ -72,7 +73,9 @@ namespace
+ 
+     char const* RaceName(uint8 r)
+     {
+-        switch (r) { case 1: return "human"; case 3: return "dwarf"; case 4: return "night elf"; case 7: return "gnome"; case 11: return "draenei"; case 12: return "worgen"; default: return "stranger"; }
++        switch (r) { case 1: return "human"; case 3: return "dwarf"; case 4: return "night elf"; case 7: return "gnome"; case 11: return "draenei"; case 12: return "worgen";
++                     case 2: return "orc"; case 5: return "Forsaken"; case 6: return "tauren"; case 8: return "troll"; case 9: return "goblin";
++                     case 10: return "blood elf"; case 15: return "murloc"; default: return "stranger"; }
+     }
+     char const* ClassName(uint8 c)
+     {
+@@ -109,7 +112,20 @@ namespace
+         static NameKit draenei { {"Ar","Kor","Mor","Nob","Vel","Tor","Hal"}, {"aan","uun","ius","ek","ahn","oor"},
+                                {"Ira","Ish","Sar","Yaa","Nel","Ama"}, {"nia","ella","ura","ena","ari"},
+                                {}, {} };
+-        switch (race) { case 3: return dwarf; case 4: return nelf; case 7: return gnome; case 11: return draenei; default: return human; }
++        static NameKit orc   { {"Gor","Thra","Dur","Kro","Mog","Nar","Ug","Zar","Grom","Krag"}, {"gash","mok","rok","gar","nak","dush","rim","tar"},
++                               {"Gar","Mag","Shy","Kra","Zug","Ura"}, {"ka","ra","sha","na","gra"},
++                               {"Blood","Skull","Iron","Storm","Black","War","Bone","Grim"}, {"fist","axe","maw","tusk","howl","hammer","rage"} };
++        static NameKit troll { {"Zul","Jin","Raz","Vol","Sen","Tal","Kaz","Zen"}, {"jin","zek","ra","'ji","kal","zan","tu"},
++                               {"Zi","Sha","Ya","Ji","Ri","Na"}, {"ra","la","zi","'ka","ti","jin"},
++                               {}, {} };
++        static NameKit tauren { {"Hamu","Ahn","Tah","Mok","Bru","Kom","Tur","Gra"}, {"l","ok","ra","sha","to","mo","n"},
++                               {"Ma","Ahn","Nala","Una","Tali","Ki"}, {"ra","ya","wa","na","sha"},
++                               {"Blood","Rune","Grim","Thunder","Mist","Wind","Earth","Sky"}, {"hoof","totem","walker","horn","mane","strider","runner"} };
++        static NameKit goblin { {"Griz","Kiz","Noz","Rik","Sprock","Gaz","Fizz","Wiz"}, {"zle","nik","gle","bolt","sprock","zik","wick"},
++                               {"Kiz","Liz","Nix","Ziz","Bix","Tink"}, {"zy","ette","ka","bit","zle"},
++                               {"Gold","Copper","Rust","Spark","Coin","Bang","Grease"}, {"grin","fuse","pocket","nose","toe","wrench","spark"} };
++        switch (race) { case 2: return orc; case 3: return dwarf; case 4: return nelf; case 6: return tauren; case 7: return gnome; case 8: return troll;
++                        case 9: return goblin; case 11: return draenei; default: return human; }
+     }
+ 
+     float Dist2d(float x1, float y1, float x2, float y2) { float dx = x1 - x2, dy = y1 - y2; return std::sqrt(dx * dx + dy * dy); }
+@@ -196,6 +212,11 @@ void World::CreateTables()
+         CharacterDatabase.DirectExecute("ALTER TABLE sim_agent ADD COLUMN kit VARCHAR(600) NOT NULL DEFAULT '', ADD COLUMN kit_due TINYINT UNSIGNED NOT NULL DEFAULT 0");
+     if (!CharacterDatabase.Query("SHOW COLUMNS FROM sim_agent LIKE 'potions'"))
+         CharacterDatabase.DirectExecute("ALTER TABLE sim_agent ADD COLUMN potions TINYINT UNSIGNED NOT NULL DEFAULT 0");
++    if (!CharacterDatabase.Query("SHOW COLUMNS FROM sim_site LIKE 'side'"))
++    {
++        CharacterDatabase.DirectExecute("ALTER TABLE sim_site ADD COLUMN side TINYINT UNSIGNED NOT NULL DEFAULT 0");
++        _classifySides = true;                         // a world from before the Horde: find out whose towns are whose
++    }
+     if (!CharacterDatabase.Query("SHOW COLUMNS FROM sim_agent LIKE 'age0'"))
+         CharacterDatabase.DirectExecute("ALTER TABLE sim_agent ADD COLUMN age0 TINYINT UNSIGNED NOT NULL DEFAULT 0");
+     if (!CharacterDatabase.Query("SHOW COLUMNS FROM sim_bounty LIKE 'player'"))
+@@ -205,8 +226,9 @@ void World::CreateTables()
+     CharacterDatabase.DirectExecute("CREATE TABLE IF NOT EXISTS sim_market (hub INT UNSIGNED NOT NULL PRIMARY KEY, ore INT UNSIGNED NOT NULL, herbs INT UNSIGNED NOT NULL, hides INT UNSIGNED NOT NULL, fish INT UNSIGNED NOT NULL) ENGINE=InnoDB");
+ }
+ 
+-void World::BootstrapSites(std::set<uint32> const& zones)
++void World::BootstrapSites(std::set<uint32> const& zones, bool hubsOnly)
+ {
++    uint32 const firstId = _nextSite;
+     // Wander nodes carry zone/area ids; creature spawns mostly don't (zoneId is 0 for almost all rows).
+     struct Node { float x, y; uint32 zone, area; };
+     std::map<uint32, std::vector<Node>> nodes;            // per map
+@@ -222,7 +244,7 @@ void World::BootstrapSites(std::set<uint32> const& zones)
+ 
+     FactionTemplateEntry const* alliance = sFactionTemplateStore.LookupEntry(1); // human player faction template
+     FactionTemplateEntry const* horde = sFactionTemplateStore.LookupEntry(2);    // orc player faction template: Horde towns aren't hunting grounds
+-    struct Point { float x, y, z; uint32 entry; uint32 zone, area, map; };
++    struct Point { float x, y, z; uint32 entry; uint32 zone, area, map; uint8 side = SIDE_ALLIANCE; };
+     std::vector<Point> services, hostiles;
+ 
+     // holiday / world-event spawns (Pilgrim's Bounty turkeys etc.) aren't part of the everyday world
+@@ -249,9 +271,14 @@ void World::BootstrapSites(std::set<uint32> const& zones)
+             continue;
+         Point p{ data->posX, data->posY, data->posZ, data->id, n->zone, n->area, data->mapid };
+         constexpr uint32 SERVICE_FLAGS = 65536 | 128 | 4096 | 8192 | 16; // innkeeper, vendor, repair, flight master, trainer
+-        bool hostile = ft->IsHostileTo(*alliance) || ft->IsHostileToPlayers();
++        // a town's services serve the Alliance, the Horde, or both (goblin ports, the Cenarion Circle): the town's side
++        bool forA = !ft->IsHostileTo(*alliance), forH = horde && !ft->IsHostileTo(*horde);
++        bool hostile = (!forA && !forH) || ft->IsHostileToPlayers();
+         if ((t->npcflag & SERVICE_FLAGS) && !hostile)
++        {
++            p.side = forA && forH ? SIDE_NEUTRAL : forA ? SIDE_ALLIANCE : SIDE_HORDE;
+             services.push_back(p);
++        }
+         else if (!t->npcflag && !ft->IsFriendlyTo(*alliance) && t->minlevel >= 1
+             && t->type != 8 && t->type != 11 && t->type != 12 && t->type != 13      // critter, totem, non-combat pet, gas cloud
+             && !(t->unit_flags & (0x2 | 0x02000000))                                 // NON_ATTACKABLE, NOT_SELECTABLE
+@@ -283,9 +310,17 @@ void World::BootstrapSites(std::set<uint32> const& zones)
+         std::vector<uint32> c{ i }; used[i] = true;
+         for (uint32 k = 0; k < c.size(); ++k)
+             for (uint32 j = 0; j < services.size(); ++j)
+-                if (!used[j] && services[j].map == services[c[k]].map && Dist2d(services[c[k]].x, services[c[k]].y, services[j].x, services[j].y) <= 45.0f)
++                if (!used[j] && services[j].map == services[c[k]].map
++                    && (services[j].side == services[c[k]].side || services[j].side == SIDE_NEUTRAL || services[c[k]].side == SIDE_NEUTRAL)
++                    && Dist2d(services[c[k]].x, services[c[k]].y, services[j].x, services[j].y) <= 45.0f)
+                 { used[j] = true; c.push_back(j); }
+         SimSite s; s.type = SiteType::Hub;
++        {
++            // whose town: its Alliance or Horde staff (vendors who serve anyone don't count); nobody's = neutral
++            uint32 forA = 0, forH = 0;
++            for (uint32 idx : c) { if (services[idx].side == SIDE_ALLIANCE) ++forA; else if (services[idx].side == SIDE_HORDE) ++forH; }
++            s.side = !forA && !forH ? SIDE_NEUTRAL : forH > forA ? SIDE_HORDE : SIDE_ALLIANCE;
++        }
+         uint32 inn = 0;
+         float sx = 0, sy = 0, sz = 0;
+         for (uint32 idx : c)
+@@ -302,6 +337,9 @@ void World::BootstrapSites(std::set<uint32> const& zones)
+         if (c.size() < 2 && !inn && !(s.services & SVC_FLIGHT))
+             continue;
+         s.x = sx / c.size(); s.y = sy / c.size(); s.z = sz / c.size();
++        if (hubsOnly && std::ranges::any_of(_sites, [&](SimSite const& o) {
++                return o.id < firstId && o.type == SiteType::Hub && o.map == services[c[0]].map && Dist2d(o.x, o.y, s.x, s.y) < 60.0f; }))
++            continue;                                   // a town the world already has
+         s.map = services[c[0]].map; s.zone = services[c[0]].zone; s.area = services[c[0]].area;
+         s.spawns = uint32(c.size());
+         s.name = uniqueName(areaName(s.area, s.zone));
+@@ -317,7 +355,7 @@ void World::BootstrapSites(std::set<uint32> const& zones)
+         cells[{ hostiles[i].map, int32(std::floor(hostiles[i].x / CELL)), int32(std::floor(hostiles[i].y / CELL)) }].push_back(i);
+     for (auto const& [key, c] : cells)
+     {
+-        if (c.size() < 6) continue;
++        if (hubsOnly || c.size() < 6) continue;
+         std::map<uint32, uint32> byEntry;
+         std::vector<uint8> lv;
+         float sx = 0, sy = 0, sz = 0;
+@@ -472,21 +510,28 @@ void World::ExpandRegion()
+     if (missing.empty()) return;
+     uint32 firstNew = _nextSite;
+     BootstrapSites(missing);
+-    // the hubs of the new zones only (BootstrapSites may also touch older hubs' region level - that's fine)
++    LOG_INFO("server.loading", "SoloWoW sim: the world grew by {} zones", uint32(missing.size()));
++    SettleNewHubs(firstNew);
++}
++
++// the hubs added since firstNew get their adventurers (BootstrapSites may also touch older hubs' region level - fine)
++void World::SettleNewHubs(uint32 firstNew)
++{
+     uint32 added = 0;
+     for (SimSite const& h : _sites)
+     {
+         if (h.id < firstNew || h.type != SiteType::Hub || !(h.services & SVC_INN) || !h.regionLevel) continue;
+-        uint32 count = (h.zone == 1537 || h.zone == 1519 || h.zone == 1657) ? 14 : 10;
++        uint32 count = (h.zone == 1537 || h.zone == 1519 || h.zone == 1657 || h.zone == 1637 || h.zone == 1638 || h.zone == 1497) ? 14 : 10;
+         for (uint32 i = 0; i < count; ++i)
+         {
+             uint32 id = _nextAgent++;
+             Rng r(_seed, id, h.id, P_GEN + 200);
+             int32 lvl = int32(h.regionLevel) + int32(r.Range(0, 8)) - 4;
+             uint8 level = uint8(std::clamp<int32>(lvl, 1, 50));
+-            uint8 race = 0;
+-            if (DWARF_ZONES.contains(h.zone)) race = r.Chance(0.7f) ? 3 : (r.Chance(0.7f) ? 7 : 0);
+-            if (ELF_ZONES.contains(h.zone)) race = r.Chance(0.75f) ? 4 : 0;
++            uint8 race = NativeRace(h, r, false);
++            if (!race && h.side == SIDE_NEUTRAL && r.Chance(0.5f)) race = r.Chance(0.5f) ? 2 : 6;   // both sides pass through
++            if (!race && DWARF_ZONES.contains(h.zone)) race = r.Chance(0.7f) ? 3 : (r.Chance(0.7f) ? 7 : 0);
++            if (!race && ELF_ZONES.contains(h.zone)) race = r.Chance(0.75f) ? 4 : 0;
+             SimAgent a = MakeAgent(id, level, h.id, _clock, 0, race);
+             SetAmbition(a);
+             _agents[id] = a;
+@@ -495,8 +540,9 @@ void World::ExpandRegion()
+     }
+     uint32 hubs = 0, hunts = 0;
+     for (SimSite const& s : _sites) if (s.id >= firstNew) (s.type == SiteType::Hub ? hubs : hunts)++;
+-    LOG_INFO("server.loading", "SoloWoW sim: the world grew by {} zones: {} towns and outposts, {} hunting grounds, {} new adventurers",
+-        uint32(missing.size()), hubs, hunts, added);
++    LOG_INFO("server.loading", "SoloWoW sim: {} new towns and outposts ({} of them the Horde's), {} hunting grounds, {} new adventurers",
++        hubs, uint32(std::ranges::count_if(_sites, [firstNew](SimSite const& s) { return s.id >= firstNew && s.type == SiteType::Hub && s.side == SIDE_HORDE; })),
++        hunts, added);
+     MakeRelations();                                    // the newcomers know a few people (idempotent for everyone else)
+ }
+ 
+@@ -576,8 +622,8 @@ void World::Save()
+     std::vector<std::string> rows;
+     CharacterDatabase.DirectExecute("DELETE FROM sim_site");
+     for (SimSite const& s : _sites)
+-        rows.push_back(Acore::StringFormat("({},{},'{}','{}',{},{},{},{},{},{},{},{},{},{},{},{},{},{})", s.id, uint32(s.type), Esc(s.name), Esc(s.creatureName),
+-            s.map, s.zone, s.area, s.x, s.y, s.z, s.services, s.minLevel, s.maxLevel, s.creatureType, s.copperPerKill, s.elite ? 1 : 0, s.spawns, s.regionLevel));
++        rows.push_back(Acore::StringFormat("({},{},'{}','{}',{},{},{},{},{},{},{},{},{},{},{},{},{},{},{})", s.id, uint32(s.type), Esc(s.name), Esc(s.creatureName),
++            s.map, s.zone, s.area, s.x, s.y, s.z, s.services, s.minLevel, s.maxLevel, s.creatureType, s.copperPerKill, s.elite ? 1 : 0, s.spawns, s.regionLevel, s.side));
+     Chunked("INSERT INTO sim_site VALUES ", rows);
+ 
+     CharacterDatabase.DirectExecute("DELETE FROM sim_agent");
+@@ -675,14 +721,14 @@ bool World::Load()
+     } while (st->NextRow());
+ 
+     _sites.clear(); _agents.clear(); _relations.clear(); _memories.clear(); _bounties.clear(); _news.clear(); _hubNews.clear(); _market.clear();
+-    if (QueryResult r = CharacterDatabase.Query("SELECT id, type, name, creature, map, zone, area, x, y, z, services, minlvl, maxlvl, ctype, copper, elite, spawns, regionlvl FROM sim_site ORDER BY id"))
++    if (QueryResult r = CharacterDatabase.Query("SELECT id, type, name, creature, map, zone, area, x, y, z, services, minlvl, maxlvl, ctype, copper, elite, spawns, regionlvl, side FROM sim_site ORDER BY id"))
+         do
+         {
+             Field* f = r->Fetch(); SimSite s;
+             s.id = f[0].Get<uint32>(); s.type = SiteType(f[1].Get<uint8>()); s.name = f[2].Get<std::string>(); s.creatureName = f[3].Get<std::string>();
+             s.map = f[4].Get<uint16>(); s.zone = f[5].Get<uint32>(); s.area = f[6].Get<uint32>(); s.x = f[7].Get<float>(); s.y = f[8].Get<float>(); s.z = f[9].Get<float>();
+             s.services = f[10].Get<uint32>(); s.minLevel = f[11].Get<uint8>(); s.maxLevel = f[12].Get<uint8>(); s.creatureType = f[13].Get<uint32>();
+-            s.copperPerKill = f[14].Get<uint32>(); s.elite = f[15].Get<uint8>() != 0; s.spawns = f[16].Get<uint32>(); s.regionLevel = f[17].Get<uint8>();
++            s.copperPerKill = f[14].Get<uint32>(); s.elite = f[15].Get<uint8>() != 0; s.spawns = f[16].Get<uint32>(); s.regionLevel = f[17].Get<uint8>(); s.side = f[18].Get<uint8>();
+             _sites.push_back(s);
+         } while (r->NextRow());
+     if (QueryResult r = CharacterDatabase.Query("SELECT id, given, family, gender, race, cls, src, level, xp, gear, money, loot, wounds, fatigue, supplies, durability, "
+@@ -763,6 +809,7 @@ std::string World::EnsureReady()
+     if (Load())
+     {
+         _ready = true;
++        if (_classifySides) { ClassifySides(); AddHordeTowns(); _classifySides = false; }   // once, for a pre-Horde world
+         ExpandRegion();
+         FindRares();
+         EnsureCivilians();
+@@ -905,11 +952,78 @@ uint32 World::TravelMinutes(uint32 fromSite, uint32 toSite, SimAgent const& a) c
+     return std::max<uint32>(1, uint32(yards / pace / 60.0f + 0.5f));
+ }
+ 
++// =====================================================================================================
++// two sides: whose towns are whose, and who is born where
++// =====================================================================================================
++bool World::Welcome(SimAgent const& a, SimSite const& s) const
++{
++    if (s.type != SiteType::Hub || s.side == SIDE_NEUTRAL || a.role == ROLE_THREAT) return true;
++    return s.side == (IsHordeRace(a.race) ? SIDE_HORDE : SIDE_ALLIANCE);
++}
++
++// the people a town is mostly made of (0 = the Alliance mix the caller already knows). Townsfolk can be goblins too;
++// adventurers only come in races NPCBots has bodies for.
++uint8 World::NativeRace(SimSite const& h, Rng& r, bool civilian) const
++{
++    static std::set<uint32> const ORC_LANDS = { 14, 1637 }, TAUREN_LANDS = { 215, 1638 }, FORSAKEN_LANDS = { 85, 1497, 130 };
++    uint32 roll = r.Range(1, 100);
++    if (h.side == SIDE_NEUTRAL)
++        return civilian && roll <= 60 ? 9 : 0;                       // goblin ports: goblins, and whoever passes through
++    if (h.side != SIDE_HORDE) return 0;
++    if (ORC_LANDS.contains(h.zone))      return roll <= 55 ? 2 : roll <= (civilian ? 92u : 100u) ? 8 : 9;
++    if (TAUREN_LANDS.contains(h.zone))   return roll <= 85 ? 6 : roll <= 95 ? 2 : 8;
++    if (FORSAKEN_LANDS.contains(h.zone)) return roll <= 90 ? 5 : roll <= 95 ? 2 : 8;
++    return roll <= 40 ? 2 : roll <= 65 ? 6 : roll <= 85 ? 8 : 5;     // the Barrens and the rest of the Horde's roads
++}
++
++// a world from before the Horde: every town was taken as the Alliance's. Ask the town's own service NPCs whose it is.
++void World::ClassifySides()
++{
++    FactionTemplateEntry const* alliance = sFactionTemplateStore.LookupEntry(1);
++    FactionTemplateEntry const* horde = sFactionTemplateStore.LookupEntry(2);
++    if (!alliance || !horde) return;
++    std::map<uint32, std::array<uint32, 3>> votes;                     // hub -> alliance / horde / neutral services nearby
++    for (auto const& [guid, data] : sObjectMgr->GetAllCreatureData())
++    {
++        if (!SIM_MAPS.contains(data.mapid)) continue;
++        CreatureTemplate const* t = sObjectMgr->GetCreatureTemplate(data.id);
++        if (!t || !(t->npcflag & (65536 | 128 | 4096 | 8192 | 16))) continue;
++        FactionTemplateEntry const* ft = sFactionTemplateStore.LookupEntry(t->faction);
++        if (!ft) continue;
++        bool forA = !ft->IsHostileTo(*alliance), forH = !ft->IsHostileTo(*horde);
++        if (!forA && !forH) continue;
++        for (SimSite const& h : _sites)
++            if (h.type == SiteType::Hub && h.map == data.mapid && Dist2d(h.x, h.y, data.posX, data.posY) < 50.0f)
++                ++votes[h.id][forA && forH ? SIDE_NEUTRAL : forA ? SIDE_ALLIANCE : SIDE_HORDE];
++    }
++    uint32 changed = 0;
++    for (SimSite& h : _sites)
++        if (auto it = votes.find(h.id); it != votes.end())
++        {
++            auto const& v = it->second;
++            // many of a town's vendors serve anyone (Goldshire and Stormwind have plenty): only a town with nobody
++            // of either side behind its counters is neutral
++            uint8 side = !v[SIDE_ALLIANCE] && !v[SIDE_HORDE] ? SIDE_NEUTRAL : v[SIDE_HORDE] > v[SIDE_ALLIANCE] ? SIDE_HORDE : SIDE_ALLIANCE;
++            if (side != h.side) { h.side = side; ++changed; }
++        }
++    LOG_INFO("server.loading", "SoloWoW sim: {} towns found to be neutral or the Horde's", changed);
++}
++
++// towns of the zones we already have that the Alliance-only world left out (the Crossroads, Camp Taurajo...)
++void World::AddHordeTowns()
++{
++    std::set<uint32> have;
++    for (SimSite const& s : _sites) have.insert(s.zone);
++    uint32 first = _nextSite;
++    BootstrapSites(have, true);
++    SettleNewHubs(first);
++}
++
+ uint32 World::NearestHub(SimAgent const& a, uint32 need) const
+ {
+     uint32 best = 0, bestMin = UINT32_MAX;
+     for (SimSite const& s : _sites)
+-        if (s.type == SiteType::Hub && (s.services & need) == need)
++        if (s.type == SiteType::Hub && (s.services & need) == need && Welcome(a, s))
+         {
+             uint32 m = TravelMinutes(a.site, s.id, a);
+             if (m < bestMin) { bestMin = m; best = s.id; }
+@@ -957,7 +1071,7 @@ uint32 World::PickNewHome(SimAgent const& a) const
+ {
+     uint32 best = 0, bestMin = UINT32_MAX;
+     for (SimSite const& s : _sites)
+-        if (s.type == SiteType::Hub && (s.services & SVC_INN) && s.id != a.home && HasFittingHunt(a, s.id, 2500.0f))
++        if (s.type == SiteType::Hub && (s.services & SVC_INN) && s.id != a.home && Welcome(a, s) && HasFittingHunt(a, s.id, 2500.0f))
+         {
+             uint32 m = TravelMinutes(a.site, s.id, a);
+             if (m < bestMin) { bestMin = m; best = s.id; }
+@@ -983,7 +1097,7 @@ void World::SetAmbition(SimAgent& a)
+         std::vector<uint32> farHubs;                    // somewhere they are not, and not just around the corner
+         for (SimSite const& s : _sites)
+             if (s.type == SiteType::Hub && (s.services & SVC_INN) && s.id != a.home && s.id != a.site && s.regionLevel && s.regionLevel <= a.level + 6
+-                && (!here || Dist2d(here->x, here->y, s.x, s.y) > 1200.0f))
++                && Welcome(a, s) && (!here || Dist2d(here->x, here->y, s.x, s.y) > 1200.0f))
+                 farHubs.push_back(s.id);
+         if (!farHubs.empty()) { a.ambition = AmbitionType::SeePlace; a.ambitionTarget = farHubs[r.Range(0, uint32(farHubs.size()) - 1)]; return; }
+         a.ambition = AmbitionType::ReachLevel; a.ambitionTarget = std::min<uint32>(80, a.level + r.Range(3, 6));
+@@ -1081,11 +1195,12 @@ void World::SpawnNewcomer(uint32 minDelay, uint32 maxDelay)
+     Rng r(_seed, id, _clock, P_NEWCOMER);
+     std::vector<uint32> starts;
+     for (SimSite const& s : _sites)
+-        if (s.type == SiteType::Hub && (s.services & SVC_INN) && s.regionLevel && s.regionLevel <= 12) starts.push_back(s.id);
++        if (s.type == SiteType::Hub && (s.services & SVC_INN) && s.regionLevel && s.regionLevel <= 12 && s.side != SIDE_NEUTRAL) starts.push_back(s.id);
+     if (starts.empty()) return;
+     uint8 level = uint8(r.Range(1, 6));
+     SimTime arrive = _clock + r.Range(minDelay, maxDelay);
+-    SimAgent a = MakeAgent(id, level, starts[r.Range(0, uint32(starts.size()) - 1)], arrive, _clock);
++    uint32 start = starts[r.Range(0, uint32(starts.size()) - 1)];
++    SimAgent a = MakeAgent(id, level, start, arrive, _clock, NativeRace(*SiteById(start), r, false));   // the start town's own people
+     SetAmbition(a);
+     _agents[id] = a;
+     SimEvent e; e.id = _nextEvent++; e.at = arrive; e.type = EventType::Newcomer; e.actor = id; e.site = a.home; e.notable = true;
+@@ -1858,12 +1973,18 @@ SimAgent World::MakeCivilian(SimSite const& h, uint32 id, uint8 forceRace)
+         else if (elven) a.race = (h.zone == 1657 && roll <= 10) ? 1 : roll >= (h.zone == 1657 ? 86u : 92u) ? 12 : 4;
+         else if (h.zone == 1519) a.race = roll <= 7 ? 3 : roll <= 13 ? 7 : roll <= 18 ? 4 : roll >= 98 ? 12 : 1;
+         else a.race = roll <= 5 ? 3 : roll <= 8 ? 7 : roll <= 10 ? 4 : 1;
++        if (uint8 native = NativeRace(h, mix, true)) a.race = native;   // the Horde's towns and the goblin ports
++        else if (h.side != SIDE_ALLIANCE && a.race != 1 && a.race != 3 && a.race != 4 && a.race != 7) a.race = 1;
+         if (forceRace) a.race = forceRace;
+     }
+     uint32 roll = r.Range(1, 100);
+     a.job = h.zone == 1519 ? (roll <= 45 ? JOB_MARKET : roll <= 75 ? JOB_LABORER : JOB_LOAFER)
+                            : (roll <= 45 ? JOB_FARMHAND : roll <= 70 ? JOB_LABORER : roll <= 90 ? JOB_MARKET : JOB_LOAFER);
+-    std::vector<uint32> const& looks = (a.race == 3 || a.race == 7) ? DWARF_BODIES : a.race == 4 ? ELF_BODIES : CIVILIAN_BODIES[a.job];
++    // the Horde's and the goblins' townsfolk wear their own people's commoner bodies (Orc/Troll/Tauren/Forsaken/Goblin
++    // Commoner - their faction makes them the Horde's, or neutral); their faces come from the looks pool by race
++    static std::map<uint8, std::vector<uint32>> const HORDE_BODIES = { { 2, { 19175 } }, { 8, { 19177 } }, { 6, { 19176 } }, { 5, { 19178 } }, { 9, { 20102 } } };
++    std::vector<uint32> const& looks = HORDE_BODIES.contains(a.race) ? HORDE_BODIES.at(a.race)
++        : (a.race == 3 || a.race == 7) ? DWARF_BODIES : a.race == 4 ? ELF_BODIES : CIVILIAN_BODIES[a.job];
+     a.sourceEntry = looks[r.Range(0, uint32(looks.size()) - 1)];
+     uint32 display = CivilianDisplay(_seed, a);
+     CreatureModelInfo const* mi = display ? sObjectMgr->GetCreatureModelInfo(display) : nullptr;
+@@ -2637,7 +2758,7 @@ void World::Immigration()
+         SimSite const* best = nullptr; float bestScore = 0.0f;
+         for (SimSite const* t : towns)
+         {
+-            if (t->id == home->id || t->map != home->map) continue;
++            if (t->id == home->id || t->map != home->map || !Welcome(a, *t)) continue;   // never into the other side's towns
+             uint32 target = TownTarget(*t), have = living[t->id];
+             if (have >= target) continue;
+             float score = float(target - have) / float(target) * 10.0f;
+diff --git a/src/server/game/SoloSim/solosim.h b/src/server/game/SoloSim/solosim.h
+index 8c69741..69a26f8 100644
+--- a/src/server/game/SoloSim/solosim.h
++++ b/src/server/game/SoloSim/solosim.h
+@@ -63,7 +63,10 @@ namespace SoloSim
+         bool elite = false;
+         uint32 spawns = 0;                // how many creature spawns formed it
+         uint8 regionLevel = 0;            // hubs: typical level of hunting nearby
++        uint8 side = 0;                   // hubs: whose town it is - 0 Alliance, 1 Horde, 2 neutral (goblins, the Cenarion Circle...)
+     };
++    enum SiteSide : uint8 { SIDE_ALLIANCE = 0, SIDE_HORDE = 1, SIDE_NEUTRAL = 2 };
++    inline bool IsHordeRace(uint8 race) { return race == 2 || race == 5 || race == 6 || race == 8 || race == 9 || race == 10 || race == 15; }
+ 
+     // ---------------------------------------------------------------- agents
+     enum class AgentStatus : uint8 { Active = 1, Recovering = 2, Dead = 3, Gone = 4, Hired = 5 };
+@@ -354,7 +357,12 @@ namespace SoloSim
+         void CreateTables();
+         bool Load();
+         void Save();
+-        void BootstrapSites(std::set<uint32> const& zones);
++        void BootstrapSites(std::set<uint32> const& zones, bool hubsOnly = false);   // hubsOnly: towns missing from zones we already have
++        bool Welcome(SimAgent const& a, SimSite const& s) const;   // a town that will have them: their own side's, or neutral
++        void SettleNewHubs(uint32 firstNew);                         // adventurers for towns just added
++        uint8 NativeRace(SimSite const& h, Rng& r, bool civilian) const;
++        void ClassifySides();
++        void AddHordeTowns();
+         void ExpandRegion();
+         void GeneratePopulation(uint32 count);
+         SimAgent MakeAgent(uint32 id, uint8 level, uint32 home, SimTime born, uint32 salt, uint8 forceRace = 0);
+@@ -456,6 +464,7 @@ namespace SoloSim
+         bool _live = false, _liveChecked = false, _liveStarted = false;
+         float _liveScale = 1.0f;
+         uint32 _catchUpHours = 168;
++        bool _classifySides = false;                 // sim_site just gained its side column: sort the old towns out on load
+         bool _away = false;                        // catching up on time nobody was here for
+         uint32 _awayMajor = 0;                     // major events during this catch-up
+         float _deathScale = 1.0f;                  // < 1 while resolving a death somewhere kinder (a dungeon)
+-- 
+2.56.0.windows.2
+
