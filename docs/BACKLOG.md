@@ -53,7 +53,17 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
     installer (fetched, not vendored). Check its docs/INSTALL.md against our DXVK + ReShade setup and our MPQs first.
     "Could be used with Project Reforged models": their HD packs are their files - we don't ship or copy them.
 
-- **Audit Nov 17 (01:55) - fix these:**
+- **Audit fixes, done Nov 17 (05:10):** the sim covers the whole old world now - 17 more zones (Alterac, Hinterlands,
+  Searing Gorge, Burning Steppes, Blasted Lands, Deadwind Pass, both Plaguelands | Thousand Needles, Feralas, Tanaris,
+  Un'Goro, Silithus, Felwood, Winterspring, Azshara, Moonglade): 65 new towns and outposts (21 Horde), 1013 hunting
+  grounds, 100 adventurers at their levels (settling now clamps to 60, not 50); highest 45 -> 60, 40+ from 14 to 99.
+  Capitals: a table of capitals (centre, reach, people) files the Horde's towns under Orgrimmar (200 folk), the
+  Undercity (140) and Thunder Bluff (100, had none) - 34 towns re-filed, 489 townsfolk moved in; the 70 bodies near
+  you in capitals count the Horde's too. Hunting grounds: training dummies (no-XP) and ambient folk (civilian) left
+  out; a ground's levels are its dominant creature's kind within 6 levels (no more 7-80). Wildlife caps 36 herds / 18
+  packs per continent, threats roam grounds up to 60. Existing bad grounds stay until the world restart; new zones
+  are clean. Backup before: db/sim-before-zones.sql.
+- **Audit Nov 17 (01:55) - fix these (done above):**
   - Not in the sim yet (no towns, adventurers, camps, herds or thinning there - an empty world): Eastern Kingdoms -
     Alterac Mountains, the Hinterlands, Searing Gorge, Burning Steppes, Blasted Lands, Deadwind Pass, Western and
     Eastern Plaguelands; Kalimdor - Thousand Needles, Feralas, Tanaris, Un'Goro Crater, Silithus, Felwood,

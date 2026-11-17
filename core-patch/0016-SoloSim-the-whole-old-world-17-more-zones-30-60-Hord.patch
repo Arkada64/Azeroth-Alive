@@ -1,0 +1,190 @@
+From 4c1b9f234f57c271eb2c94655220169db6b2743f Mon Sep 17 00:00:00 2001
+From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 05:12:39 -0600
+Subject: [PATCH 16/16] SoloSim: the whole old world (17 more zones, 30-60),
+ Horde capitals filed and sized, clean hunting grounds, more wildlife room
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01JU37XfnHTvru3VVz2sNN7z
+---
+ src/server/game/AI/NpcBots/botbubble.cpp |  2 +-
+ src/server/game/SoloSim/solosim.cpp      | 63 +++++++++++++++++++-----
+ src/server/game/SoloSim/solosim.h        |  1 +
+ 3 files changed, 53 insertions(+), 13 deletions(-)
+
+diff --git a/src/server/game/AI/NpcBots/botbubble.cpp b/src/server/game/AI/NpcBots/botbubble.cpp
+index 74cd0a1..aa4e0c8 100644
+--- a/src/server/game/AI/NpcBots/botbubble.cpp
++++ b/src/server/game/AI/NpcBots/botbubble.cpp
+@@ -169,7 +169,7 @@ namespace
+         sSoloSim->Bodies(mapId, bodies);
+         // townsfolk are plain creatures with their own cap; adventurers are NPCBots
+         // the capitals are crowded: more townsfolk around you there (they're plain creatures, much lighter than bots)
+-        uint32 townCap = (zoneId == 1519 || zoneId == 1537 || zoneId == 1657) ? std::max<uint32>(cfg.townsfolk, 70) : cfg.townsfolk;
++        uint32 townCap = (zoneId == 1519 || zoneId == 1537 || zoneId == 1657 || zoneId == 1637 || zoneId == 1497 || zoneId == 1638) ? std::max<uint32>(cfg.townsfolk, 70) : cfg.townsfolk;
+         SoloCivilians::Update(player, mapId, bubble, bodies, townCap, cfg.safeDistance);
+         std::erase_if(bodies, [&](SoloSim::SimBody const& b) { return b.role == SoloSim::ROLE_CIVILIAN || !bubble.contains(b.zone); });
+         std::ranges::sort(bodies, [&](SoloSim::SimBody const& x, SoloSim::SimBody const& y) {
+diff --git a/src/server/game/SoloSim/solosim.cpp b/src/server/game/SoloSim/solosim.cpp
+index 78e8a8f..58e0b0e 100644
+--- a/src/server/game/SoloSim/solosim.cpp
++++ b/src/server/game/SoloSim/solosim.cpp
+@@ -62,7 +62,24 @@ namespace
+     // v4 (Kalimdor): Teldrassil, Darnassus, Darkshore, Ashenvale, Stonetalon Mountains, Dustwallow Marsh, the Barrens, Desolace.
+     const std::set<uint32> REGION_ZONES = { 12, 40, 44, 10, 1519, 1, 1537, 38, 11, 267, 45, 33, 3, 8,
+                                             141, 1657, 148, 331, 406, 15, 17, 405,
+-                                            14, 1637, 215, 1638, 85, 1497, 130 };   // the Horde's homelands (Nov 17)
++                                            14, 1637, 215, 1638, 85, 1497, 130,     // the Horde's homelands (Nov 17)
++                                            // the rest of the old world, 30-60 (Nov 17 audit: the sim's people stalled in
++                                            // their 40s with nowhere to go): Alterac Mountains, the Hinterlands, Searing
++                                            // Gorge, Burning Steppes, Blasted Lands, Deadwind Pass, the Plaguelands |
++                                            // Thousand Needles, Feralas, Tanaris, Un'Goro, Silithus, Felwood, Winterspring,
++                                            // Azshara, Moonglade
++                                            36, 47, 51, 46, 4, 41, 28, 139,
++                                            400, 357, 440, 490, 1377, 361, 618, 16, 493 };
++    // the capitals and how many live there. The Horde's three have no road nodes inside, so their towns were filed under
++    // the zone outside (Durotar, Tirisfal, Mulgore) and sized as villages: a town within reach of a capital's centre
++    // belongs to it (Nov 17).
++    struct Capital { uint32 zone, map; float x, y, radius; uint32 people; };
++    const Capital CAPITALS[] = {
++        { 1519, 0, 0.0f, 0.0f, 0.0f, 220 }, { 1537, 0, 0.0f, 0.0f, 0.0f, 160 }, { 1657, 1, 0.0f, 0.0f, 0.0f, 100 },   // filed right already
++        { 1637, 1, 1630.0f, -4420.0f, 600.0f, 200 },     // Orgrimmar
++        { 1497, 0, 1580.0f, 240.0f, 350.0f, 140 },       // the Undercity (and the Ruins of Lordaeron above it)
++        { 1638, 1, -1280.0f, 120.0f, 380.0f, 100 },      // Thunder Bluff
++    };
+     const std::set<uint32> ELF_ZONES = { 141, 1657, 148 };   // where night elves are most of the folk
+     // the sea crossings of 3.3.5 between the two old continents (Nov 17): dock positions; each dock is served by the nearest
+     // town with an inn within 900 yd that will have the traveller. Alliance boats, Horde zeppelins, the goblins' boat.
+@@ -291,7 +308,7 @@ void World::BootstrapSites(std::set<uint32> const& zones, bool hubsOnly)
+         else if (!t->npcflag && !ft->IsFriendlyTo(*alliance) && t->minlevel >= 1
+             && t->type != 8 && t->type != 11 && t->type != 12 && t->type != 13      // critter, totem, non-combat pet, gas cloud
+             && !(t->unit_flags & (0x2 | 0x02000000))                                 // NON_ATTACKABLE, NOT_SELECTABLE
+-            && !(t->flags_extra & 0x80)                                              // TRIGGER
++            && !(t->flags_extra & (0x80 | 0x40 | 0x2))                               // TRIGGER, NO_XP (training dummies), CIVILIAN (ambient folk)
+             && t->rank != 3                                                          // bosses
+             && !(horde && ft->IsFriendlyTo(*horde)))                                // Horde guards and townsfolk
+             hostiles.push_back(p);
+@@ -366,29 +383,37 @@ void World::BootstrapSites(std::set<uint32> const& zones, bool hubsOnly)
+     {
+         if (hubsOnly || c.size() < 6) continue;
+         std::map<uint32, uint32> byEntry;
++        for (uint32 i : c) ++byEntry[hostiles[i].entry];
++        uint32 dom = std::max_element(byEntry.begin(), byEntry.end(), [](auto const& a, auto const& b) { return a.second < b.second; })->first;
++        CreatureTemplate const* dt = sObjectMgr->GetCreatureTemplate(dom);
++        // the ground is what lives here at the dominant creature's level: a few far stronger (or weaker) things nearby
++        // no longer stretch it (Nov 17: Flatland Cougar 7-80, Slimeshell Makrura 12-57)
++        int32 domLvl = int32(dt->minlevel + dt->maxlevel) / 2;
+         std::vector<uint8> lv;
+         float sx = 0, sy = 0, sz = 0;
+         uint64 copper = 0;
++        uint32 kept = 0;
+         for (uint32 i : c)
+         {
+             Point const& p = hostiles[i];
+             CreatureTemplate const* t = sObjectMgr->GetCreatureTemplate(p.entry);
+-            ++byEntry[p.entry];
+-            lv.push_back(uint8((t->minlevel + t->maxlevel) / 2));
++            int32 l = int32(t->minlevel + t->maxlevel) / 2;
++            if (std::abs(l - domLvl) > 6) continue;
++            lv.push_back(uint8(l));
+             copper += (t->mingold + t->maxgold) / 2;
+             sx += p.x; sy += p.y; sz += p.z;
++            ++kept;
+         }
++        if (kept < 6) continue;
+         std::sort(lv.begin(), lv.end());
+-        uint32 dom = std::max_element(byEntry.begin(), byEntry.end(), [](auto const& a, auto const& b) { return a.second < b.second; })->first;
+-        CreatureTemplate const* dt = sObjectMgr->GetCreatureTemplate(dom);
+         Point const* domPt = nullptr;
+         for (uint32 i : c) if (hostiles[i].entry == dom) { domPt = &hostiles[i]; break; }
+         SimSite s; s.type = SiteType::Hunt;
+-        s.x = sx / c.size(); s.y = sy / c.size(); s.z = sz / c.size();
++        s.x = sx / kept; s.y = sy / kept; s.z = sz / kept;
+         s.map = domPt->map; s.zone = domPt->zone; s.area = domPt->area;
+         s.minLevel = lv[lv.size() / 10]; s.maxLevel = std::max<uint8>(lv[(lv.size() * 9) / 10], s.minLevel);
+         s.creatureName = dt->Name; s.creatureType = dt->type;
+-        s.copperPerKill = uint32(copper / c.size()); s.elite = (dt->rank == 1 || dt->rank == 2); s.spawns = uint32(c.size());
++        s.copperPerKill = uint32(copper / kept); s.elite = (dt->rank == 1 || dt->rank == 2); s.spawns = kept;
+         s.name = uniqueName(Acore::StringFormat("{} near {}", dt->Name, areaName(s.area, s.zone)));
+         s.id = _nextSite++;
+         _sites.push_back(s);
+@@ -511,14 +536,27 @@ void World::GeneratePopulation(uint32 count)
+ 
+ // A save made before zones were added to the region: map the new zones (hubs, hunting grounds) and move people into
+ // their towns - adventurers at the level of the land around each town, dwarves and gnomes in the dwarven lands.
++// towns inside the Horde's capitals belong to the city, not the zone outside it (see CAPITALS). Idempotent.
++void World::FileCapitals()
++{
++    uint32 moved = 0;
++    for (SimSite& s : _sites)
++        for (Capital const& c : CAPITALS)
++            if (c.radius > 0.0f && s.type == SiteType::Hub && s.map == c.map && s.zone != c.zone && Dist2d(s.x, s.y, c.x, c.y) <= c.radius)
++            { s.zone = c.zone; ++moved; }
++    if (moved) LOG_INFO("server.loading", "SoloWoW sim: {} towns filed under their capital (Orgrimmar, the Undercity, Thunder Bluff)", moved);
++}
++
+ void World::ExpandRegion()
+ {
++    FileCapitals();
+     std::set<uint32> have, missing;
+     for (SimSite const& s : _sites) have.insert(s.zone);
+     for (uint32 z : REGION_ZONES) if (!have.contains(z)) missing.insert(z);
+     if (missing.empty()) return;
+     uint32 firstNew = _nextSite;
+     BootstrapSites(missing);
++    FileCapitals();                                     // the new towns too, before they're sized and settled
+     LOG_INFO("server.loading", "SoloWoW sim: the world grew by {} zones", uint32(missing.size()));
+     SettleNewHubs(firstNew);
+ }
+@@ -536,7 +574,7 @@ void World::SettleNewHubs(uint32 firstNew)
+             uint32 id = _nextAgent++;
+             Rng r(_seed, id, h.id, P_GEN + 200);
+             int32 lvl = int32(h.regionLevel) + int32(r.Range(0, 8)) - 4;
+-            uint8 level = uint8(std::clamp<int32>(lvl, 1, 50));
++            uint8 level = uint8(std::clamp<int32>(lvl, 1, 60));
+             uint8 race = NativeRace(h, r, false);
+             if (!race && h.side == SIDE_NEUTRAL && r.Chance(0.5f)) race = r.Chance(0.5f) ? 2 : 6;   // both sides pass through
+             if (!race && DWARF_ZONES.contains(h.zone)) race = r.Chance(0.7f) ? 3 : (r.Chance(0.7f) ? 7 : 0);
+@@ -2176,7 +2214,8 @@ SimSite const* World::DistrictOf(SimAgent const& a) const
+ // How many townsfolk a town holds: the capitals by hand, the rest by how much the town has (services across its districts)
+ uint32 World::TownTarget(SimSite const& h) const
+ {
+-    uint32 capital = h.zone == 1519 ? 220 : h.zone == 1537 ? 160 : h.zone == 1657 ? 100 : 0;   // Stormwind, Ironforge, Darnassus
++    uint32 capital = 0;
++    for (Capital const& c : CAPITALS) if (c.zone == h.zone) capital = c.people;
+     if (capital)
+     {
+         uint32 inns = 0;                                  // every inn in the city shares the city's people
+@@ -2566,7 +2605,7 @@ void World::SpawnWildlife()
+         {
+             bool herd = r.Chance(0.7f);
+             std::vector<SimSite const*>& from = herd ? grazing : hunting;
+-            if (from.empty() || (herd ? herds >= 20 : packs >= 10) || !r.Chance(0.5f)) continue;
++            if (from.empty() || (herd ? herds >= 36 : packs >= 18) || !r.Chance(0.5f)) continue;   // Nov 17: more room with the 30-60 zones
+             SimSite const& src = *from[r.Range(0, uint32(from.size()) - 1)];
+             uint32 lvl = (src.minLevel + src.maxLevel) / 2;
+             uint32 entry = CampEntry(src.creatureName, lvl);
+@@ -2764,7 +2803,7 @@ void World::SpawnThreats(bool force)
+         if (!force && !AwayAllows(map + 1)) continue;
+         std::vector<SimSite const*> lairs;
+         for (SimSite const& s : _sites)
+-            if (s.type == SiteType::Hunt && s.map == map && !s.elite && (s.minLevel + s.maxLevel) / 2 >= 20 && (s.minLevel + s.maxLevel) / 2 <= 55 && TownOf(s.id))
++            if (s.type == SiteType::Hunt && s.map == map && !s.elite && (s.minLevel + s.maxLevel) / 2 >= 20 && (s.minLevel + s.maxLevel) / 2 <= 60 && TownOf(s.id))
+                 lairs.push_back(&s);
+         if (lairs.empty()) continue;
+         SimSite const& lair = *lairs[r.Range(0, uint32(lairs.size()) - 1)];
+diff --git a/src/server/game/SoloSim/solosim.h b/src/server/game/SoloSim/solosim.h
+index 786521b..6c78435 100644
+--- a/src/server/game/SoloSim/solosim.h
++++ b/src/server/game/SoloSim/solosim.h
+@@ -419,6 +419,7 @@ namespace SoloSim
+         bool Clash(SimAgent& a, SimSite const& site);
+         bool RoadClash(SimAgent& a, SimSite const& from, SimSite const& to);   // the other side on a road close to yours
+         bool Duel(SimAgent& a, SimAgent& foe, SimSite const& site, uint32 ground, bool sought, Rng& r, std::string const& over, std::string const& seen);   // the other side hunting the same ground: blows, or distance kept
++        void FileCapitals();                           // towns inside the Horde's capitals belong to the city
+         uint32 DockTown(uint32 map, float x, float y, SimAgent const& a) const;   // the town serving a boat or zeppelin dock
+         bool HasFittingHunt(SimAgent const& a, uint32 nearHub, float radius) const;
+         Rng R(SimAgent const& a, uint32 purpose) const { return Rng(_seed, a.id, _clock, purpose); }
+-- 
+2.56.0.windows.2
+
