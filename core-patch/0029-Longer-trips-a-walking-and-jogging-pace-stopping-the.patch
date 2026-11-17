@@ -1,0 +1,233 @@
+From 5b57b839410a6c9f376e1db1a30c3475e76a9271 Mon Sep 17 00:00:00 2001
+From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 13:29:15 -0600
+Subject: [PATCH 29/29] Longer trips: a walking-and-jogging pace, stopping the
+ night on the way (an inn on the road, else camp), places worth seeing really
+ elsewhere, auction-house runs to the capitals; companions camp with you
+
+WayStop() from cached road tables; IsCapital(); bodies walk alternate stretches on the road.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01JU37XfnHTvru3VVz2sNN7z
+---
+ src/server/game/SoloSim/solosim.cpp         | 101 +++++++++++++++++++-
+ src/server/game/SoloSim/solosim.h           |   2 +
+ src/server/game/SoloSim/solosim_camping.cpp |  27 +++++-
+ 3 files changed, 124 insertions(+), 6 deletions(-)
+
+diff --git a/src/server/game/SoloSim/solosim.cpp b/src/server/game/SoloSim/solosim.cpp
+index 1dc895f..5f15241 100644
+--- a/src/server/game/SoloSim/solosim.cpp
++++ b/src/server/game/SoloSim/solosim.cpp
+@@ -1037,8 +1037,9 @@ uint32 World::TravelMinutes(uint32 fromSite, uint32 toSite, SimAgent const& a) c
+         if (road < 1e8f)
+             yards = Dist2d(f->x, f->y, _roads[fi].x, _roads[fi].y) + road + Dist2d(_roads[ti].x, _roads[ti].y, t->x, t->y);
+     }
+-    // travelling pace: a run (7 yd/s) with stops, about 5.5 yd/s; mounted from level 40 (+60%)
+-    float pace = 5.5f * (a.level >= 40 ? 1.6f : 1.0f);
++    // travelling pace (Nov 17): nobody runs all day - stretches of walking (2.5 yd/s) and jogging (7), and stops: about
++    // 4.5 yd/s on foot (was 5.5); mounted from level 40 (+60%). Bodies on the road walk in alternate stretches to match.
++    float pace = 4.5f * (a.level >= 40 ? 1.6f : 1.0f);
+     return std::max<uint32>(1, uint32(yards / pace / 60.0f + 0.5f));
+ }
+ 
+@@ -1189,8 +1190,8 @@ void World::SetAmbition(SimAgent& a)
+         std::vector<uint32> farHubs;                    // somewhere they are not, and not just around the corner
+         for (SimSite const& s : _sites)
+             if (s.type == SiteType::Hub && (s.services & SVC_INN) && s.id != a.home && s.id != a.site && s.regionLevel && s.regionLevel <= a.level + 6
+-                && Welcome(a, s) && (!here || Dist2d(here->x, here->y, s.x, s.y) > 1200.0f))
+-                farHubs.push_back(s.id);
++                && Welcome(a, s) && (!here || Dist2d(here->x, here->y, s.x, s.y) > 2500.0f || here->map != s.map))
++                for (int k = IsCapital(s) ? 3 : 1; k > 0; --k) farHubs.push_back(s.id);   // somewhere really elsewhere; the capitals above all (Nov 17)
+         if (!farHubs.empty()) { a.ambition = AmbitionType::SeePlace; a.ambitionTarget = farHubs[r.Range(0, uint32(farHubs.size()) - 1)]; return; }
+         a.ambition = AmbitionType::ReachLevel; a.ambitionTarget = std::min<uint32>(80, a.level + r.Range(3, 6));
+     }
+@@ -2810,6 +2811,48 @@ bool World::AtCamp(SimAgent const& a) const
+     return s && !(s->type == SiteType::Hub && (s->services & SVC_INN));
+ }
+ 
++bool World::IsCapital(SimSite const& s) const
++{
++    if (s.type != SiteType::Hub) return false;
++    for (Capital const& c : CAPITALS) if (c.zone == s.zone) return true;
++    return false;
++}
++
++// a journey that runs past bedtime (Nov 17): somewhere on the way, about when bedtime comes - a town with an inn that will
++// have them if there is one, else a safe hunting ground or outpost to camp at. Road minutes from both ends (cached tables).
++uint32 World::WayStop(SimAgent const& a, uint32 from, uint32 to, uint32 afterMinutes) const
++{
++    SimSite const* f = SiteById(from); SimSite const* t = SiteById(to);
++    if (!f || !t || f->map != t->map) return 0;
++    uint32 fi = SiteRoad(from), ti = SiteRoad(to);
++    if (fi == UINT32_MAX || ti == UINT32_MAX) return 0;
++    std::vector<float> const& df = DistTo(fi);
++    std::vector<float> const& dt = DistTo(ti);
++    float pace = 4.5f * (a.level >= 40 ? 1.6f : 1.0f) * 60.0f;                       // yards a minute
++    auto minutes = [&](SimSite const& s, uint32 si, std::vector<float> const& d, SimSite const& end, uint32 ei) {
++        float road = d[si];
++        if (road >= 1e8f) return 1e9f;
++        return (Dist2d(s.x, s.y, _roads[si].x, _roads[si].y) + road + Dist2d(_roads[ei].x, _roads[ei].y, end.x, end.y)) / pace;
++    };
++    float total = minutes(*t, ti, df, *f, fi);
++    uint32 best = 0; float bestScore = 1e9f;
++    for (SimSite const& s : _sites)
++    {
++        if (s.map != f->map || s.id == from || s.id == to) continue;
++        bool inn = s.type == SiteType::Hub && (s.services & SVC_INN);
++        if (inn ? !Welcome(a, s) : (s.elite || s.minLevel > a.level + 2 || DangerFor(a, s.id) >= 1.0f + a.bravery / 100.0f)) continue;
++        if (Dist2d(s.x, s.y, f->x, f->y) > total * pace * 1.1f) continue;                // nowhere near the way
++        uint32 si = SiteRoad(s.id);
++        if (si == UINT32_MAX) continue;
++        float there = minutes(s, si, df, *f, fi), on = minutes(s, si, dt, *t, ti);
++        if (there + on > total * 1.25f + 3.0f) continue;                                 // a detour
++        if (there < float(afterMinutes) * 0.5f || there > float(afterMinutes) + 40.0f) continue;   // too early, or too late
++        float score = std::fabs(there - float(afterMinutes)) - (inn ? 25.0f : 0.0f);
++        if (score < bestScore) { bestScore = score; best = s.id; }
++    }
++    return best;
++}
++
+ float World::DangerFor(SimAgent const& a, uint32 site) const
+ {
+     float d = 0.0f;
+@@ -3405,6 +3448,16 @@ void World::Decide(SimAgent& a)
+         {
+             uint32 need = SVC_VENDOR | (a.durability < 60 ? SVC_REPAIR : 0);
+             uint32 hub = NearestHub(a, need);
++            // a full pack and an eye for coin: the capital's auction house pays better than the village trader - worth a
++            // longer road (up to an hour and a half for the greediest) when there's a real haul to sell (Nov 17)
++            if (bags >= 70 && a.greed >= 55 && a.durability >= 40 && a.supplies >= 30)
++            {
++                uint32 bestCap = 0, bestMin = uint32(30 + (a.greed - 55) * 1.5f);
++                for (SimSite const& s : _sites)
++                    if (IsCapital(s) && (s.services & SVC_VENDOR) && Welcome(a, s))
++                        if (uint32 m = TravelMinutes(a.site, s.id, a); m <= bestMin) { bestMin = m; bestCap = s.id; }
++                if (bestCap && bestCap != hub) hub = bestCap;
++            }
+             goTo(hub);
+             a.plan.push_back({ Verb::Trade, hub, 30 });
+             break;
+@@ -3501,6 +3554,35 @@ void World::StartStep(SimAgent& a)
+     if (s.verb == Verb::Goto)
+     {
+         s.minutes = TravelMinutes(a.site, s.site, a);
++        // a journey that runs well past their bedtime: stop for the night on the way - an inn if one's there, else camp -
++        // and go on in the morning (Nov 17)
++        uint32 toBed = MinutesToBed(a);
++        if (a.role == ROLE_ADVENTURER && !Asleep(a, _clock) && s.minutes >= 30 && s.minutes > toBed + 20)
++            if (uint32 stop = WayStop(a, a.site, s.site, toBed))
++            {
++                PlanStep onward = s;                                                      // the rest of the way, tomorrow
++                onward.minutes = 0;
++                uint32 leg = TravelMinutes(a.site, stop, a);
++                SimSite const* ss = SiteById(stop);
++                bool inn = ss && ss->type == SiteType::Hub && (ss->services & SVC_INN);
++                Rng r(_seed, a.id, _clock, P_GEN + 590);
++                uint32 evening = a.sociability >= 25 ? r.Range(20, 70) : 0;
++                uint32 arrive = (_clock + leg + evening) % MIN_PER_DAY;
++                uint32 sleep = std::max<uint32>(60, (WakeMinute(a) + MIN_PER_DAY - arrive) % MIN_PER_DAY + r.Range(0, 45));
++                std::vector<PlanStep> night = { { Verb::Goto, stop, 0, false } };
++                if (evening) night.push_back({ Verb::Socialize, stop, evening });
++                night.push_back({ Verb::Sleep, stop, sleep });
++                a.plan.erase(a.plan.begin());
++                a.plan.insert(a.plan.begin(), onward);
++                a.plan.insert(a.plan.begin(), night.begin(), night.end());
++                Log(EventType::Departed, a, a.site, Acore::StringFormat("{} set out from {} for {}, meaning to stop the night {}.", a.FullName(), SiteName(a.site),
++                    SiteName(onward.site), inn ? "at " + SiteName(stop) : "on the road near " + PlaceOnly(SiteName(stop))), onward.announce, 0, int32(leg));
++                PlanStep& first = a.plan.front();
++                first.minutes = leg;
++                a.doing = Verb::Goto;
++                a.wakeAt = _clock + std::max<uint32>(1, first.minutes);
++                return;
++            }
+         // only purposeful journeys (an ambition to see a place) make the chronicle; errands and hunts are routine
+         Log(EventType::Departed, a, a.site, Acore::StringFormat("{} left {} for {}.", a.FullName(), SiteName(a.site), SiteName(s.site)), s.announce, 0, int32(s.minutes));
+     }
+@@ -3566,6 +3648,14 @@ void World::FinishStep(SimAgent& a, PlanStep const& s)
+         {
+             ClaimBounty(a);
+             uint32 sold = a.lootValue;
++            if (SimSite const* ts = SiteById(a.site); ts && IsCapital(*ts) && sold)
++            {
++                sold += sold / 4;                                // the auction house: a quarter more than the village trader
++                if (sold >= uint32(a.level) * a.level * 60 + 500)
++                    Log(EventType::Traded, a, a.site, Acore::StringFormat("{} sold a haul at the auction house in {} for {}.", Who(a),
++                        ts->zone == 1637 ? std::string("Orgrimmar") : ts->zone == 1638 ? std::string("Thunder Bluff") : ts->zone == 1497 ? std::string("the Undercity") : SiteName(a.site),
++                        Money(sold)), false, 0, int32(sold));   // the Horde capitals' sites carry their zone's name
++            }
+             a.money += sold; a.lootValue = 0;
+             // goods go into this town's market (the hook for shops with real stock)
+             auto& market = _market[a.site];
+@@ -3974,7 +4064,8 @@ bool World::Intent(uint32 agentId, SimIntent& out)
+     // pace: nobody runs about town; on the road the weary, the hurt and the unhurried (three in ten, by nature) walk
+     bool inTown = !out.travelling && out.siteType == SiteType::Hub;
+     bool stroller = (Mix(uint64(a->id) * 2654435761u) % 10) < 3;
+-    out.walk = inTown || a->doing == Verb::Recover || (out.travelling && (a->fatigue >= 60 || a->wounds >= 50 || stroller));
++    out.walk = inTown || a->doing == Verb::Recover || (out.travelling && (a->fatigue >= 60 || a->wounds >= 50 || stroller
++        || ((_clock / 3 + a->id) % 2) == 0));                       // on the road: walk one three-minute stretch, jog the next
+     return true;
+ }
+ 
+diff --git a/src/server/game/SoloSim/solosim.h b/src/server/game/SoloSim/solosim.h
+index dd8787d..24a1fbe 100644
+--- a/src/server/game/SoloSim/solosim.h
++++ b/src/server/game/SoloSim/solosim.h
+@@ -459,6 +459,8 @@ namespace SoloSim
+         void RebuildDanger();                          // the danger map: camps, threats, recent deaths, the other side
+         float DangerFor(SimAgent const& a, uint32 site) const;
+         bool AtCamp(SimAgent const& a) const;   // an adventurer resting away from any inn: a camp (Nov 17)
++        uint32 WayStop(SimAgent const& a, uint32 from, uint32 to, uint32 afterMinutes) const;   // where to stop for the night on a journey
++        bool IsCapital(SimSite const& s) const;
+         void FileCapitals();                           // towns inside the Horde's capitals belong to the city
+         uint32 DockTown(uint32 map, float x, float y, SimAgent const& a) const;   // the town serving a boat or zeppelin dock
+         bool HasFittingHunt(SimAgent const& a, uint32 nearHub, float radius) const;
+diff --git a/src/server/game/SoloSim/solosim_camping.cpp b/src/server/game/SoloSim/solosim_camping.cpp
+index c2379ae..d69a685 100644
+--- a/src/server/game/SoloSim/solosim_camping.cpp
++++ b/src/server/game/SoloSim/solosim_camping.cpp
+@@ -2,8 +2,11 @@
+ // A campfire - your own Basic Campfire, or one the sim's people have lit for the night - is a place to rest:
+ //   - near it you are resting (rested XP builds as at an inn; log out there and you rest as at an inn);
+ //   - sit by it for a minute and you get an hour of Cozy Fire (Spirit, by level; more for a good cook),
+-//     and what you know helps: a smith mends their gear by the fire, someone with first aid sees to their wounds.
++//     and what you know helps: a smith mends their gear by the fire, someone with first aid sees to their wounds;
++//   - your companions sit down by the fire with you, and rest too.
+ #include "Chat.h"
++#include "botmgr.h"
++#include "Creature.h"
+ #include "GameObject.h"
+ #include "Player.h"
+ #include "SpellAuraEffects.h"
+@@ -78,6 +81,28 @@ namespace SoloCamp
+         }
+         if (cook)
+             perks += " And a proper meal off the fire.";
++        // the company you keep: companions close by sit down round the fire and share the rest
++        uint32 joined = 0;
++        if (BotMgr* mgr = player->GetBotMgr())
++            for (auto const& [botGuid, bot] : *mgr->GetBotMap())
++                if (bot && bot->IsInWorld() && bot->IsAlive() && !bot->IsInCombat() && bot->GetExactDist(fire) < 15.0f)
++                {
++                    if (Aura* aura = player->AddAura(COZY_HOUR, bot))
++                    {
++                        aura->SetMaxDuration(int32(HOUR * IN_MILLISECONDS));
++                        aura->SetDuration(int32(HOUR * IN_MILLISECONDS));
++                        if (AuraEffect* eff = aura->GetEffect(EFFECT_0))
++                            eff->ChangeAmount(spirit);
++                    }
++                    if (!bot->isMoving())
++                    {
++                        bot->SetFacingToObject(fire);
++                        bot->SetStandState(UNIT_STAND_STATE_SIT);
++                    }
++                    ++joined;
++                }
++        if (joined)
++            perks += joined == 1 ? " Your companion sits down with you." : " Your companions sit down round the fire with you.";
+         ChatHandler(player->GetSession()).PSendSysMessage("You rest a while by the fire: Cozy Fire, +{} Spirit for an hour.{}", spirit, perks);
+     }
+ }
+-- 
+2.56.0.windows.2
+

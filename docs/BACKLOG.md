@@ -138,6 +138,14 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
     campers share one real Basic Campfire, sitting round it, asleep beside it, each in their own spot; campfire talk.
     48 h test at 2 am: 169 camping (153 fires, up to 5 at one) vs 1056 at inns. Still to come: camping on long
     journeys between areas (journeys are short at the sim's pace), your companions camping with you, camp objects.
+  - **Longer trips, Nov 17 (13:30), not yet seen in game:** travelling pace 4.5 yd/s on foot (was 5.5: stretches of
+    walking and jogging, stops), bodies on the road walk one three-minute stretch and jog the next; a journey that runs
+    well past bedtime stops for the night on the way - an inn on the road that will have them, else a safe ground to
+    camp at - and goes on in the morning; places worth seeing are really elsewhere now (2500 yd+, other continents,
+    capitals three times as likely); a full pack and a greedy eye take the long road to a capital's auction house (a
+    quarter more for the haul, up to 30-90 min away). Your companions sit down by your fire and get Cozy Fire too.
+    48 h test: 158 places seen, 12 nights stopped at an inn on the way, 16 auction hauls, ~1000 camp nights vs ~14000
+    at inns. Deaths up to ~21 per 61 h (12 of them in clashes: more road, more meetings - the war).
   - Dialogue: "might be time to consider a text generator" for natural talk about world events, life and rumours,
     with you and between NPCs. NOTE: the standing rule so far is templated NPC text only, no AI-generated text - the
     user is reopening that; options when we get there: a bigger procedural grammar (combinatorial templates fed by the
@@ -423,7 +431,7 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
   The sim makes no people of these races either (only the stock creatures remain, as wildlife and threats).
 - Worgen adventurers (Nov 17): 5% of the Alliance's newcomers, ~10% in night-elf lands, in their human form (human
   NPCBots bodies, human names - Gilneans) like the worgen townsfolk. Goblins stay townsfolk only: NPCBots has no goblin
-  bodies. Still to decide: the class list (the module also allows Death Knight).
+  bodies. Death Knights stay (the user, Nov 17).
 
 ## 12. VERY LAST - only when everything above is done and dusted (the user, Nov 17)
 - **Experiment: host the world for other players over Spacewar** (Steam's free test app, ID 480, which hobby projects
