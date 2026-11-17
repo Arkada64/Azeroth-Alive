@@ -1,0 +1,581 @@
+From 1ff9444d140b87c86e8ed838e6ca7fb32b2e79cc Mon Sep 17 00:00:00 2001
+From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 14:17:19 -0600
+Subject: [PATCH 32/32] Lead the caravan at your own pace (they follow you, you
+ get the flag); a price on raiders: hunters near your level, now and then,
+ never in towns or at rest
+
+NotePlayer() replaces CaravanCompany: following bodies stand by the player; PlayerHeat with cooldowns and decay; .sim caravan / .sim hunters for testing.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01JU37XfnHTvru3VVz2sNN7z
+---
+ src/server/game/AI/NpcBots/botbubble.cpp     |  44 ++-
+ src/server/game/SoloSim/solosim.cpp          | 280 ++++++++++++++++++-
+ src/server/game/SoloSim/solosim.h            |  19 +-
+ src/server/game/SoloSim/solosim_commands.cpp |  18 ++
+ 4 files changed, 342 insertions(+), 19 deletions(-)
+
+diff --git a/src/server/game/AI/NpcBots/botbubble.cpp b/src/server/game/AI/NpcBots/botbubble.cpp
+index a2383fc..35e2f2c 100644
+--- a/src/server/game/AI/NpcBots/botbubble.cpp
++++ b/src/server/game/AI/NpcBots/botbubble.cpp
+@@ -152,7 +152,7 @@ namespace
+                 sSoloSim->BodyFell(agent, killer, dungeon, pguid, phorde);
+                 // the last guard of an enemy caravan, by this player's hand: the wagons are theirs (Nov 17)
+                 uint32 copper = 0; std::vector<std::pair<uint32, uint32>> loot; std::string text;
+-                if (pguid && pguid == player->GetGUID().GetCounter() && sSoloSim->CaravanPlunder(pguid, agent, copper, loot, text))
++                if (pguid && pguid == player->GetGUID().GetCounter() && sSoloSim->CaravanPlunder(pguid, player->GetName(), agent, copper, loot, text))
+                 {
+                     player->ModifyMoney(int32(copper));
+                     for (auto const& [item, count] : loot)
+@@ -300,7 +300,12 @@ namespace
+             for (auto const& [entry, agent] : simEntryToAgent)
+                 if (Creature const* bot = BotDataMgr::FindBot(entry); bot && bot->IsInWorld() && bot->IsAlive() && bot->GetMapId() == mapId && bot->GetExactDist(player) < 60.0f)
+                     close.push_back(agent);
+-            sSoloSim->CaravanCompany(guid, uint8(player->GetLevel()), close);
++            SoloSim::World::PlayerSeen seen;
++            seen.map = mapId; seen.x = player->GetPositionX(); seen.y = player->GetPositionY(); seen.z = player->GetPositionZ();
++            seen.level = uint8(player->GetLevel()); seen.horde = player->GetTeamId() == TEAM_HORDE; seen.alive = player->IsAlive();
++            seen.resting = player->HasPlayerFlag(PLAYER_FLAGS_RESTING); seen.combat = player->IsInCombat(); seen.flying = player->IsInFlight();
++            if (std::string say = sSoloSim->NotePlayer(guid, player->GetName(), seen, close); !say.empty())
++                ChatHandler(player->GetSession()).SendSysMessage(say);
+             SoloSim::SimAmbush amb;
+             while (sSoloSim->TakeAmbush(guid, amb))
+                 for (uint8 i = 0; i < amb.count; ++i)
+@@ -663,6 +668,41 @@ bool BotBubble::SimLife(Creature* me, WanderNode const* cur, Position& target, W
+         packAnimals.erase(it);
+     }
+ 
++    // walking with a player or hunting one (Nov 17): the body goes where the player is, at the player's pace
++    if (in.follow)
++    {
++        Player* p = ObjectAccessor::FindConnectedPlayer(ObjectGuid::Create<HighGuid::Player>(in.follow));
++        if (p && p->IsInWorld() && p->GetMapId() == me->GetMapId() && p->IsAlive())
++        {
++            float d = me->GetExactDist(p);
++            if (in.followKind == 1)
++            {
++                if (d > 80.0f) me->NearTeleportTo(p->GetPositionX(), p->GetPositionY(), p->GetPositionZ(), p->GetOrientation());   // caught up (a mount, a cliff)
++                float ang = p->GetOrientation() + float(M_PI) + (Unit01(agent, 41) - 0.5f) * 1.6f, back = 3.5f + Unit01(agent, 42) * 3.0f;
++                Position at(p->GetPositionX() + std::cos(ang) * back, p->GetPositionY() + std::sin(ang) * back, p->GetPositionZ(), p->GetOrientation());
++                if (me->GetExactDist2d(at) < 2.5f) { target.Relocate(me); arrive = 2.0f; waitMs = 600; return true; }
++                me->SetWalk(!p->isMoving() && d < 12.0f);
++                target.Relocate(at); arrive = 2.0f; waitMs = 1; life.pending = false;
++                return true;
++            }
++            // a hunter: close the distance; in reach, fall on them
++            if (d < 35.0f && !me->IsInCombat() && me->IsValidAttackTarget(p))
++            {
++                me->SetWalk(false);
++                me->Say(Acore::StringFormat(urand(0, 1) ? "There's a price on your head, {}." : "{}! You'll answer for those wagons.", p->GetName()), LANG_UNIVERSAL, p);
++                me->Attack(p, true);
++                me->GetMotionMaster()->MoveChase(p);
++                me->SetInCombatWith(p); p->SetInCombatWith(me);
++                target.Relocate(me); arrive = 3.0f; waitMs = 3000;
++                return true;
++            }
++            me->SetWalk(d < 60.0f);                                // creeping up the last of the way
++            target.Relocate(p); arrive = 5.0f; waitMs = 1; life.pending = false;
++            return true;
++        }
++    }
++
++
+     // This is called when the body has reached its last target. The engine's wait comes BEFORE the next
+     // move, so a stay is done here, on arrival: settle (sit, lie down, face and greet the NPC), then wait.
+     if (life.pending)
+diff --git a/src/server/game/SoloSim/solosim.cpp b/src/server/game/SoloSim/solosim.cpp
+index 2b4d48d..f5631c9 100644
+--- a/src/server/game/SoloSim/solosim.cpp
++++ b/src/server/game/SoloSim/solosim.cpp
+@@ -3416,6 +3416,7 @@ void World::Wake(SimAgent& a)
+ 
+ void World::Decide(SimAgent& a)
+ {
++    a.follow = 0; a.followKind = 0;                       // the walk with a player, or the hunt, is over
+     if (a.role == ROLE_CIVILIAN) { CivilianDecide(a); return; }
+     Rng r = R(a, P_PLAN);
+     if (a.party) { a.lastParty = a.party; a.lastPartyAt = _clock; }   // mates still finishing the same outing can find us
+@@ -3997,6 +3998,22 @@ bool World::BodyOf(SimAgent const& a, SimBody& b) const
+     b.agent = a.id; b.name = a.FullName(); b.race = a.race; b.cls = a.cls; b.gender = a.gender; b.level = a.level;
+     b.sourceEntry = a.sourceEntry; b.map = here->map; b.doing = a.doing;
+     b.role = a.role; b.job = a.job; b.home = a.home; b.veteran = a.role == ROLE_CIVILIAN && a.kills > 0;
++    // walking with a player (their caravan) or hunting one (a price on their head): the body is wherever the player is -
++    // a few yards behind, or out of sight across the way (Nov 17)
++    if (a.follow)
++        if (auto it = _seen.find(a.follow); it != _seen.end() && _clock - it->second.second <= 5)
++        {
++            PlayerSeen const& p = it->second.first;
++            float ang = float(Mix(uint64(a.id) * 2654435761u) % 6283) / 1000.0f, d = a.followKind == 2 ? 75.0f + float(a.id % 15) : 5.0f + float(a.id % 4);
++            uint32 idx = NearestRoad(p.map, p.x + std::cos(ang) * d, p.y + std::sin(ang) * d);
++            if (idx != UINT32_MAX)
++            {
++                b.map = p.map; b.x = p.x + std::cos(ang) * d; b.y = p.y + std::sin(ang) * d; b.z = p.z;
++                b.spawnNode = b.goalNode = _roads[idx].id;
++                b.zone = _roads[idx].zone;
++                return true;
++            }
++        }
+ 
+     uint32 hereIdx = SiteRoad(a.site);
+     if (a.role == ROLE_CIVILIAN)
+@@ -4095,7 +4112,8 @@ bool World::Intent(uint32 agentId, SimIntent& out)
+     out.verb = out.travelling ? Verb::Idle : a->doing;
+     out.camp = !out.travelling && AtCamp(*a);
+     out.horde = IsHordeRace(a->race);
+-    if (SimCaravan const* c = CaravanOf(*a)) out.caravanLead = out.travelling && !c->guards.empty() && c->guards.front() == a->id;
++    out.follow = a->follow; out.followKind = a->followKind;
++    if (SimCaravan const* c = CaravanOf(*a)) out.caravanLead = (out.travelling || a->followKind == 1) && !c->guards.empty() && c->guards.front() == a->id;
+     if (SimSite const* hs = a->role == ROLE_CIVILIAN ? DistrictOf(*a) : SiteById(a->home)) { out.homeX = hs->x; out.homeY = hs->y; out.homeZ = hs->z; }
+     if (a->role == ROLE_CIVILIAN)
+         for (SimErrand const& e : _errands)
+@@ -4112,6 +4130,7 @@ bool World::Intent(uint32 agentId, SimIntent& out)
+     bool stroller = (Mix(uint64(a->id) * 2654435761u) % 10) < 3;
+     out.walk = inTown || a->doing == Verb::Recover || (out.travelling && (a->fatigue >= 60 || a->wounds >= 50 || stroller
+         || ((_clock / 3 + a->id) % 2) == 0 || a->caravan));         // on the road: walk one three-minute stretch, jog the next; beside a wagon, walk
++    if (a->follow) out.walk = false;                               // keeping up with a player (or closing on one): run
+     return true;
+ }
+ 
+@@ -4497,6 +4516,45 @@ void World::CampLoss(uint32 campId, std::string const& by)
+         if (k.id == campId) { CampLossLocked(k, by); return; }
+ }
+ 
++std::string World::SummonCaravan(uint32 map, float x, float y)
++{
++    {
++        std::lock_guard<std::mutex> guard(sBodyLock);
++        if (!_ready) return "The world isn't running yet.";
++        uint32 town = 0; float best = 1e9f;
++        for (SimSite const& s : _sites)
++            if (s.type == SiteType::Hub && (s.services & SVC_INN) && s.map == map)
++                if (float d = Dist2d(s.x, s.y, x, y); d < best) { best = d; town = s.id; }
++        if (!town) return "No inn town on this map.";
++        _forceCaravanFrom = town; _forceCaravanNote.clear();
++    }
++    size_t before = _caravans.size();
++    CaravanTick();
++    std::lock_guard<std::mutex> guard(sBodyLock);
++    if (_caravans.size() > before)
++    {
++        SimCaravan const& c = _caravans.back();
++        return Acore::StringFormat("A caravan is gathering in {} for {}. Ask about town for the trader - they want one more guard.", SiteName(c.from), SiteName(c.to));
++    }
++    return _forceCaravanNote.empty() ? std::string("No caravan could form.") : _forceCaravanNote;
++}
++
++std::string World::SummonHunters(uint32 guid, bool playerHorde, uint32 map, float x, float y)
++{
++    std::lock_guard<std::mutex> guard(sBodyLock);
++    if (!_ready) return "The world isn't running yet.";
++    PlayerHeat& h = _heat[guid];
++    h.level = std::max<uint8>(h.level, 2); h.horde = !playerHorde; h.decayAt = _clock + MIN_PER_DAY;
++    h.town = 0;
++    float best = 1e9f;
++    for (SimSite const& s : _sites)
++        if (s.type == SiteType::Hub && (s.services & SVC_INN) && s.map == map && s.side == (h.horde ? SIDE_HORDE : SIDE_ALLIANCE))
++            if (float d = Dist2d(s.x, s.y, x, y); d < best) { best = d; h.town = s.id; }
++    h.reward = std::max<uint32>(h.reward, 2000);
++    h.lastHunt = 0; h.lastEval = 0; h.force = true;
++    return Acore::StringFormat("{} has put a price on your head. Go somewhere open, away from towns, and keep your eyes open.", h.town ? SiteName(h.town) : std::string("The other side"));
++}
++
+ std::string World::SummonCamp(bool havePos, uint32 map, float x, float y)
+ {
+     std::lock_guard<std::mutex> guard(sBodyLock);
+@@ -6031,6 +6089,14 @@ void World::CaravanTick()
+             if (!ok && g && g->caravan == c.id) g->caravan = 0;
+             return !ok;
+         });
++        // a caravan whose guards have lost the thread (a restart mid-road, or the player who led them vanished): on their own
++        if (!c.guards.empty() && c.state <= 1)
++        {
++            SimAgent const* lead = AgentById(c.guards.front());
++            bool onRoad = lead && (lead->followKind == 1 || std::ranges::any_of(lead->plan, [&](PlanStep const& s) { return s.verb == Verb::Trade && s.site == c.to; }));
++            if (lead && !onRoad) CaravanOnward(c, lead->site);
++            if (c.led && lead && _clock - c.lastWith > 15) CaravanOnward(c, lead->site);   // the player's not been seen
++        }
+         if (c.guards.empty())
+         {
+             if (c.state == 0)
+@@ -6050,7 +6116,8 @@ void World::CaravanTick()
+     }
+ 
+     uint32 hour = HourOf(_clock);
+-    if (hour < 6 || hour > 12) return;                     // wagons leave in the morning
++    uint32 force = _forceCaravanFrom; _forceCaravanFrom = 0;
++    if (!force && (hour < 6 || hour > 12)) return;         // wagons leave in the morning (a GM's .sim caravan: now)
+     uint32 towns = 0;
+     for (SimSite const& s : _sites) if (s.type == SiteType::Hub && (s.services & SVC_INN)) ++towns;
+     uint32 cap = std::clamp<uint32>(towns / 12, 2, 10);
+@@ -6064,14 +6131,15 @@ void World::CaravanTick()
+         if (std::ranges::any_of(_caravans, [hub](SimCaravan const& c) { return c.from == hub; })) continue;
+         uint32 goods = g[1] + g[2] + g[3] + g[4], made = 0;
+         if (auto it = _crafted.find(hub); it != _crafted.end()) for (uint32 v : it->second) made += v;
+-        if (goods >= 60 || made >= 40) rich.emplace_back(hub, goods + made);
++        if (goods >= 60 || made >= 40 || hub == force) rich.emplace_back(hub, std::max<uint32>(goods + made, hub == force ? 60 : 0));
+     }
++    if (force) { std::erase_if(rich, [force](auto const& x) { return x.first != force; }); if (rich.empty()) { _forceCaravanNote = "That town already has a caravan out."; return; } }
+     for (size_t i = rich.size(); i > 1; --i) std::swap(rich[i - 1], rich[r.Range(0, uint32(i) - 1)]);   // in no order
+     uint32 started = 0;
+     for (auto const& [from, stock] : rich)
+     {
+-        if (_caravans.size() >= cap || started >= 2) break;
+-        if (!r.Chance(0.35f)) continue;
++        if (!force && (_caravans.size() >= cap || started >= 2)) break;
++        if (!force && !r.Chance(0.35f)) continue;
+         SimSite const& f = *SiteById(from);
+         // guards: the town's own adventurers within a short walk, with nothing pressing, who like coin or the road
+         std::vector<std::pair<SimAgent*, uint32>> idle;                   // (agent, minutes to the town)
+@@ -6083,7 +6151,7 @@ void World::CaravanTick()
+             uint32 m = a.site == from ? 0 : TravelMinutes(a.site, from, a);
+             if (m <= 15) idle.emplace_back(&a, m);
+         }
+-        if (idle.size() < 2) continue;
++        if (idle.size() < 2) { if (force) _forceCaravanNote = "Not enough of the town's adventurers about to guard a wagon - try again later."; continue; }
+         std::ranges::sort(idle, [](auto const& x, auto const& y) { return x.first->level != y.first->level ? x.first->level > y.first->level : x.first->id < y.first->id; });
+         SimAgent& lead = *idle[0].first;
+         // a town of the same side (or neutral) that has less than half of this one's stock, a long day's road away
+@@ -6100,7 +6168,7 @@ void World::CaravanTick()
+             uint32 m = TravelMinutes(from, s.id, lead) * WAGON_NUM / WAGON_DEN;
+             if (m >= 30 && m <= 600) want.emplace_back(s.id, m);
+         }
+-        if (want.empty()) continue;
++        if (want.empty()) { if (force) _forceCaravanNote = "No town of this side short of goods within a wagon's road of here."; continue; }
+         auto [to, minutes] = want[r.Range(0, uint32(want.size()) - 1)];
+         ++started;
+ 
+@@ -6264,20 +6332,195 @@ void World::CaravanArrive(SimAgent& a)
+         std::erase_if(_caravans, [id = c->id](SimCaravan const& x) { return x.id == id; });
+ }
+ 
+-void World::CaravanCompany(uint32 guid, uint8 level, std::vector<uint32> const& nearAgents)
++// back to walking on their own (the player who led them went another way, or a restart lost the thread)
++void World::CaravanOnward(SimCaravan& c, uint32 fromSite)
++{
++    c.led = false;
++    for (uint32 id : c.guards)
++        if (SimAgent* a = AgentById(id); a && a->status == AgentStatus::Active)
++        {
++            a->follow = 0; a->followKind = 0;
++            a->site = fromSite;
++            uint32 m = std::max<uint32>(1, TravelMinutes(fromSite, c.to, *a) * 17 / 10);
++            a->plan.clear();
++            a->plan.push_back({ Verb::Goto, c.to, m });
++            a->plan.push_back({ Verb::Trade, c.to, 30 });
++            a->doing = Verb::Goto; a->wakeAt = _clock + m;
++            _requeue.push_back(a->id);
++        }
++}
++
++// the player, as the bubble sees them (Nov 17): leading a caravan they signed on with, and the price on their head
++std::string World::NotePlayer(uint32 guid, std::string const& name, PlayerSeen const& seen, std::vector<uint32> const& nearAgents)
+ {
+     std::lock_guard<std::mutex> guard(sBodyLock);
++    std::string say;
++    _seen[guid] = { seen, _clock };
++    bool openWorld = seen.map <= 1;
++    bool inTown = openWorld && HubNear(seen.map, seen.x, seen.y, 250.0f) != 0;
++
++    // ---- a caravan the player rides with: once they're with the wagons, the wagons follow them, at their pace
+     for (SimCaravan& c : _caravans)
+     {
+         if (!c.player && c.errand)                              // after a restart: who signed on is in the job itself
+             for (SimErrand const& e : _errands) if (e.id == c.errand && e.player) c.player = e.player;
+         if (c.player != guid || c.state > 1 || c.guards.empty()) continue;
+-        SimAgent const* lead = AgentById(c.guards.front());
+-        if (!lead || lead->doing != Verb::Goto) continue;          // counted on the road only
+-        c.playerLevel = level;
+-        bool with = std::ranges::any_of(c.guards, [&](uint32 g) { return std::ranges::find(nearAgents, g) != nearAgents.end(); });
+-        if (with) { ++c.with; c.lastWith = _clock; } else ++c.away;
++        if (!c.playerName.empty() || !name.empty()) c.playerName = name;
++        c.playerLevel = seen.level;
++        bool with = !seen.flying && std::ranges::any_of(c.guards, [&](uint32 g) { return std::ranges::find(nearAgents, g) != nearAgents.end(); });
++        SimSite const* to = SiteById(c.to);
++        if (!c.led)
++        {
++            if (!with || !to) continue;
++            c.led = true; c.lastWith = _clock; c.with = 10; c.away = 0;
++            for (uint32 id : c.guards)
++                if (SimAgent* a = AgentById(id); a && a->status == AgentStatus::Active)
++                {
++                    a->follow = guid; a->followKind = 1; a->followSince = _clock;
++                    a->plan.clear(); a->plan.push_back({ Verb::Idle, a->site, 600 });
++                    a->doing = Verb::Idle; a->wakeAt = _clock + 600;
++                    _requeue.push_back(a->id);
++                }
++            say += Acore::StringFormat("The wagons fall in behind you. Lead them to {} - they'll keep up.", SiteName(c.to));
++            continue;
++        }
++        if (with) { c.lastWith = _clock; ++c.with; }
++        for (uint32 id : c.guards)                               // the wait goes on as long as the road does
++            if (SimAgent* a = AgentById(id); a && a->followKind == 1 && a->wakeAt < _clock + 60) { a->wakeAt = _clock + 600; _requeue.push_back(a->id); }
++        // there: the wagons roll in with the player
++        if (to && seen.map == to->map && Dist2d(seen.x, seen.y, to->x, to->y) < 90.0f && with)
++        {
++            c.led = false;
++            std::vector<uint32> gs = c.guards;
++            for (uint32 id : gs)
++                if (SimAgent* a = AgentById(id); a && a->status == AgentStatus::Active)
++                {
++                    a->follow = 0; a->followKind = 0; a->site = c.to;
++                    a->plan.clear(); a->plan.push_back({ Verb::Socialize, c.to, 60 });
++                    a->doing = Verb::Socialize; a->wakeAt = _clock + 60;
++                    _requeue.push_back(a->id);
++                    CaravanArrive(*a);                           // goods in, guards paid, the job done
++                }
++            say += Acore::StringFormat("{}{} at last. Report to anyone in town for your pay.", say.empty() ? "" : " ", SiteName(c.to));
++            break;                                               // the caravan list may have changed
++        }
++        // gone another way (or away too long): they carry on without you - and the trader won't pay
++        if (_clock - c.lastWith > 10)
++        {
++            uint32 at = seen.map <= 1 ? ClosestSite(seen.map, seen.x, seen.y) : c.from;
++            for (SimErrand& e : _errands)
++                if (e.id == c.errand && !e.done)
++                {
++                    e.done = true; e.expires = _clock;
++                    _mail.push_back({ guid, c.from, "The caravan to " + SiteName(c.to), Acore::StringFormat("You left our wagons on the road to {}. "
++                        "They'll get there without you - and the trader won't pay a guard who walked off.", SiteName(c.to)), 0 });
++                }
++            c.player = 0; c.errand = 0;
++            CaravanOnward(c, at ? at : c.from);
++            say += Acore::StringFormat("{}You've left the wagons behind. They go on to {} without you.", say.empty() ? "" : " ", SiteName(c.to));
++            continue;
++        }
++        // bandits by the way: each camp the wagons pass may try them once - and they come at the player for real
++        if (with && _clock - c.lastLook >= 5 && openWorld)
++        {
++            c.lastLook = _clock;
++            for (SimCamp& k : _camps)
++            {
++                if (k.done || k.kind != CAMP_BAND || k.map != seen.map || Dist2d(k.x, k.y, seen.x, seen.y) > 450.0f) continue;
++                if (std::ranges::find(c.tried, k.id) != c.tried.end()) continue;
++                c.tried.push_back(k.id);
++                Rng r(_seed, c.id, k.id, P_FIGHT + 920);
++                if (!r.Chance(0.6f)) continue;
++                _ambushes.push_back({ guid, k.entry, k.level, uint8(std::clamp<uint32>(k.alive, 2, 4)) });
++                Log(EventType::Caravan, Nobody(), c.to, Acore::StringFormat("{} fell on the caravan from {} to {} near {}, {} riding with it.", Plural(k.name),
++                    SiteName(c.from), SiteName(c.to), AreaOf(SiteName(k.site)), name), true);
++                for (uint32 n = std::min<uint32>(k.alive, 2); n > 0; --n) CampLossLocked(k, name);   // what the fight costs the camp
++                break;
++            }
++        }
++    }
++
++    // ---- a price on the player's head: hunters of the side they robbed, now and then, near their level
++    auto hit = _heat.find(guid);
++    if (hit == _heat.end() || !hit->second.level) return say;
++    PlayerHeat& h = hit->second;
++    if (_clock >= h.decayAt)
++    {
++        --h.level; h.decayAt = _clock + MIN_PER_DAY;
++        if (!h.level) { say += (say.empty() ? "" : " ") + std::string("Word is, nobody's looking for you any more."); return say; }
+     }
++    std::vector<SimAgent*> hunters;
++    for (auto& [id, a] : _agents) if (a.follow == guid && a.followKind == 2 && a.status == AgentStatus::Active) hunters.push_back(&a);
++    auto giveUp = [&](char const* why) {
++        for (SimAgent* x : hunters)
++        {
++            x->follow = 0; x->followKind = 0;
++            x->plan.clear(); x->doing = Verb::Idle; x->wakeAt = _clock + 1; _requeue.push_back(x->id);
++        }
++        if (!hunters.empty())
++            Log(EventType::PlayerBounty, *hunters.front(), hunters.front()->home, Acore::StringFormat("{} {} - the price on {} still stands.", hunters.front()->FullName(), why, name), false);
++        hunters.clear();
++    };
++    if (!hunters.empty())
++    {
++        if (!seen.alive)
++        {
++            // they got their man: the price is paid, the matter closed
++            uint32 share = h.reward / uint32(hunters.size());
++            std::string names;
++            for (SimAgent* x : hunters) { x->money += share; names += (names.empty() ? "" : " and ") + x->FullName(); }
++            Log(EventType::PlayerBounty, *hunters.front(), h.town, Acore::StringFormat("{} claimed {}'s price on {}.", names, SiteName(h.town), name), true);
++            for (SimAgent* x : hunters) { x->follow = 0; x->followKind = 0; x->plan.clear(); x->doing = Verb::Idle; x->wakeAt = _clock + 1; _requeue.push_back(x->id); }
++            h.level = 0;
++            say += (say.empty() ? "" : " ") + Acore::StringFormat("{}'s hunters have had their price. The matter's closed.", SiteName(h.town));
++            return say;
++        }
++        bool hidden = !openWorld || inTown || seen.resting || seen.flying;
++        if (hidden) { if (!h.lostAt) h.lostAt = _clock; } else h.lostAt = 0;
++        if (h.lostAt && _clock - h.lostAt >= 10) { giveUp("lost the trail"); h.lostAt = 0; }
++        else if (_clock - hunters.front()->followSince >= 45) giveUp("gave up the hunt for now");
++        return say;
++    }
++    // no hunt on: out in the open, not resting or fighting, and not too soon since the last - and not every time
++    if (!openWorld || inTown || seen.resting || seen.combat || seen.flying || !seen.alive) return say;
++    if (_clock == h.lastEval) return say;
++    h.lastEval = _clock;
++    uint32 cooldown = h.level >= 3 ? 50 : h.level == 2 ? 80 : 120;   // real minutes between tries, at most
++    if (_clock - h.lastHunt < cooldown) return say;
++    Rng r(_seed, guid, _clock, P_GEN + 610);
++    if (!h.force && !r.Chance(0.05f)) return say;                   // about twenty minutes past the cooldown, on average
++    h.force = false;
++    h.lastHunt = _clock;
++    uint32 want = h.level >= 3 ? 2 : h.level == 2 ? (r.Chance(0.5f) ? 2 : 1) : 1;
++    // of the side they robbed: someone near their level who'd take the work - else a newcomer drawn by the coin
++    std::vector<SimAgent*> pick;
++    for (auto& [id, a] : _agents)
++        if (pick.size() < want && a.role == ROLE_ADVENTURER && a.status == AgentStatus::Active && !a.caravan && !a.party && !a.follow
++            && IsHordeRace(a.race) == h.horde && std::abs(int32(a.level) - int32(seen.level)) <= 2 && a.doing != Verb::Goto && a.greed >= 45)
++            pick.push_back(&a);
++    while (pick.size() < want)
++    {
++        uint8 race = h.horde ? std::array<uint8, 4>{ 2, 5, 6, 8 }[r.Range(0, 3)] : std::array<uint8, 4>{ 1, 3, 4, 7 }[r.Range(0, 3)];
++        uint8 lvl = uint8(std::clamp<int32>(int32(seen.level) + int32(r.Range(0, 2)) - 1, 1, 80));
++        uint32 home = h.town ? h.town : ClosestSite(seen.map, seen.x, seen.y);
++        SimAgent n = MakeAgent(_nextAgent++, lvl, home, _clock, P_GEN + 611 + uint32(pick.size()), race);
++        if (!n.sourceEntry) break;
++        n.home = home; n.site = home; n.greed = 70;
++        _agents[n.id] = n;
++        pick.push_back(&_agents[n.id]);
++    }
++    if (pick.empty()) return say;
++    std::string names;
++    for (SimAgent* x : pick)
++    {
++        x->follow = guid; x->followKind = 2; x->followSince = _clock;
++        x->plan.clear(); x->plan.push_back({ Verb::Idle, x->site, 60 });
++        x->doing = Verb::Idle; x->wakeAt = _clock + 60;
++        _requeue.push_back(x->id);
++        names += (names.empty() ? "" : " and ") + x->FullName();
++    }
++    Log(EventType::PlayerBounty, *pick.front(), h.town, Acore::StringFormat("{} took {}'s price on {} and went looking.", names, SiteName(h.town), name), true);
++    return say;
+ }
+ 
+ bool World::TakeAmbush(uint32 guid, SimAmbush& out)
+@@ -6299,7 +6542,7 @@ bool World::CaravanReport(uint32 guid, uint32 agentId, SimErrand& out)
+ }
+ 
+ // the player brought down the last of an enemy caravan's guards: the wagons are theirs to go through
+-bool World::CaravanPlunder(uint32 guid, uint32 fallenAgent, uint32& copper, std::vector<std::pair<uint32, uint32>>& items, std::string& text)
++bool World::CaravanPlunder(uint32 guid, std::string const& name, uint32 fallenAgent, uint32& copper, std::vector<std::pair<uint32, uint32>>& items, std::string& text)
+ {
+     std::lock_guard<std::mutex> guard(sBodyLock);
+     copper = 0; items.clear();
+@@ -6328,6 +6571,15 @@ bool World::CaravanPlunder(uint32 guid, uint32 fallenAgent, uint32& copper, std:
+         SiteName(c->from), SiteName(c->to), SiteName(c->from)), true);
+     c->state = 4; c->goods.fill(0); c->made.fill(0);
+     for (SimErrand& e : _errands) if (e.id == c->errand && !e.done) { e.done = true; e.expires = _clock; }
++    // the town that lost its wagons puts a price on whoever did it: hunters of its side, now and then, for a few days
++    PlayerHeat& h = _heat[guid];
++    h.level = uint8(std::min<uint32>(3, h.level + 1));
++    h.decayAt = _clock + 2 * MIN_PER_DAY;
++    h.town = c->from; h.horde = IsHordeRace(g->race);
++    h.reward = std::max(h.reward, lvl * lvl * 40 + 1000) + lvl * lvl * 20;
++    if (!h.lastHunt) h.lastHunt = _clock;                     // not on the spot: they need time to hear of it
++    Log(EventType::PlayerBounty, *g, c->from, Acore::StringFormat("{} put a price of {} on {} for the raid on its wagons.", SiteName(c->from), Money(h.reward), name), true);
++    text += Acore::StringFormat(" Word will get back to {}. Expect someone to come looking for you.", SiteName(c->from));
+     return true;
+ }
+ 
+diff --git a/src/server/game/SoloSim/solosim.h b/src/server/game/SoloSim/solosim.h
+index c39c71f..3fb465f 100644
+--- a/src/server/game/SoloSim/solosim.h
++++ b/src/server/game/SoloSim/solosim.h
+@@ -83,7 +83,7 @@ namespace SoloSim
+     // fall on it. state: 0 on the road, 1 robbed (going on empty)
+     struct SimCaravan { uint32 id = 0, from = 0, to = 0; std::vector<uint32> guards; std::array<uint32, 5> goods{}; std::array<uint32, 4> made{};
+                         uint32 pay = 0; SimTime left = 0; uint8 state = 0;
+-                        uint32 errand = 0, player = 0, with = 0, away = 0; uint8 playerLevel = 0; SimTime lastWith = 0; std::string playerName; };   // a player riding guard (runtime)
++                        uint32 errand = 0, player = 0, with = 0, away = 0; uint8 playerLevel = 0; SimTime lastWith = 0; std::string playerName; bool led = false; std::vector<uint32> tried; SimTime lastLook = 0; };   // a player riding guard (runtime)
+     struct SimAmbush { uint32 guid = 0, entry = 0; uint8 level = 1, count = 1; };   // bandits falling on a caravan the player rides with
+     struct SimCamp { uint32 id = 0, map = 0, entry = 0, town = 0, site = 0; float x = 0, y = 0, z = 0; std::string name; uint8 level = 1, size = 0, alive = 0; SimTime made = 0, until = 0; bool done = false; uint8 kind = CAMP_BAND; uint32 home = 0; };   // a bounty target with this bit is a threat's agent id, not a creature entry
+     enum Job : uint8 { JOB_NONE = 0, JOB_FARMHAND = 1, JOB_LABORER = 2, JOB_MARKET = 3, JOB_LOAFER = 4,
+@@ -117,6 +117,7 @@ namespace SoloSim
+         std::string gear;                 // the kit their body wears: "slot:entry:suffix:enchant,..." (empty = not seen yet)
+         uint8 potions = 0;                // healing potions carried: bought in towns, drunk when a fight turns bad
+         uint32 caravan = 0;               // guarding this caravan (not saved: rebuilt from sim_caravan) (Nov 17)
++        uint32 follow = 0; uint8 followKind = 0; SimTime followSince = 0;   // runtime: 1 walking with a player's caravan, 2 hunting a player
+         uint8 gearDue = 0;                // pieces due a change (levels gained since last seen)
+         uint8 age0 = 0;                   // age (years) when born was set; a year passes every game week (see Age())
+         AgentStatus status = AgentStatus::Active;
+@@ -225,6 +226,7 @@ namespace SoloSim
+         Verb verb = Verb::Idle;           // what they do there (Idle while travelling)
+         bool camp = false;                // sleeping or sitting about by a campfire, away from any inn (Nov 17)
+         bool caravanLead = false;         // the first guard of a caravan on the road: the pack animal walks with them
++        uint32 follow = 0; uint8 followKind = 0;   // a player's guid: 1 walk with them (their caravan), 2 hunt them (a price on their head)
+         bool horde = false;
+         uint32 goalNode = 0;              // road node serving the site
+         uint8 role = 0, job = 0;
+@@ -280,6 +282,8 @@ namespace SoloSim
+         std::vector<SimCamp> CampsNear(uint32 map, float x, float y, float radius);   // world thread: camps to put in the world
+         void CampLoss(uint32 campId, std::string const& by);                       // one of a camp fell in the game world
+         std::string SummonCamp(bool havePos, uint32 map, float x, float y);         // GM: a camp now, by the town nearest (x, y)
++        std::string SummonCaravan(uint32 map, float x, float y);                    // GM: a caravan forms now in the town nearest (Nov 17)
++        std::string SummonHunters(uint32 guid, bool playerHorde, uint32 map, float x, float y);   // GM: a price on you, hunters soon
+         void SaveOnShutdown();
+         bool GearOf(uint32 agentId, std::string& gear, uint8& due);
+         bool UsePotion(uint32 agentId);     // a body drank one (false: they had none; true for anyone not ours)
+@@ -318,10 +322,12 @@ namespace SoloSim
+         bool BountyPlace(uint32 guid, uint32& map, float& x, float& y, std::string& name);
+         std::string TakeErrand(uint32 agentId, uint32 guid, std::string const& name);
+         // caravans and the player (Nov 17): riding with one, the bandits it meets, reporting in at the end, robbing one
+-        void CaravanCompany(uint32 guid, uint8 level, std::vector<uint32> const& nearAgents);   // the sim bodies close to the player now
++        // what the bubble sees of a player each check (Nov 17)
++        struct PlayerSeen { uint32 map = 0; float x = 0, y = 0, z = 0; uint8 level = 1; bool horde = false, alive = true, resting = false, combat = false, flying = false; };
++        std::string NotePlayer(uint32 guid, std::string const& name, PlayerSeen const& seen, std::vector<uint32> const& nearAgents);   // messages for the player
+         bool TakeAmbush(uint32 guid, SimAmbush& out);
+         bool CaravanReport(uint32 guid, uint32 agentId, SimErrand& out);    // this townsperson's town is where the player's caravan was bound
+-        bool CaravanPlunder(uint32 guid, uint32 fallenAgent, uint32& copper, std::vector<std::pair<uint32, uint32>>& items, std::string& text);
++        bool CaravanPlunder(uint32 guid, std::string const& name, uint32 fallenAgent, uint32& copper, std::vector<std::pair<uint32, uint32>>& items, std::string& text);
+         bool FinishErrand(uint32 agentId, uint32 guid, std::string const& name, uint32& reward, std::string& thanks);
+         std::string Rumor(uint32 agentId);
+         bool RainingFor(uint32 agentId);                   // is it raining where they live right now (Nov 17)
+@@ -483,6 +489,13 @@ namespace SoloSim
+         SimCaravan* CaravanOf(SimAgent const& a);
+         std::vector<SimCaravan> _caravans; uint32 _nextCaravan = 1;
+         std::vector<SimAmbush> _ambushes;
++        uint32 _forceCaravanFrom = 0; std::string _forceCaravanNote;
++        // a price on a player's head (Nov 17): raiding a side's caravans. heat 1-3; hunters come at most so often, and it
++        // cools by one a day
++        struct PlayerHeat { bool force = false; uint8 level = 0; SimTime decayAt = 0, lastHunt = 0, lastEval = 0, lostAt = 0; uint32 town = 0, reward = 0; bool horde = false; };
++        std::map<uint32, PlayerHeat> _heat;
++        std::map<uint32, std::pair<PlayerSeen, SimTime>> _seen;
++        void CaravanOnward(SimCaravan& c, uint32 fromSite);   // back to walking on their own
+         bool IsCapital(SimSite const& s) const;
+         void FileCapitals();                           // towns inside the Horde's capitals belong to the city
+         uint32 DockTown(uint32 map, float x, float y, SimAgent const& a) const;   // the town serving a boat or zeppelin dock
+diff --git a/src/server/game/SoloSim/solosim_commands.cpp b/src/server/game/SoloSim/solosim_commands.cpp
+index 62780a9..da23272 100644
+--- a/src/server/game/SoloSim/solosim_commands.cpp
++++ b/src/server/game/SoloSim/solosim_commands.cpp
+@@ -40,6 +40,8 @@ public:
+             { "threat", HandleThreat, rbac::RBAC_PERM_COMMAND_NPCBOT_DUMP_WRITE, Console::Yes },
+             { "camp",   HandleCamp,   rbac::RBAC_PERM_COMMAND_NPCBOT_DUMP_WRITE, Console::Yes },
+             { "wildlife", HandleWildlife, rbac::RBAC_PERM_COMMAND_NPCBOT_DUMP_WRITE, Console::Yes },
++            { "caravan", HandleCaravan, rbac::RBAC_PERM_COMMAND_NPCBOT_DUMP_WRITE, Console::No },
++            { "hunters", HandleHunters, rbac::RBAC_PERM_COMMAND_NPCBOT_DUMP_WRITE, Console::No },
+         };
+         static ChatCommandTable root =
+         {
+@@ -131,6 +133,22 @@ public:
+         return true;
+     }
+ 
++    static bool HandleCaravan(ChatHandler* handler)
++    {
++        Player* p = handler->GetSession() ? handler->GetSession()->GetPlayer() : nullptr;
++        if (!p) return false;
++        handler->SendSysMessage(sSoloSim->SummonCaravan(p->GetMapId(), p->GetPositionX(), p->GetPositionY()));
++        return true;
++    }
++
++    static bool HandleHunters(ChatHandler* handler)
++    {
++        Player* p = handler->GetSession() ? handler->GetSession()->GetPlayer() : nullptr;
++        if (!p) return false;
++        handler->SendSysMessage(sSoloSim->SummonHunters(p->GetGUID().GetCounter(), p->GetTeamId() == TEAM_HORDE, p->GetMapId(), p->GetPositionX(), p->GetPositionY()));
++        return true;
++    }
++
+     static bool HandleWildlife(ChatHandler* handler)
+     {
+         handler->SendSysMessage(sSoloSim->SummonWildlife());
+-- 
+2.56.0.windows.2
+

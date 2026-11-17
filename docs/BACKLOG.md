@@ -164,7 +164,19 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
     fall on the wagons while you're with them come at you for real (2-4 of the camp's kind, at its level), your blade
     counts in the fight, and the camp's losses are credited to you. An enemy caravan: cut down every guard and the
     wagons are yours - coin and some of the goods (ore, herbs, leather, fish, potions, food at the region's tier); the
-    road hears of it. Next: caravans at sea, the robbed side's revenge (a price on you), your own wagon.
+    road hears of it.
+  - **Leading the wagons, and a price on raiders, Nov 17 (14:30), not yet seen in game:** (the user: no five-hour
+    walks) once you've taken the job and you're by the guards, the caravan follows you at your pace (run; teleports up
+    if you mount away) and you lead it - a map flag for where; reach the town (90 yd) with them and it rolls in: goods
+    delivered, guards paid, your job done - report to anyone there. Gone another way for 10 minutes (or flying): they
+    carry on without you and a letter says the trader won't pay. Each bandit camp you pass may try the wagons once -
+    they come at you for real, and the fight costs the camp. Raiding an enemy caravan puts a price on you (heat 1-3,
+    two days, then down a step a day): now and then (2 h / 80 / 50 min apart at most, one or two at a time, near your
+    level - the robbed side's own adventurers who'd take the work, else newcomers drawn by the coin) hunters come for
+    you - never in a town, at rest, in a dungeon, mid-fight or in the air; they lose the trail after 10 min of that and
+    give up after 45. If they kill you the price is paid and it's over. GM tests: .sim caravan (one forms now in the
+    nearest town), .sim hunters (a price on you, hunters on the next chance).
+    Next: caravans at sea, your own wagon.
   - Dialogue: "might be time to consider a text generator" for natural talk about world events, life and rumours,
     with you and between NPCs. NOTE: the standing rule so far is templated NPC text only, no AI-generated text - the
     user is reopening that; options when we get there: a bigger procedural grammar (combinatorial templates fed by the

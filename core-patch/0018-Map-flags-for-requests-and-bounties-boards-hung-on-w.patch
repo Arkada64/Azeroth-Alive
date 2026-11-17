@@ -1,7 +1,7 @@
 From 91de78d647db0833f53ef5317fbfddeeb4fb926e Mon Sep 17 00:00:00 2001
 From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
 Date: Tue, 17 Nov 2026 05:33:21 -0600
-Subject: [PATCH 18/31] Map flags for requests and bounties, boards hung on
+Subject: [PATCH 18/32] Map flags for requests and bounties, boards hung on
  walls, townsfolk keep off tables, railings and each other; capitals get half
  as many townsfolk again
 
