@@ -275,6 +275,15 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
 - Sooner, in the sim: murloc and naga people with their creature models (Winterfin Retreat is a neutral murloc town),
   naga as a faction or threat.
 
+## 12. VERY LAST - only when everything above is done and dusted (the user, Nov 17)
+- **Experiment: host the world for other players over Spacewar** (Steam's free test app, ID 480, which hobby projects
+  use for Steam networking), so friends can join this private build without port forwarding or a public server: the
+  host runs the servers, others' clients reach them through a Steam relay tunnel (the launcher on both ends wraps the
+  auth/world connections). An experiment, not a promise. Ties in with DESIGN.md's day-one rule (no single-player
+  assumptions in sim code: bubble = all players' bubbles, memory/war/reputation/hiring per player) - things to check
+  then: everything keyed to "the player" (FindLocalPlayer, catch-up while away, bounties/requests, the bubble cap),
+  bots and sim bodies with several players, latency through the relay, and Steam's terms for app 480.
+
 ## Notes
 - "How dynamic is it" assessment (Nov 16): alive = adventurers' lives, consequences, the player's deeds, townsfolk,
   markets; templated = all text, 7 request kinds, 5 bounty kinds, threats/camps on dice timers; abstract = off-screen
