@@ -1,0 +1,70 @@
+From a98b24fd281574aa9863ac1eed83a51ffb81e52d Mon Sep 17 00:00:00 2001
+From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 23:58:39 -0600
+Subject: [PATCH 9/9] Murloc race (15): armour isn't drawn on murloc bodies,
+ only weapons
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01JU37XfnHTvru3VVz2sNN7z
+---
+ src/server/game/SoloSim/solosim_commands.cpp |  2 ++
+ src/server/game/SoloSim/solosim_races.cpp    | 30 ++++++++++++++++++++
+ 2 files changed, 32 insertions(+)
+ create mode 100644 src/server/game/SoloSim/solosim_races.cpp
+
+diff --git a/src/server/game/SoloSim/solosim_commands.cpp b/src/server/game/SoloSim/solosim_commands.cpp
+index 3f9b3ab..d3e0086 100644
+--- a/src/server/game/SoloSim/solosim_commands.cpp
++++ b/src/server/game/SoloSim/solosim_commands.cpp
+@@ -281,10 +281,12 @@ public:
+ };
+ 
+ namespace SoloPlainsrunning { void AddScripts(); }
++namespace SoloRaces { void AddScripts(); }
+ void AddSC_solosim_xp();
+ 
+ void AddSC_solosim_commands()
+ {
++    SoloRaces::AddScripts();
+     SoloPlainsrunning::AddScripts();
+     AddSC_solosim_xp();
+     new solosim_commands();
+diff --git a/src/server/game/SoloSim/solosim_races.cpp b/src/server/game/SoloSim/solosim_races.cpp
+new file mode 100644
+index 0000000..6cdacd1
+--- /dev/null
++++ b/src/server/game/SoloSim/solosim_races.cpp
+@@ -0,0 +1,30 @@
++// SoloWoW: our own playable races' server-side rules.
++// Murloc (race 15): the creature murloc body can hold weapons but can't wear drawn armour (armour textures are painted
++// for humanoid bodies), so only the weapon slots are shown; armour still counts in full.
++#include "Player.h"
++#include "PlayerScript.h"
++#include "ScriptMgr.h"
++
++namespace SoloRaces
++{
++namespace
++{
++    constexpr uint8 RACE_MURLOC = 15;
++
++    class solosim_race_looks : public PlayerScript
++    {
++    public:
++        solosim_race_looks() : PlayerScript("solosim_race_looks", { PLAYERHOOK_ON_AFTER_SET_VISIBLE_ITEM_SLOT }) { }
++
++        void OnPlayerAfterSetVisibleItemSlot(Player* player, uint8 slot, Item* /*item*/) override
++        {
++            if (player->getRace() != RACE_MURLOC) return;
++            if (slot == EQUIPMENT_SLOT_MAINHAND || slot == EQUIPMENT_SLOT_OFFHAND || slot == EQUIPMENT_SLOT_RANGED) return;
++            player->SetUInt32Value(PLAYER_VISIBLE_ITEM_1_ENTRYID + (slot * 2), 0);
++            player->SetUInt32Value(PLAYER_VISIBLE_ITEM_1_ENCHANTMENT + (slot * 2), 0);
++        }
++    };
++}
++
++void AddScripts() { new solosim_race_looks(); }
++}
+-- 
+2.56.0.windows.2
+

@@ -195,6 +195,18 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
   recommended patcher, run by the player on the clean 12340 exe) so the new character-creation screen loads; then
   worgen NPCs (NPCBots' race tables stop at 11; looks; sim race pools) and the class list (the module also allows
   Death Knight).
+- **Murloc v1, built Nov 17 (just after midnight), not yet seen in game:** scripts/races/murloc.py builds our own
+  tables + client patch (Data/patch-X.MPQ, loads after patch-W) from the stock client and the module's glue screens;
+  scripts/races/murloc.sql the server rows. Race 15 (the stock NPC "Skeleton" slot - only ~25 NPC looks use it; they
+  may look wrong now), Horde, Orcish, Forsaken reputations (every Horde-wide skill/language/reputation row widened to
+  include murlocs). Body: the game's creature murloc (weapons in hand), skin colours = the five murloc skins; armour
+  counts but isn't drawn (solosim_races.cpp hides non-weapon visible slots, so the character list hides it too).
+  Classes Warrior/Hunter/Rogue/Priest/Shaman/Mage, Undead starting kits. Racials for now from stock spells:
+  Underwater Breathing, Nature Resistance, Quickness (dodge). Start: east shore of Brightwater Lake, Tirisfal (the
+  clearest spot, ~60 yd from the nearest hostile; mobs there are 6-9, so head to Brill/Deathknell). Creation screen:
+  a 13th race button, Undead icon/background for now. Unknowns to test: whether the stock exe lists a 13th race,
+  animations missing from the creature model (jump, emotes, sitting), the camera. Next: our own racial spells, an icon,
+  murloc NPCs (friendly murloc townsfolk), the 25 skeleton looks.
 - Classes (the user's convention, Nov 16): follow what Reforged allows in play, then adjust by each race's lore
   and nature as we go. Murloc: Warrior, Hunter, Rogue, Priest, Shaman, Mage (no Paladin, Death Knight, Warlock,
   Druid - as seen in their game; their file tables still list Warlock, so their server trims it). Worgen:
