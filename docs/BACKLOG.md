@@ -180,6 +180,15 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
 - Keep race/patch/asset tooling client-neutral.
 
 ## 11. Playable races (stock client)
+- **Order (Nov 16, the user's call): Worgen, then Murloc.** Worgen from the public AzerothCore worgen module
+  (its client patch + server side), adapted to our core. Murloc built by us, borrowing the Tauren client prefix for
+  helmets (see RACES-SURVEY.md). Both must work as NPCs too: our own CreatureDisplayInfoExtra looks in our patch,
+  the race in the sim's race pools (townsfolk, adventurers, NPCBots), and faction/reputation so guards and
+  townsfolk treat them as their side.
+- Start zones (proposed, not yet confirmed): Worgen in Teldrassil (Gilneas refugees taken in by the night elves;
+  3.3.5's Gilneas terrain isn't playable) unless the module's own start is better; Murloc on Tirisfal's north coast
+  (low-level murloc camps by Brill, matches Reforged's undead/troll starter kits) as Horde, or a neutral murloc
+  village if we want them outside the war.
 - Murloc (and naga): understand how an existing custom-race client does it (survey their patch, diff tables against
   stock, find what their Wow.exe changes and why), then build our own from scripts - table edits, model conversion
   (creature model -> character model), creation screen, an exe patcher written from that understanding and public
