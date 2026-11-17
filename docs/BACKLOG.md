@@ -341,6 +341,11 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
 - **World-PvP gear drops (the user's design):** when someone is killed in world PvP (never in battlegrounds or
   Wintergrasp), there's a chance they drop one random piece of their equipped gear, which someone else can loot.
   **Sim people's gear only - never the player's.** Fits the war track (enemy bodies near you, sim clashes off-screen).
+  **Built Nov 17 (14:40), not yet seen in game:** a sim person you (or your pet or companions) kill out in the world -
+  a continent, never a battleground or Wintergrasp, someone hostile to you - drops one random piece of what they wear
+  25% of the time: their body becomes lootable with that piece (its suffix kept), and they go a piece short (gear
+  tier -4) until they replace it. Off-screen, a sim clash that ends in a defeat moves a little gear (up to 3 tiers)
+  from the loser to the winner, a quarter of the time. Your own gear never drops.
 - Party-invite hiring (like playerbots), no gold: the sim decides (regard, level gap, caution, own party); answers
   as whispers; neutral people come if your plans match theirs. Kicking = dismissing. Gossip hire removed or free.
 - Persistent gear: generated from class/level/luck/history, only exceptions stored (gifts, notable drops, heirlooms:

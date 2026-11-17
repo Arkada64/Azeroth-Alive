@@ -1,0 +1,112 @@
+From 132f4cf67cca2dc1093beccd1ee1437daa508a56 Mon Sep 17 00:00:00 2001
+From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 14:37:39 -0600
+Subject: [PATCH 34/34] World PvP gear drops (the users design): a sim person
+ you kill in the open world may drop a piece of what they wear on their body;
+ off-screen clashes move gear to the winner; never the players gear
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01JU37XfnHTvru3VVz2sNN7z
+---
+ src/server/game/AI/NpcBots/botbubble.cpp | 30 ++++++++++++++++++++++++
+ src/server/game/SoloSim/solosim.cpp      | 16 +++++++++++++
+ src/server/game/SoloSim/solosim.h        |  1 +
+ 3 files changed, 47 insertions(+)
+
+diff --git a/src/server/game/AI/NpcBots/botbubble.cpp b/src/server/game/AI/NpcBots/botbubble.cpp
+index 35e2f2c..f4676db 100644
+--- a/src/server/game/AI/NpcBots/botbubble.cpp
++++ b/src/server/game/AI/NpcBots/botbubble.cpp
+@@ -5,6 +5,7 @@
+ #include <cstdio>
+ #include <sstream>
+ #include "Item.h"
++#include "LootMgr.h"
+ #include "WorldPacket.h"
+ #include "botconfig.h"
+ #include "botmgr.h"
+@@ -1005,6 +1006,35 @@ void BotBubble::OnBodyDied(Creature const* bot, Unit const* killer)
+     }
+     if (by)
+         who = by->GetName();
++    // world PvP (the user's design, Nov 17): killed by an enemy player out in the world - never in a battleground or
++    // Wintergrasp - a sim person may drop one random piece of what they wear, for the taking. Sim people's gear only:
++    // never the player's.
++    if (by && map && map->GetEntry() && map->GetEntry()->IsContinent() && bot->GetZoneId() != 4197 && by->IsHostileTo(bot) && urand(1, 100) <= 25)
++        if (bot_ai const* ai = bot->GetBotAI())
++        {
++            std::vector<Item*> worn;
++            for (uint8 slot = 0; slot < BOT_INVENTORY_SIZE; ++slot)
++                if (Item* it = ai->GetEquips(slot))
++                    if (ItemTemplate const* t = it->GetTemplate(); t && (t->Class == ITEM_CLASS_ARMOR || t->Class == ITEM_CLASS_WEAPON)
++                        && t->InventoryType != INVTYPE_BODY && t->InventoryType != INVTYPE_TABARD && t->Quality >= ITEM_QUALITY_NORMAL && t->Quality <= ITEM_QUALITY_EPIC)
++                        worn.push_back(it);
++            if (!worn.empty())
++            {
++                Item const* drop = worn[urand(0, uint32(worn.size()) - 1)];
++                Creature* body = const_cast<Creature*>(bot);
++                body->loot.clear();
++                LootItem li;
++                li.itemid = drop->GetEntry(); li.itemIndex = 0; li.count = 1;
++                li.randomPropertyId = drop->GetItemRandomPropertyId(); li.randomSuffix = drop->GetItemSuffixFactor();
++                li.is_looted = false; li.is_blocked = false; li.freeforall = false; li.is_underthreshold = false;
++                li.is_counted = false; li.needs_quest = false; li.follow_loot_rules = true; li.groupid = 0;
++                body->loot.items.push_back(li);
++                body->loot.unlootedCount = 1;
++                body->SetLootRecipient(const_cast<Player*>(by));
++                body->SetDynamicFlag(UNIT_DYNFLAG_LOOTABLE);
++                sSoloSim->GearLost(agent, drop->GetTemplate()->Name1, by->GetName());
++            }
++        }
+     std::lock_guard<std::mutex> guard(fallenLock);
+     fallen.emplace_back(agent, who, dungeon, by ? by->GetGUID().GetCounter() : 0u, by && by->GetTeamId() == TEAM_HORDE);
+ }
+diff --git a/src/server/game/SoloSim/solosim.cpp b/src/server/game/SoloSim/solosim.cpp
+index f5631c9..cb7fa09 100644
+--- a/src/server/game/SoloSim/solosim.cpp
++++ b/src/server/game/SoloSim/solosim.cpp
+@@ -2141,6 +2141,13 @@ bool World::Duel(SimAgent& a, SimAgent& foeRef, SimSite const& site, uint32 grou
+         Defeat(lose, site);
+         _culprit.clear();
+         if (&lose != &a) _requeue.push_back(lose.id);                // their plans changed outside their own wake
++        // world PvP off-screen: a piece of the fallen's kit, now and then, goes home with the winner (Nov 17)
++        if (r.Chance(0.25f) && lose.gearTier > 0)
++        {
++            uint8 piece = uint8(std::min<uint32>(lose.gearTier, 3));
++            lose.gearTier -= piece;
++            win.gearTier = uint8(std::min<uint32>(100, win.gearTier + piece));
++        }
+     }
+     if (win.ambition == AmbitionType::Revenge && win.avengeFor == lose.id)
+     {
+@@ -6523,6 +6530,15 @@ std::string World::NotePlayer(uint32 guid, std::string const& name, PlayerSeen c
+     return say;
+ }
+ 
++void World::GearLost(uint32 agentId, std::string const& item, std::string const& by)
++{
++    std::lock_guard<std::mutex> guard(sBodyLock);
++    SimAgent* a = AgentById(agentId);
++    if (!a) return;
++    a->gearTier = uint8(a->gearTier > 4 ? a->gearTier - 4 : 0);   // one piece short, until they replace it
++    Log(EventType::Clash, *a, a->site, Acore::StringFormat("{} took {} off the body of {}.", by, item, a->FullName()), false);
++}
++
+ bool World::TakeAmbush(uint32 guid, SimAmbush& out)
+ {
+     std::lock_guard<std::mutex> guard(sBodyLock);
+diff --git a/src/server/game/SoloSim/solosim.h b/src/server/game/SoloSim/solosim.h
+index 3fb465f..6c3e657 100644
+--- a/src/server/game/SoloSim/solosim.h
++++ b/src/server/game/SoloSim/solosim.h
+@@ -326,6 +326,7 @@ namespace SoloSim
+         struct PlayerSeen { uint32 map = 0; float x = 0, y = 0, z = 0; uint8 level = 1; bool horde = false, alive = true, resting = false, combat = false, flying = false; };
+         std::string NotePlayer(uint32 guid, std::string const& name, PlayerSeen const& seen, std::vector<uint32> const& nearAgents);   // messages for the player
+         bool TakeAmbush(uint32 guid, SimAmbush& out);
++        void GearLost(uint32 agentId, std::string const& item, std::string const& by);   // world PvP: a piece of their gear taken off their body (Nov 17)
+         bool CaravanReport(uint32 guid, uint32 agentId, SimErrand& out);    // this townsperson's town is where the player's caravan was bound
+         bool CaravanPlunder(uint32 guid, std::string const& name, uint32 fallenAgent, uint32& copper, std::vector<std::pair<uint32, uint32>>& items, std::string& text);
+         bool FinishErrand(uint32 agentId, uint32 guid, std::string const& name, uint32& reward, std::string& thanks);
+-- 
+2.56.0.windows.2
+
