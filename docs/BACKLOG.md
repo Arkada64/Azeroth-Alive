@@ -120,6 +120,21 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
   gear lost or brought back).
 
 ## 6. Difficulty and pacing
+- **XP bands, built Nov 16 (late), OFF until you choose:** SoloWoW.XPBands.Enable = 1 replaces the flat Rate.XP.*
+  (0.5) for players, and sim adventurers level on the same curve. Default bands (kill/quest):
+  1-10 1.0/0.85, 10-20 0.94/0.75, 20-30 0.85/0.65, 30-60 0.82/0.62, 60-80 1.0/1.0 - the kill numbers are this server's
+  XP table as a share of vanilla's (vanilla needed 4.3M XP to 60, this table 3.38M), so grinding takes vanilla's time;
+  quests (boosted after vanilla) are trimmed harder. Pure-grinding estimate at 60 same-level kills an hour:
+  | band  | vanilla | now (flat 0.5x) | band curve |
+  | 1-10  | 6 h     | 12 h            | 6 h        |
+  | 10-20 | 19 h    | 37 h            | 19 h       |
+  | 20-30 | 33 h    | 56 h            | 33 h       |
+  | 30-40 | 50 h    | 82 h            | 50 h       |
+  | 40-50 | 71 h    | 117 h           | 71 h       |
+  | 50-60 | 93 h    | 153 h           | 93 h       |
+  | 60-70 | -       | 280 h           | 140 h      |
+  | 70-80 | -       | 559 h           | 279 h      |
+  Real play mixes in quests (roughly half of vanilla levelling), so expect well under these. Tune in SoloWoW.XPBands.
 - Levelling curve by band (replaces the flat 0.5x): multipliers from this server's XP table vs vanilla's, quests
   trimmed more than kills in 20-60; 60-70 TBC pace; 70-80 native. Show hours per band before switching on. Same
   curve for sim adventurers and companions.
