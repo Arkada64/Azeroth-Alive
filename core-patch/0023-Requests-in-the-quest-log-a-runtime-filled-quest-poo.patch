@@ -1,7 +1,7 @@
 From 4e8eec78344775b98b5b6dc3c83b7eb4886dc011 Mon Sep 17 00:00:00 2001
 From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
 Date: Tue, 17 Nov 2026 06:55:25 -0600
-Subject: [PATCH 23/27] Requests in the quest log (a runtime-filled quest
+Subject: [PATCH 23/28] Requests in the quest log (a runtime-filled quest
  pool), more townsfolk and adventurer talk, adventurers use the town, starting
  camps populated; walkable-only townsfolk moves and boards, murloc login
  repair and drawn weapons

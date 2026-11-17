@@ -1,0 +1,414 @@
+From a4598fcf9740952065e37f1c1f68bc85c4eab234 Mon Sep 17 00:00:00 2001
+From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 13:08:17 -0600
+Subject: [PATCH 28/28] Camping: campfires are camps (resting, an hour of Cozy
+ Fire, smith and first-aid perks); the sim camps out at bedtime round real
+ fires; worgen adventurers; no murloc race left in the sim
+
+REST_FLAG_AT_CAMP in Player.h; SoloSim/solosim_camping.cpp; camp choice by distance to an inn, character, rain and danger.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01JU37XfnHTvru3VVz2sNN7z
+---
+ src/server/game/AI/NpcBots/botbubble.cpp    | 46 ++++++++++++
+ src/server/game/Entities/Player/Player.h    |  1 +
+ src/server/game/SoloSim/solosim.cpp         | 75 +++++++++++++++----
+ src/server/game/SoloSim/solosim.h           |  4 +-
+ src/server/game/SoloSim/solosim_camping.cpp | 83 +++++++++++++++++++++
+ 5 files changed, 194 insertions(+), 15 deletions(-)
+ create mode 100644 src/server/game/SoloSim/solosim_camping.cpp
+
+diff --git a/src/server/game/AI/NpcBots/botbubble.cpp b/src/server/game/AI/NpcBots/botbubble.cpp
+index abe7e65..1decf47 100644
+--- a/src/server/game/AI/NpcBots/botbubble.cpp
++++ b/src/server/game/AI/NpcBots/botbubble.cpp
+@@ -29,6 +29,7 @@
+ #include "SharedDefines.h"
+ #include "solosim.h"
+ #include "solosim_civilians.h"
++namespace SoloCamp { void Tick(Player* player); }
+ #include "solosim_boards.h"
+ #include "solosim_camps.h"
+ #include "Timer.h"
+@@ -271,6 +272,7 @@ namespace
+ 
+         sSoloSim->NotePlayerSide(guid, player->GetTeamId() == TEAM_HORDE);
+         SoloQuests::Sync(player);                    // requests in the quest log: events the sim saw, requests that lapsed
++        SoloCamp::Tick(player);                      // by a campfire: resting, and an hour of Cozy Fire after a sit (Nov 17)
+ 
+         // adventurers talking within earshot: now and then one of them says something, to whoever is beside them or about
+         // their own day (templated; at most one line every few seconds, a minute between lines for each)
+@@ -362,6 +364,9 @@ namespace
+         float sx = 0, sy = 0, sz = 0, so = 0;
+     };
+     std::unordered_map<uint32, Life> lives;       // bot entry -> life
++    struct CampFire { ObjectGuid guid; uint32 map = 0; float x = 0, y = 0, z = 0; };
++    std::unordered_map<uint32, CampFire> campFires;  // sim site -> the fire its campers sit round tonight (Nov 17)
++    constexpr uint32 CAMPFIRE_GO = 29784;            // Basic Campfire
+     std::mutex lifeLock;                          // bodies update on map threads
+ 
+     uint32 Hash(uint32 agent, uint32 salt) { return uint32(SoloSim::Mix((uint64(agent) << 20) ^ salt)); }
+@@ -657,6 +662,47 @@ bool BotBubble::SimLife(Creature* me, WanderNode const* cur, Position& target, W
+     // 2. at the place: act out what they're doing there
+     using SoloSim::Verb;
+     Verb v = in.verb;
++    // camping (Nov 17): away from any inn, the place's campers share one fire - sitting round it in the evening, asleep
++    // beside it at night, each in their own place in the ring
++    if (in.camp)
++    {
++        CampFire& f = campFires[in.siteId];
++        GameObject* fire = f.guid ? ObjectAccessor::GetGameObject(*me, f.guid) : nullptr;
++        if (fire && !fire->isSpawned()) fire = nullptr;
++        if (!fire && me->GetExactDist2d(in.x, in.y) < 70.0f)
++        {
++            if (!f.map || f.map != me->GetMapId())
++            {
++                Position p;
++                if (!RandomNear(me, in.x, in.y, in.z, 10.0f, p)) p.Relocate(me);
++                f.map = me->GetMapId(); f.x = p.GetPositionX(); f.y = p.GetPositionY(); f.z = p.GetPositionZ();
++            }
++            if (GameObject* g = me->SummonGameObject(CAMPFIRE_GO, f.x, f.y, f.z, frand(0.0f, 2.0f * float(M_PI)), 0, 0, 0, 0, 1200, true, GO_SUMMON_TIMED_DESPAWN))
++            {
++                f.guid = g->GetGUID();
++                fire = g;
++            }
++        }
++        if (fire)
++        {
++            bool sleep = v == Verb::Sleep;
++            float ang = Unit01(agent, 33) * 2.0f * float(M_PI);
++            float rad = sleep ? 3.4f + Unit01(agent, 34) * 1.2f : 2.2f + Unit01(agent, 35) * 0.6f;
++            float x = f.x + std::cos(ang) * rad, y = f.y + std::sin(ang) * rad, z = f.z;
++            float ground = me->GetMap()->GetHeight(me->GetPhaseMask(), x, y, z + 3.0f);
++            if (ground > INVALID_HEIGHT && std::fabs(ground - z) < 4.0f) z = ground;
++            float face = std::atan2(f.y - y, f.x - x);
++            uint8 stand = sleep ? UNIT_STAND_STATE_SLEEP : UNIT_STAND_STATE_SIT;
++            if (me->GetStandState() == stand && me->GetExactDist2d(x, y) < 2.0f)
++            {
++                target.Relocate(me);
++                arrive = 3.0f;
++                waitMs = sleep ? 60000 : urand(30000, 60000);
++                return true;
++            }
++            return go(Position(x, y, z, face), 1.5f, sleep ? 60000 : urand(40000, 90000), stand, face);
++        }
++    }
+     if (in.siteType == SoloSim::SiteType::Hub)
+     {
+         // the inn: asleep in front of the innkeeper's counter, or sitting about in the common room
+diff --git a/src/server/game/Entities/Player/Player.h b/src/server/game/Entities/Player/Player.h
+index d72625e..45c66c0 100644
+--- a/src/server/game/Entities/Player/Player.h
++++ b/src/server/game/Entities/Player/Player.h
+@@ -812,6 +812,7 @@ enum RestFlag
+     REST_FLAG_IN_TAVERN         = 0x1,
+     REST_FLAG_IN_CITY           = 0x2,
+     REST_FLAG_IN_FACTION_AREA   = 0x4, // used with AREA_FLAG_REST_ZONE_*
++    REST_FLAG_AT_CAMP           = 0x8, // SoloWoW: by a campfire (SoloSim/solosim_camping.cpp)
+ };
+ 
+ enum TeleportToOptions
+diff --git a/src/server/game/SoloSim/solosim.cpp b/src/server/game/SoloSim/solosim.cpp
+index 49da841..1dc895f 100644
+--- a/src/server/game/SoloSim/solosim.cpp
++++ b/src/server/game/SoloSim/solosim.cpp
+@@ -102,7 +102,7 @@ namespace
+     {
+         switch (r) { case 1: return "human"; case 3: return "dwarf"; case 4: return "night elf"; case 7: return "gnome"; case 11: return "draenei"; case 12: return "worgen";
+                      case 2: return "orc"; case 5: return "Forsaken"; case 6: return "tauren"; case 8: return "troll"; case 9: return "goblin";
+-                     case 10: return "blood elf"; case 15: return "murloc"; default: return "stranger"; }
++                     case 10: return "blood elf"; default: return "stranger"; }
+     }
+     char const* ClassName(uint8 c)
+     {
+@@ -446,7 +446,7 @@ SimAgent World::MakeAgent(uint32 id, uint8 level, uint32 home, SimTime born, uin
+     Rng r(_seed, id, salt, P_GEN);
+ 
+     // Alliance races weighted to the region; normal WoW classes only (no WC3 heroes, no death knights)
+-    static const std::array<std::pair<uint8, uint32>, 5> races = { { {1, 45}, {3, 20}, {4, 15}, {7, 12}, {11, 8} } };
++    static const std::array<std::pair<uint8, uint32>, 6> races = { { {1, 42}, {3, 20}, {4, 13}, {7, 12}, {11, 8}, {12, 5} } };   // 12: worgen (Nov 17)
+     uint32 roll = r.Range(1, 100), acc = 0;
+     for (auto const& [race, w] : races) { acc += w; if (roll <= acc) { a.race = race; break; } }
+     if (!a.race) a.race = 1;
+@@ -470,7 +470,7 @@ SimAgent World::MakeAgent(uint32 id, uint8 level, uint32 home, SimTime born, uin
+     for (auto const& [entry, t] : ordered)
+         if (t->IsNPCBot())
+             if (NpcBotExtras const* ex = BotDataMgr::SelectNpcBotExtras(entry))
+-                if (ex->race == a.race && ex->bclass == a.cls) src.push_back(entry);
++                if (ex->race == (a.race == 12 ? 1 : a.race) && ex->bclass == a.cls) src.push_back(entry);   // worgen: their human form
+     a.sourceEntry = src.empty() ? 0 : src[r.Range(0, uint32(src.size()) - 1)];
+     // the body decides the gender (its model, face and hair); re-roll the given name to match
+     if (a.sourceEntry)
+@@ -580,7 +580,7 @@ void World::SettleNewHubs(uint32 firstNew)
+             uint8 race = NativeRace(h, r, false);
+             if (!race && h.side == SIDE_NEUTRAL && r.Chance(0.5f)) race = r.Chance(0.5f) ? 2 : 6;   // both sides pass through
+             if (!race && DWARF_ZONES.contains(h.zone)) race = r.Chance(0.7f) ? 3 : (r.Chance(0.7f) ? 7 : 0);
+-            if (!race && ELF_ZONES.contains(h.zone)) race = r.Chance(0.75f) ? 4 : 0;
++            if (!race && ELF_ZONES.contains(h.zone)) race = r.Chance(0.65f) ? 4 : r.Chance(0.3f) ? 12 : 0;   // Gilneans among the elves (Nov 17)
+             SimAgent a = MakeAgent(id, level, h.id, _clock, 0, race);
+             SetAmbition(a);
+             _agents[id] = a;
+@@ -1330,7 +1330,7 @@ SimAgent World::MakeSettler(SimSite const& h, uint32 id, uint32 salt)
+     uint8 race = NativeRace(h, r, false);
+     if (!race && h.side == SIDE_NEUTRAL && r.Chance(0.5f)) race = r.Chance(0.5f) ? 2 : 6;
+     if (!race && DWARF_ZONES.contains(h.zone)) race = r.Chance(0.7f) ? 3 : (r.Chance(0.7f) ? 7 : 0);
+-    if (!race && ELF_ZONES.contains(h.zone)) race = r.Chance(0.75f) ? 4 : 0;
++    if (!race && ELF_ZONES.contains(h.zone)) race = r.Chance(0.65f) ? 4 : r.Chance(0.3f) ? 12 : 0;   // Gilneans among the elves (Nov 17)
+     SimAgent a = MakeAgent(id, level, h.id, _clock, salt, race);
+     SetAmbition(a);
+     return a;
+@@ -2802,6 +2802,14 @@ void World::RebuildDanger()
+             _enemyNear[(uint64(o.site) << 1) | (IsHordeRace(o.race) ? 1u : 0u)] += 1;
+ }
+ 
++// camping (Nov 17): an adventurer resting, sitting about or asleep anywhere but a town with an inn
++bool World::AtCamp(SimAgent const& a) const
++{
++    if (a.role != ROLE_ADVENTURER || (a.doing != Verb::Sleep && a.doing != Verb::Socialize && a.doing != Verb::Recover)) return false;
++    SimSite const* s = SiteById(a.site);
++    return s && !(s->type == SiteType::Hub && (s->services & SVC_INN));
++}
++
+ float World::DangerFor(SimAgent const& a, uint32 site) const
+ {
+     float d = 0.0f;
+@@ -3337,12 +3345,22 @@ void World::Decide(SimAgent& a)
+     for (SimBounty const& b : _bounties) if (b.id == a.bounty) bounty = &b;
+     if (a.bounty && (!bounty || bounty->done)) { a.bounty = 0; a.bountyProgress = 0; bounty = nullptr; }
+ 
++    // camping (Nov 17): out in the wild or at an outpost with no inn, many would rather make camp than walk back to an inn -
++    // the sociable less so (they want the common room), the wanderers more, more so in the rain; never where it's dangerous
++    bool campable = false;
++    if (SimSite const* here = SiteById(a.site); here && !(here->type == SiteType::Hub && (here->services & SVC_INN)))
++    {
++        uint32 inn = NearestHub(a, SVC_INN);
++        // minutes to an inn still worth the walk at bedtime (at ~330 yd a minute: 2-12, typically about 5 = 1600 yd)
++        int32 campOver = 3 + a.sociability / 20 + a.caution / 25 - a.wanderlust / 25 + (rain ? 3 : 0);
++        campable = DangerFor(a, a.site) < 1.0f + a.bravery / 100.0f && (!inn || int32(TravelMinutes(a.site, inn, a)) > std::max(campOver, 2));
++    }
+     float rest   = a.fatigue + a.wounds * 0.7f + (night ? 35.0f : 0.0f) + (rain ? 8.0f : 0.0f) + noise();
+     if (a.wounds >= 70) rest = 150.0f;
+     float upkeep = std::max({ 100.0f - a.supplies, 100.0f - a.durability, bags }) * (0.8f + a.greed / 250.0f) + noise();
+     float growth = 45.0f + a.bravery * 0.25f - a.wounds * 0.6f - a.fatigue * 0.3f - (night ? 30.0f : 0.0f) - (rain ? 15.0f : 0.0f) + noise();
+     float hoursAlone = float(_clock - std::min(_clock, a.lastSocial)) / 60.0f;
+-    float ties   = a.sociability * 0.35f + std::min(40.0f, hoursAlone / 2.0f) + ((MinutesToBed(a) <= 4 * 60 && !night) ? 20.0f : 0.0f) + (rain ? 20.0f : 0.0f) - 25.0f + noise();
++    float ties   = a.sociability * 0.35f + std::min(40.0f, hoursAlone / 2.0f) + ((MinutesToBed(a) <= 4 * 60 && !night && !campable) ? 20.0f : 0.0f) + (rain ? 20.0f : 0.0f) - 25.0f + noise();
+     float ambition = (a.ambition == AmbitionType::SeePlace || a.ambition == AmbitionType::Avenge || a.ambition == AmbitionType::Revenge) ? 20.0f + a.wanderlust * 0.4f + noise() : 0.0f;
+     float moveOn = HasFittingHunt(a, a.home, 2500.0f) ? 0.0f : 120.0f;
+     if (float d = DangerFor(a, a.home); d >= 3.0f && a.caution > 55)           // too dangerous to live here (Nov 17)
+@@ -3359,16 +3377,27 @@ void World::Decide(SimAgent& a)
+     if (a.supplies < 15 || a.durability < 15) { score[GROWTH] = -1.0f; score[TAKE] = -1.0f; }   // fix gear first
+     int choice = int(std::max_element(score.begin(), score.end()) - score.begin());
+ 
++    // a night by the fire here, with whoever else stopped: wanting rest or company as bedtime comes, where they could camp
++    bool camp = campable && (choice == REST || choice == TIES) && (night || MinutesToBed(a) <= 60);
++    if (camp) choice = REST;
++
+     auto goTo = [&a](uint32 site, bool announce = false) { if (site && site != a.site) a.plan.push_back({ Verb::Goto, site, 0, announce }); };
+     switch (choice)
+     {
+         case REST:
+         {
+-            uint32 inn = (SiteById(a.site) && SiteById(a.site)->type == SiteType::Hub && (SiteById(a.site)->services & SVC_INN)) ? a.site : NearestHub(a, SVC_INN);
+-            uint32 untilMorning = night ? ((WakeMinute(a) + MIN_PER_DAY - (_clock % MIN_PER_DAY)) % MIN_PER_DAY) : 0; // until their own morning
+-            uint32 sleep = night ? untilMorning + r.Range(0, 90) : r.Range(240, 420);
++            uint32 inn = camp ? a.site : (SiteById(a.site) && SiteById(a.site)->type == SiteType::Hub && (SiteById(a.site)->services & SVC_INN)) ? a.site : NearestHub(a, SVC_INN);
++            uint32 untilMorning = (WakeMinute(a) + MIN_PER_DAY - (_clock % MIN_PER_DAY)) % MIN_PER_DAY;   // until their own morning
++            uint32 sleep = (night || camp) ? untilMorning + r.Range(0, 90) : r.Range(240, 420);
+             if (TravelMinutes(a.site, inn, a) > 90 && night) inn = a.site;                         // too far: camp where you are
+             goTo(inn);
++            SimSite const* hs = SiteById(a.site);
++            if (inn == a.site && hs && (camp || !(hs->type == SiteType::Hub && (hs->services & SVC_INN))) && a.sociability >= 25)
++            {
++                uint32 evening = r.Range(20, 70);                                                  // an evening by the fire first
++                a.plan.push_back({ Verb::Socialize, inn, evening });
++                sleep = sleep > evening + 60 ? sleep - evening : 60;
++            }
+             a.plan.push_back({ Verb::Sleep, inn, std::max<uint32>(60, sleep) });
+             break;
+         }
+@@ -3510,11 +3539,16 @@ void World::FinishStep(SimAgent& a, PlanStep const& s)
+             if (a.role == ROLE_CIVILIAN && a.job >= JOB_SMITH) CraftWork(a, s.minutes);   // the crafters' work fills the shelves
+             break;
+         case Verb::Sleep:
++        {
++            bool camp = AtCamp(a);                        // a night on the ground: rested, but wounds heal slower, and it eats into the food
+             a.fatigue = 0;
+-            a.wounds = uint8(a.wounds > 50 ? a.wounds - 50 : 0);
+-            Log(EventType::Slept, a, a.site, Acore::StringFormat("{} slept at {}.", a.FullName(), SiteName(a.site)), false);
++            uint8 heal = camp ? 35 : 50;
++            a.wounds = uint8(a.wounds > heal ? a.wounds - heal : 0);
++            if (camp) a.supplies = uint8(a.supplies > 2 ? a.supplies - 2 : 0);
++            Log(EventType::Slept, a, a.site, Acore::StringFormat(camp ? "{} camped out near {}." : "{} slept at {}.", a.FullName(), PlaceOnly(SiteName(a.site))), false);
+             ExchangeNews(a);
+             break;
++        }
+         case Verb::Train:
+         {
+             uint32 cost = uint32(a.level) * a.level * 12;
+@@ -3925,6 +3959,7 @@ bool World::Intent(uint32 agentId, SimIntent& out)
+     if (!s) return false;
+     out.siteType = s->type; out.x = s->x; out.y = s->y; out.z = s->z; out.services = s->services;
+     out.verb = out.travelling ? Verb::Idle : a->doing;
++    out.camp = !out.travelling && AtCamp(*a);
+     if (SimSite const* hs = a->role == ROLE_CIVILIAN ? DistrictOf(*a) : SiteById(a->home)) { out.homeX = hs->x; out.homeY = hs->y; out.homeZ = hs->z; }
+     if (a->role == ROLE_CIVILIAN)
+         for (SimErrand const& e : _errands)
+@@ -4000,14 +4035,17 @@ std::string World::Doing(SimAgent const& a) const
+             break;
+         case Verb::Fight:     return Acore::StringFormat("hunting {}", SiteName(a.site));
+         case Verb::Gather:    return Acore::StringFormat("gathering {}", PlaceOnly(SiteName(a.site)));
+-        case Verb::Sleep:     return std::string(a.role == ROLE_CIVILIAN ? "asleep at home in " : "asleep in ") + SiteName(a.site);
++        case Verb::Sleep:     if (AtCamp(a)) return "camped out by a fire near " + PlaceOnly(SiteName(a.site));
++                              return std::string(a.role == ROLE_CIVILIAN ? "asleep at home in " : "asleep in ") + SiteName(a.site);
+         case Verb::Work:      return std::string(a.job == JOB_FARMHAND ? "working the fields by " : a.job == JOB_LABORER ? "hauling timber in "
+                                   : a.job == JOB_SMITH ? "at the forge in " : a.job == JOB_ALCHEMIST ? "brewing potions in " : a.job == JOB_COOK ? "cooking in "
+                                   : a.job == JOB_LEATHERWORKER ? "working leather in " : "helping at the market in ") + SiteName(a.site);
+         case Verb::Trade:     return Acore::StringFormat("trading in {}", SiteName(a.site));
+-        case Verb::Socialize: return Acore::StringFormat("at the inn in {}", SiteName(a.site));
++        case Verb::Socialize: if (AtCamp(a)) return "sitting by a campfire near " + PlaceOnly(SiteName(a.site));
++                              return Acore::StringFormat("at the inn in {}", SiteName(a.site));
+         case Verb::Train:     return Acore::StringFormat("with the trainers in {}", SiteName(a.site));
+-        case Verb::Recover:   return Acore::StringFormat("resting up in {}", SiteName(a.site));
++        case Verb::Recover:   if (AtCamp(a)) return "resting by a fire near " + PlaceOnly(SiteName(a.site));
++                              return Acore::StringFormat("resting up in {}", SiteName(a.site));
+         default: break;
+     }
+     return Acore::StringFormat("in {}", SiteName(a.site));
+@@ -5508,6 +5546,15 @@ std::string World::AdventurerChatter(uint32 agentId, uint32 otherAgentId)
+     auto pick = [&r](std::initializer_list<char const*> l) { return std::string(*(l.begin() + r.Range(0, uint32(l.size()) - 1))); };
+     SimAgent const* o = otherAgentId ? AgentById(otherAgentId) : nullptr;
+     if (o && (o->doing == Verb::Sleep || (o->role == ROLE_CIVILIAN && Asleep(*o, _clock)))) o = nullptr;   // nobody talks to the sleeping - about their own day instead
++    if (AtCamp(*a))                                   // by the campfire (Nov 17)
++    {
++        if (o && IsHordeRace(a->race) != IsHordeRace(o->race)) return "";
++        if (o && r.Chance(0.6f)) return Acore::StringFormat(pick({ "Pull up a log, {}.", "Your watch first, {}. Wake me if anything moves.", "Pass the bread, {}.",
++            "Don't let the fire die, {}.", "{}, you snore. Just so you know." }), o->given);
++        return pick({ "Nothing like a fire after a long day.", "Stars are out. Can't see them in town.", "Something's moving out there. Probably nothing.",
++            "Who's taking first watch?", "Beats paying for a room.", "Fire's low. Someone fetch wood.", "Smells like burnt supper again.",
++            "Ground's hard, but it's free.", "Hear that? Just the wind. I hope." });
++    }
+     if (o)
+     {
+         int8 kind = 0;
+diff --git a/src/server/game/SoloSim/solosim.h b/src/server/game/SoloSim/solosim.h
+index 8d3513e..dd8787d 100644
+--- a/src/server/game/SoloSim/solosim.h
++++ b/src/server/game/SoloSim/solosim.h
+@@ -66,7 +66,7 @@ namespace SoloSim
+         uint8 side = 0;                   // hubs: whose town it is - 0 Alliance, 1 Horde, 2 neutral (goblins, the Cenarion Circle...)
+     };
+     enum SiteSide : uint8 { SIDE_ALLIANCE = 0, SIDE_HORDE = 1, SIDE_NEUTRAL = 2 };
+-    inline bool IsHordeRace(uint8 race) { return race == 2 || race == 5 || race == 6 || race == 8 || race == 9 || race == 10 || race == 15; }
++    inline bool IsHordeRace(uint8 race) { return race == 2 || race == 5 || race == 6 || race == 8 || race == 9 || race == 10; }
+ 
+     // ---------------------------------------------------------------- agents
+     enum class AgentStatus : uint8 { Active = 1, Recovering = 2, Dead = 3, Gone = 4, Hired = 5 };
+@@ -213,6 +213,7 @@ namespace SoloSim
+         float x = 0, y = 0, z = 0;        // the site: town centre / hunting camp
+         uint32 services = 0;
+         Verb verb = Verb::Idle;           // what they do there (Idle while travelling)
++        bool camp = false;                // sleeping or sitting about by a campfire, away from any inn (Nov 17)
+         uint32 goalNode = 0;              // road node serving the site
+         uint8 role = 0, job = 0;
+         float homeX = 0, homeY = 0, homeZ = 0;   // their home town's centre
+@@ -457,6 +458,7 @@ namespace SoloSim
+         uint32 FillAdventurers();                      // every town up to its adventurers
+         void RebuildDanger();                          // the danger map: camps, threats, recent deaths, the other side
+         float DangerFor(SimAgent const& a, uint32 site) const;
++        bool AtCamp(SimAgent const& a) const;   // an adventurer resting away from any inn: a camp (Nov 17)
+         void FileCapitals();                           // towns inside the Horde's capitals belong to the city
+         uint32 DockTown(uint32 map, float x, float y, SimAgent const& a) const;   // the town serving a boat or zeppelin dock
+         bool HasFittingHunt(SimAgent const& a, uint32 nearHub, float radius) const;
+diff --git a/src/server/game/SoloSim/solosim_camping.cpp b/src/server/game/SoloSim/solosim_camping.cpp
+new file mode 100644
+index 0000000..c2379ae
+--- /dev/null
++++ b/src/server/game/SoloSim/solosim_camping.cpp
+@@ -0,0 +1,83 @@
++// SoloWoW: camping (Nov 17), after the idea in WoW Forever, built from what 3.3.5 already has.
++// A campfire - your own Basic Campfire, or one the sim's people have lit for the night - is a place to rest:
++//   - near it you are resting (rested XP builds as at an inn; log out there and you rest as at an inn);
++//   - sit by it for a minute and you get an hour of Cozy Fire (Spirit, by level; more for a good cook),
++//     and what you know helps: a smith mends their gear by the fire, someone with first aid sees to their wounds.
++#include "Chat.h"
++#include "GameObject.h"
++#include "Player.h"
++#include "SpellAuraEffects.h"
++#include "SpellAuras.h"
++#include "Timer.h"
++#include <mutex>
++#include <unordered_map>
++
++namespace SoloCamp
++{
++    namespace
++    {
++        constexpr uint32 FIRES[] = { 29784, 31511 };        // Basic Campfire, Bright Campfire
++        constexpr uint32 COZY_HOUR = 7358;                  // Cozy Fire (the second one; the fire's own aura is 7353)
++        constexpr float FIRE_RANGE = 7.0f;
++        std::unordered_map<uint32, uint32> sitSince;         // player guid -> ms they sat down by the fire
++        std::mutex campLock;
++    }
++
++    void Tick(Player* player)
++    {
++        if (!player || !player->IsInWorld())
++            return;
++        GameObject* fire = nullptr;
++        for (uint32 entry : FIRES)
++            if ((fire = player->FindNearestGameObject(entry, FIRE_RANGE, true)))
++                break;
++        bool at = fire && player->IsAlive() && !player->IsInCombat();
++        if (at && !player->HasRestFlag(REST_FLAG_AT_CAMP))
++        {
++            player->SetRestFlag(REST_FLAG_AT_CAMP);
++            ChatHandler(player->GetSession()).SendSysMessage("You settle in by the fire. (Resting)");
++        }
++        else if (!at && player->HasRestFlag(REST_FLAG_AT_CAMP))
++            player->RemoveRestFlag(REST_FLAG_AT_CAMP);
++
++        uint32 guid = player->GetGUID().GetCounter();
++        std::lock_guard<std::mutex> guard(campLock);
++        if (!at || !player->IsSitState())
++        {
++            sitSince.erase(guid);
++            return;
++        }
++        uint32 now = getMSTime();
++        auto [it, fresh] = sitSince.try_emplace(guid, now);
++        if (fresh || getMSTimeDiff(it->second, now) < 60000)
++            return;
++        it->second = now;                                   // once a minute at most
++        if (Aura const* have = player->GetAura(COZY_HOUR); have && have->GetDuration() > int32(50 * MINUTE * IN_MILLISECONDS))
++            return;                                         // already rested here not long ago
++
++        bool cook = player->GetSkillValue(SKILL_COOKING) >= 75;
++        int32 spirit = 2 + int32(player->GetLevel()) / 5;
++        if (cook) spirit += spirit / 2;
++        if (Aura* aura = player->AddAura(COZY_HOUR, player))
++        {
++            aura->SetMaxDuration(int32(HOUR * IN_MILLISECONDS));
++            aura->SetDuration(int32(HOUR * IN_MILLISECONDS));
++            if (AuraEffect* eff = aura->GetEffect(EFFECT_0))
++                eff->ChangeAmount(spirit);
++        }
++        std::string perks;
++        if (player->HasSkill(SKILL_BLACKSMITHING))
++        {
++            player->DurabilityRepairAll(false, 0.0f, false);
++            perks += " You mend your gear by the fire.";
++        }
++        if (player->HasSkill(SKILL_FIRST_AID) && player->GetHealth() < player->GetMaxHealth())
++        {
++            player->SetFullHealth();
++            perks += " You see to your wounds.";
++        }
++        if (cook)
++            perks += " And a proper meal off the fire.";
++        ChatHandler(player->GetSession()).PSendSysMessage("You rest a while by the fire: Cozy Fire, +{} Spirit for an hour.{}", spirit, perks);
++    }
++}
+-- 
+2.56.0.windows.2
+

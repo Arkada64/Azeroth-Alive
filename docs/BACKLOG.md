@@ -128,6 +128,16 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
     an evening out falls back to a bench when the inn is full; errands sometimes go by the mailbox.
   - Camping (from WoW Forever) brought to 3.3.5: a camp you set up to rest with your party, with benefits; sim people
     camp too, alone or together, between areas.
+    **Done Nov 17 (13:10), not yet seen in game:** any Basic or Bright Campfire is a camp - near it you're resting
+    (rested XP builds as at an inn; logging out there rests like an inn - core RestFlag REST_FLAG_AT_CAMP); sit by it a
+    minute for an hour of Cozy Fire (Spirit 2 + level/5, half again for cooks with 75+), and a smith mends their gear,
+    first aid sees to your wounds (SoloSim/solosim_camping.cpp). The sim's adventurers camp: out in the wild or at an
+    outpost with no inn as bedtime comes, they make camp if the inn is further than they'd walk (2-12 min by
+    character: the sociable and careful walk on, wanderers stop, rain makes it worse) and the place is safe enough; an
+    evening by the fire (the sociable), then sleep - wounds heal 35 not 50, two points of food. Near you, a place's
+    campers share one real Basic Campfire, sitting round it, asleep beside it, each in their own spot; campfire talk.
+    48 h test at 2 am: 169 camping (153 fires, up to 5 at one) vs 1056 at inns. Still to come: camping on long
+    journeys between areas (journeys are short at the sim's pace), your companions camping with you, camp objects.
   - Dialogue: "might be time to consider a text generator" for natural talk about world events, life and rumours,
     with you and between NPCs. NOTE: the standing rule so far is templated NPC text only, no AI-generated text - the
     user is reopening that; options when we get there: a bigger procedural grammar (combinatorial templates fed by the
@@ -410,9 +420,10 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
   been furbolgs, the 25 Skeleton looks murlocs), on top of the extra work each body needed (animations, sheathing,
   skins). Removed: the characters (Roro), client patch-X.MPQ, the server tables (back to the worgoblin state), the
   world-DB rows and race-mask bits, solosim_races.cpp and the loot delay, the scripts (git history keeps them).
-  Murlocs, naga and the rest stay in the world as creatures - the sim can still use them as people or threats.
-- Still to do for the two we keep: worgen and goblin NPCs (NPCBots' race tables stop at 11; looks; the sim's race
-  pools), the class list (the module also allows Death Knight).
+  The sim makes no people of these races either (only the stock creatures remain, as wildlife and threats).
+- Worgen adventurers (Nov 17): 5% of the Alliance's newcomers, ~10% in night-elf lands, in their human form (human
+  NPCBots bodies, human names - Gilneans) like the worgen townsfolk. Goblins stay townsfolk only: NPCBots has no goblin
+  bodies. Still to decide: the class list (the module also allows Death Knight).
 
 ## 12. VERY LAST - only when everything above is done and dusted (the user, Nov 17)
 - **Experiment: host the world for other players over Spacewar** (Steam's free test app, ID 480, which hobby projects
