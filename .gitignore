@@ -25,3 +25,6 @@ AzerothAlive.exe
 *.bak
 *.bak-*
 *.log
+# Python caches
+__pycache__/
+*.pyc
