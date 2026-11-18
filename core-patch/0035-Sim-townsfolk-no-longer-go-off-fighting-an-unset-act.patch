@@ -1,0 +1,87 @@
+From 1a00e1771c726bcbfb9c528a300a663d3bcf34e3 Mon Sep 17 00:00:00 2001
+From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 21:52:51 -0600
+Subject: [PATCH 35/35] Sim: townsfolk no longer go off fighting (an unset
+ activity: the working-day branch swallowed the rest, and they came back as
+ level-60 retired adventurers); a bad saved step is cleared on load; townsfolk
+ sit at a chair's own height instead of floating on its collision
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01JU37XfnHTvru3VVz2sNN7z
+---
+ src/server/game/SoloSim/solosim.cpp           | 15 ++++++++++++---
+ src/server/game/SoloSim/solosim_civilians.cpp |  6 ++++++
+ 2 files changed, 18 insertions(+), 3 deletions(-)
+
+diff --git a/src/server/game/SoloSim/solosim.cpp b/src/server/game/SoloSim/solosim.cpp
+index cb7fa09..0e15225 100644
+--- a/src/server/game/SoloSim/solosim.cpp
++++ b/src/server/game/SoloSim/solosim.cpp
+@@ -813,6 +813,11 @@ bool World::Load()
+             a.prof[0] = f[41].Get<uint8>(); a.profSkill[0] = f[42].Get<uint16>(); a.prof[1] = f[43].Get<uint8>(); a.profSkill[1] = f[44].Get<uint16>();
+             a.knownNews = SplitIds(f[45].Get<std::string>());
+             a.role = f[46].Get<uint8>(); a.job = f[47].Get<uint8>(); a.age0 = f[48].Get<uint8>(); a.gear = f[49].Get<std::string>(); a.gearDue = f[50].Get<uint8>(); a.potions = f[51].Get<uint8>();
++            // a step that names no real verb (the Nov 17 townsfolk bug left some): start them afresh
++            auto bad = [](Verb v) { return uint8(v) > uint8(Verb::Work); };
++            if (bad(a.doing) || std::ranges::any_of(a.plan, [&](PlanStep const& s) { return bad(s.verb); }))
++            { a.plan.clear(); a.doing = Verb::Idle; a.wakeAt = 0; }
++            if (a.role == ROLE_CIVILIAN && a.doing == Verb::Fight) { a.plan.clear(); a.doing = Verb::Idle; a.wakeAt = 0; }
+             _agents[a.id] = a;
+         } while (r->NextRow());
+     if (QueryResult r = CharacterDatabase.Query("SELECT a, b, kind, strength FROM sim_relation ORDER BY a, b"))
+@@ -3348,14 +3353,18 @@ void World::CivilianDecide(SimAgent& a)
+     uint32 dayLen = MIN_PER_DAY - len;
+     uint32 toBed = dayLen > awake ? dayLen - awake : 0;
+     bool rain = Rainy(a.home);
+-    Verb v;
++    Verb v = Verb::Idle;
+     if (awake < 60) v = Verb::Idle;                                                     // up and about
+     else if (a.job != JOB_LOAFER && awake < 9 * 60)                                     // the working day
++    {
+         v = (rain && a.job == JOB_FARMHAND && r.Chance(0.5f)) ? Verb::Socialize : Verb::Work;
+-    if (v == Verb::Work && (a.job == JOB_FARMHAND || a.job == JOB_LABORER))        // the fields are outside the walls
+-        if (float d = DangerFor(a, a.home); d >= 2.0f && r.Chance(std::min(0.9f, d * 0.25f))) v = Verb::Socialize;   // stay in (Nov 17)
++        if (v == Verb::Work && (a.job == JOB_FARMHAND || a.job == JOB_LABORER))         // the fields are outside the walls
++            if (float d = DangerFor(a, a.home); d >= 2.0f && r.Chance(std::min(0.9f, d * 0.25f))) v = Verb::Socialize;   // stay in (Nov 17)
++    }
+     else if (toBed <= 180 && (a.sociability > 35 || rain)) v = Verb::Socialize;         // evenings at the inn
+     else v = r.Chance(0.3f) ? Verb::Trade : Verb::Idle;                                 // errands, the market, idling
++    // (Nov 17 night: the "stay in" check above once swallowed the two else-branches below it, leaving v unset - townsfolk
++    // went off "fighting" with whatever was in memory, and came back as retired adventurers)
+     uint32 minutes = std::max<uint32>(15, std::min<uint32>(toBed ? toBed : 15, r.Range(45, 120)));
+     a.plan.push_back({ v, a.home, minutes });
+ }
+diff --git a/src/server/game/SoloSim/solosim_civilians.cpp b/src/server/game/SoloSim/solosim_civilians.cpp
+index 904f75d..78ba164 100644
+--- a/src/server/game/SoloSim/solosim_civilians.cpp
++++ b/src/server/game/SoloSim/solosim_civilians.cpp
+@@ -412,6 +412,7 @@ namespace
+             me->SetEmoteState(EMOTE_ONESHOT_NONE);
+             me->SetWalk(true);
+             _stay = stay; _stand = stand; _emote = emoteState; _face = face; _npc = npc;
++            _target = p;                                                // a seat is sat on exactly, as a player sits (Nov 17 night)
+             _moving = true;
+             _moveStart = getMSTime();
+             me->GetMotionMaster()->MovePoint(1, p);
+@@ -432,6 +433,10 @@ namespace
+                     me->HandleEmoteCommand(urand(0, 2) ? EMOTE_ONESHOT_TALK : EMOTE_ONESHOT_POINT);
+                     Chatter(npc);
+                 }
++            bool seat = _stand >= UNIT_STAND_STATE_SIT_LOW_CHAIR && _stand <= UNIT_STAND_STATE_SIT_HIGH_CHAIR;
++            if (seat && me->GetExactDist(_target) < 4.0f)               // the path ends on the navmesh, often on top of the
++                me->NearTeleportTo(_target.GetPositionX(), _target.GetPositionY(), _target.GetPositionZ(),   // chair's collision:
++                    _face >= 0.0f ? _face : me->GetOrientation());     // the seated pose then floats; sit at the chair's own height
+             if (_face >= 0.0f) me->SetFacingTo(_face);
+             if (_stand != UNIT_STAND_STATE_STAND) me->SetStandState(_stand);
+             if (_emote) me->SetEmoteState(Emote(_emote));
+@@ -771,6 +776,7 @@ namespace
+         uint32 _agent;
+         uint32 _timer = 0, _stay = 0, _emote = 0, _moveStart = 0, _held = 0, _lastSaid = 0;
+         uint8 _stand = UNIT_STAND_STATE_STAND;
++        Position _target;
+         float _face = -1.0f;
+         ObjectGuid _npc;
+         bool _moving = false, _home = false, _following = false;
+-- 
+2.56.0.windows.2
+
