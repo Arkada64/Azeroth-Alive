@@ -108,7 +108,13 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
    upgrade or not, character; winners wear it (real items on their bodies), the rest to the AH or a vendor. Your party:
    adventurer companions roll too, weighing what you roll - they may need against you on a clear upgrade for their class
    (greedy and low-regard more, close companions less). **Mercenaries never roll** - all loot is yours.
-5. **Launcher / installer:** create and manage accounts on the server (and the graphics step as an option - Reforged and
+5. **Launcher / installer:** **Launcher done (Nov 18):** SoloWoW.exe is the one window (the PowerShell manager is gone):
+   play, the servers (start/stop/restart each, RAM, uptime, logs, the world console), accounts (create, password,
+   rights, delete), living worlds (new, save a copy, load back, delete), settings. Play waits until the world lets
+   players in (a client that connected earlier sat at "Connected" - and a fresh world's saves were failing: the
+   sim_agent columns of a new world came in another order, so every start built yet another world; fixed, and a failed
+   save now says so in the log). **Left:** the installer; the graphics step as an option (Reforged and especially
+   LuxVelum are heavy: off, or on per part: HD models, LuxVelum, DXVK, Lexara). Was: create and manage accounts on the server (and the graphics step as an option - Reforged and
    especially LuxVelum are heavy: off, or on per part: HD models, LuxVelum, DXVK, Lexara).
 6. **New civilian types:** **Done in part (Nov 18):** mercenaries (169: one or two at every inn of the land's level;
    hired for coin by their level - 1g at 20, 4g at 40, 9g at 60, 16g at 80 - by /invite or the hire option; a day's

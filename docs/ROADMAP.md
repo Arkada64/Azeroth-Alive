@@ -6,8 +6,8 @@
 ## Folder layout (moved to C:\SoloWoW on 2026-11-15)
 ```
 C:\SoloWoW\
-  SoloWoW.exe        the launcher (play, settings)
-  SoloWoW Manager.bat  server manager: start/stop/restart database, login and world; logs; clean shutdown
+  SoloWoW.exe        the launcher: play, the servers (start/stop/restart, RAM, uptime, logs, console), accounts,
+                     living worlds (new, save a copy, load), settings - the PowerShell manager is gone (Nov 18)
   docs\              DESIGN.md, ROADMAP.md, MILESTONE1.md
   core\              AzerothCore + NPCBots source (our edits: botbubble.*, botdatamgr.*)
   build\             CMake build of core\ (not relocatable - rebuild if moved)
@@ -185,6 +185,21 @@ Milestones 1-7 are in the handoff doc. Ideas and decisions added since, in rough
 - Play / Start the world only / Stop; status lights; "The world" panel: sim status + live chronicle; settings: adventurers and
   townsfolk around you, stop the world when WoW closes (default on).
 - Build: cd launcher; cargo build --release (idle priority, half the cores).
+
+## Launcher v2 (Nov 18, 2026) - the one window; the PowerShell manager removed
+- core runs everything itself (no play.ps1/stop.ps1/manager.ps1): MySQL, authserver, worldserver started hidden, their
+  RAM/uptime (tasklist), clean stop over SOAP ('server shutdown 1', 4 minutes, then the choice to force), realm flags reset,
+  the login refused while another AzerothCore (AzerothManager) runs, one launcher at a time (a named mutex).
+- "Ready" is the world answering over SOAP, not its port: the port opens before the living world is made or caught up, and
+  a client that connects then sits at "Connected" (the user's hang, Nov 18 - a fresh world took ~5 minutes). Play waits and
+  shows what the world is doing (the last SoloWoW line of its log).
+- Accounts made in the launcher: SRP6 (SHA-1 and a small bignum, tested against the account the old scripts made); rights
+  (player, GM 1-3), passwords, delete (through the world, so characters go too); the account Play fills in. SOLO stays as
+  the launcher's own (SOAP).
+- Worlds: start a new one (the old saved first), save a copy (mysqldump of the sim_* tables and the chronicle), load one
+  back (the current saved first), delete - in db\worlds.
+- Server tab: World / Login / Errors logs, the world console with quick commands. Close with servers running: asks.
+- Test without the window: cargo run --release --example smoke.
 
 ## Kalimdor (v4)
 - The sim spans two maps (0 Eastern Kingdoms, 1 Kalimdor). Sites, rares and shops are built per map; every 'nearby' check is same-map only.

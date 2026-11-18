@@ -1,7 +1,7 @@
 From b3f3b86311e123419292297fdcb16844dc292b8f Mon Sep 17 00:00:00 2001
 From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
 Date: Wed, 18 Nov 2026 02:14:34 -0600
-Subject: [PATCH 45/47] Sim: the text generator, second pass - grammar (places
+Subject: [PATCH 45/48] Sim: the text generator, second pass - grammar (places
  in sentences, subjects, a/an, tags, capitals, the chronicle's own wording)
  and conversations of up to four turns: opener, an answer with a tone, the
  speaker's follow-up to it, and a close (a real how-have-you-been or a goodbye

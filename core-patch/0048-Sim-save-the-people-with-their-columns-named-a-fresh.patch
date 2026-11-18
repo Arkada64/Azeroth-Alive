@@ -1,0 +1,44 @@
+From 9402732f8182df1abef1c6973a4d1ac149169ed4 Mon Sep 17 00:00:00 2001
+From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 04:22:38 -0600
+Subject: [PATCH 48/48] Sim: save the people with their columns named - a fresh
+ world's sim_agent has its later columns in another order, so every save of a
+ new world failed and each start built yet another world; a failed save is now
+ logged
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01JU37XfnHTvru3VVz2sNN7z
+---
+ src/server/game/SoloSim/solosim.cpp | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/src/server/game/SoloSim/solosim.cpp b/src/server/game/SoloSim/solosim.cpp
+index ef3394d..70fa9ad 100644
+--- a/src/server/game/SoloSim/solosim.cpp
++++ b/src/server/game/SoloSim/solosim.cpp
+@@ -740,7 +740,12 @@ void World::Save()
+             a.home, a.site, a.born, uint32(a.status), a.statusUntil, a.defeats, a.diedAt, Esc(a.deathCause), a.kills,
+             uint32(a.ambition), a.ambitionTarget, a.ambitionProgress, a.avengeFor, uint32(a.doing), a.wakeAt, a.lastSocial, EncodePlan(a.plan),
+             a.bounty, a.bountyProgress, a.trainedLevel, a.prof[0], a.profSkill[0], a.prof[1], a.profSkill[1], JoinIds(a.knownNews), a.role, a.job, a.age0, Esc(a.gear), a.gearDue, a.potions));
+-    Chunked("INSERT INTO sim_agent VALUES ", rows);
++    // the columns named (Nov 18): a world made fresh gets its later columns in the order they were added (kit, kit_due,
++    // potions, then age0), unlike an older one - with the values in plain order every save of a new world failed, the
++    // table stayed empty, and each start built yet another world (five minutes of the client stuck at "Connected")
++    Chunked("INSERT INTO sim_agent (id, given, family, gender, race, cls, src, level, xp, gear, money, loot, wounds, fatigue, supplies, durability, bravery, greed, sociability, caution, wanderlust, home, site, born, status, status_until, defeats, died_at, death_cause, kills, amb, amb_target, amb_progress, avenge_for, doing, wake_at, last_social, plan, bounty, bounty_progress, trained_level, prof1, prof1_skill, prof2, prof2_skill, news, role, job, age0, kit, kit_due, potions) VALUES ", rows);
++    if (QueryResult c = CharacterDatabase.Query("SELECT COUNT(*) FROM sim_agent"); !c || c->Fetch()[0].Get<uint64>() != _agents.size())
++        LOG_ERROR("server.loading", "SoloWoW sim: SAVE FAILED - {} people in the world, {} written. See Errors.log.", uint32(_agents.size()), c ? uint32(c->Fetch()[0].Get<uint64>()) : 0u);
+ 
+     CharacterDatabase.DirectExecute("DELETE FROM sim_relation");
+     rows.clear();
+@@ -772,7 +777,7 @@ void World::Save()
+     for (SimCamp const& k : _camps)
+         rows.push_back(Acore::StringFormat("({},{},{},{},{},{},{},{},'{}',{},{},{},{},{},{},{},{})", k.id, k.map, k.entry, k.town, k.site, k.x, k.y, k.z, Esc(k.name),
+             k.level, k.size, k.alive, k.made, k.until, k.done ? 1 : 0, k.kind, k.home));
+-    Chunked("INSERT INTO sim_camp VALUES ", rows);
++    Chunked("INSERT INTO sim_camp (id, map, entry, town, site, x, y, z, name, level, size, alive, made, until, done, kind, home) VALUES ", rows);
+     CharacterDatabase.DirectExecute("DELETE FROM sim_ground");
+     rows.clear();
+     for (auto const& [site, p] : _pressure)
+-- 
+2.56.0.windows.2
+
