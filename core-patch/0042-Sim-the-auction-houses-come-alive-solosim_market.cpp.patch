@@ -1,0 +1,453 @@
+From 72ec809b9d8b231b890ea4ffad0f0c50f46c834f Mon Sep 17 00:00:00 2001
+From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 00:51:37 -0600
+Subject: [PATCH 42/42] Sim: the auction houses come alive (solosim_market.cpp)
+ - the sim's people put up what they take off, priced from the item's value
+ times supply and demand, under their own names, in their side's house or a
+ goblin one; auctions sell over time near the market price (never far above)
+ to adventurers who can use and afford them, yours included; sellers paid
+ through the auction-successful hook
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01JU37XfnHTvru3VVz2sNN7z
+---
+ src/server/game/SoloSim/solosim.cpp          |  63 ++++-
+ src/server/game/SoloSim/solosim.h            |   8 +
+ src/server/game/SoloSim/solosim_commands.cpp |   2 +
+ src/server/game/SoloSim/solosim_gear.cpp     |  10 +-
+ src/server/game/SoloSim/solosim_gear.h       |   5 +-
+ src/server/game/SoloSim/solosim_market.cpp   | 241 +++++++++++++++++++
+ 6 files changed, 326 insertions(+), 3 deletions(-)
+ create mode 100644 src/server/game/SoloSim/solosim_market.cpp
+
+diff --git a/src/server/game/SoloSim/solosim.cpp b/src/server/game/SoloSim/solosim.cpp
+index 4c87d37..464761a 100644
+--- a/src/server/game/SoloSim/solosim.cpp
++++ b/src/server/game/SoloSim/solosim.cpp
+@@ -4689,6 +4689,55 @@ bool World::HasPotion(uint32 agentId)
+     return !a || a->potions > 0;
+ }
+ 
++// ---- the auction houses (Nov 18) ------------------------------------------------------------------------------
++void World::TakeListings(std::vector<MarketListing>& out)
++{
++    std::lock_guard<std::mutex> guard(sBodyLock);
++    out.swap(_toList);
++    _toList.clear();
++}
++
++uint32 World::MarketBuyer(bool horde, uint32 price, uint8 minLevel, uint64 salt)
++{
++    std::lock_guard<std::mutex> guard(sBodyLock);
++    if (_agents.empty()) return 0;
++    // look over a few hundred people from a random place in the roll: someone of that side, of the level for it, with
++    // the coin to spare
++    Rng r(_seed, uint32(salt), _clock, P_GEN + 960);
++    auto it = _agents.lower_bound(r.Range(1, _nextAgent));
++    for (uint32 n = 0; n < 300; ++n, ++it)
++    {
++        if (it == _agents.end()) it = _agents.begin();
++        SimAgent& a = it->second;
++        if (a.role != ROLE_ADVENTURER || a.status != AgentStatus::Active || IsHordeRace(a.race) != horde) continue;
++        if (a.level < minLevel || a.level > minLevel + 12) continue;          // what they'd use, at about their level
++        if (a.money < price + price / 2) continue;                             // and still eat afterwards
++        a.money -= price;
++        return a.id;
++    }
++    return 0;
++}
++
++void World::MarketSold(uint32 agentId, uint32 money)
++{
++    std::lock_guard<std::mutex> guard(sBodyLock);
++    if (SimAgent* a = AgentById(agentId)) a->money += money;
++}
++
++uint32 World::AdventurersInBand(bool horde, uint8 band)
++{
++    std::lock_guard<std::mutex> guard(sBodyLock);
++    if (_bandAt != _clock / MIN_PER_HOUR || !_bandAt)
++    {
++        _bandAt = std::max<SimTime>(1, _clock / MIN_PER_HOUR);
++        for (auto& side : _bandCount) side.fill(0);
++        for (auto const& [id, a] : _agents)
++            if (a.role == ROLE_ADVENTURER && (a.status == AgentStatus::Active || a.status == AgentStatus::Recovering))
++                ++_bandCount[IsHordeRace(a.race) ? 1 : 0][std::min<uint32>(8, a.level / 10)];
++    }
++    return _bandCount[horde ? 1 : 0][std::min<uint32>(8, band)];
++}
++
+ // real kits for everyone (Nov 17 night): those with none get one, those with pieces due get the weakest replaced where
+ // something better fits - a few hundred people an hour, round the whole world in turn. Anyone whose body was near the
+ // player lately is left alone (the body wears and records their kit).
+@@ -4707,7 +4756,19 @@ void World::RefreshKits(uint32 budget)
+         if (!a.gear.empty() && !a.gearDue) continue;
+         if (auto s = _lastSeen.find(a.id); s != _lastSeen.end() && _clock - s->second < 30) continue;
+         uint32 changed = 0;
+-        a.gear = SoloGear::Refresh(a.cls, a.level, a.gear, a.gear.empty() ? 0 : a.gearDue, Mix((uint64(_seed) << 20) ^ (uint64(a.id) << 8) ^ (_clock / MIN_PER_DAY)), &changed);
++        std::vector<std::pair<uint32, int32>> off;
++        a.gear = SoloGear::Refresh(a.cls, a.level, a.gear, a.gear.empty() ? 0 : a.gearDue, Mix((uint64(_seed) << 20) ^ (uint64(a.id) << 8) ^ (_clock / MIN_PER_DAY)), &changed, &off);
++        // what came off: greens and better to the auction house (Nov 18), the rest to the nearest vendor
++        SimSite const* at = SiteById(a.site);
++        for (auto const& [entry, suffix] : off)
++        {
++            ItemTemplate const* p = sObjectMgr->GetItemTemplate(entry);
++            if (!p) continue;
++            if (p->Quality >= ITEM_QUALITY_UNCOMMON && p->Bonding != BIND_WHEN_PICKED_UP && _toList.size() < 2000)
++                _toList.push_back({ a.id, entry, suffix, a.greed, IsHordeRace(a.race), at && at->side == SIDE_NEUTRAL });
++            else
++                a.money += p->SellPrice;
++        }
+         a.gearDue = 0;
+         TierFromKit(a);
+         ++done; pieces += changed;
+diff --git a/src/server/game/SoloSim/solosim.h b/src/server/game/SoloSim/solosim.h
+index 7b3ed01..cb15e7c 100644
+--- a/src/server/game/SoloSim/solosim.h
++++ b/src/server/game/SoloSim/solosim.h
+@@ -298,6 +298,12 @@ namespace SoloSim
+         // extra seconds it should stay dead because the ground has been hunted hard (0 = respawn as normal).
+         uint32 HuntedDeath(uint32 map, float x, float y, uint32 respawnDelay, bool countIt);
+         void RefreshKits(uint32 budget);             // real kits for everyone, changed by what happens to them (solosim_gear.cpp)
++        // the auction houses (Nov 18): what the sim's people put up, who buys, who gets paid (solosim_market.cpp)
++        struct MarketListing { uint32 agent = 0, entry = 0; int32 suffix = 0; uint8 greed = 50; bool horde = false; bool neutral = false; };
++        void TakeListings(std::vector<MarketListing>& out);
++        uint32 MarketBuyer(bool horde, uint32 price, uint8 minLevel, uint64 salt);    // an adventurer who'd pay this (paid); 0 = nobody
++        void MarketSold(uint32 agentId, uint32 money);                                  // a seller's takings
++        uint32 AdventurersInBand(bool horde, uint8 band);                              // band = level / 10
+         void TierFromKit(SimAgent& a);
+         void SetGear(uint32 agentId, std::string const& gear);          // the server is stopping: write the living world out now   // GM: raise a threat now on each continent that has none   // a townsperson's body won a fight in the game world
+         uint32 Age(SimAgent const& a) const;   // years; a year passes every game week
+@@ -564,6 +570,8 @@ namespace SoloSim
+         SimTime _lastWildTick = 0;                   // 3-hour wildlife steps
+         SimTime _lastGearTick = 0;                   // hourly: kits brought up to date (Nov 17 night)
+         uint32 _gearCursor = 0;
++        std::vector<MarketListing> _toList;        // pieces taken off, waiting to go up at the auction house
++        std::array<std::array<uint32, 9>, 2> _bandCount{}; SimTime _bandAt = 0;
+         std::unordered_map<uint32, SimTime> _lastSeen;   // agent -> when their body was last seen near the player
+         uint32 _nextErrand = 1;
+         std::map<uint32, std::deque<std::pair<SimTime, std::string>>> _notices;   // town -> board notices (rebuilt from sim_event on load)
+diff --git a/src/server/game/SoloSim/solosim_commands.cpp b/src/server/game/SoloSim/solosim_commands.cpp
+index 3c13e38..7262cd5 100644
+--- a/src/server/game/SoloSim/solosim_commands.cpp
++++ b/src/server/game/SoloSim/solosim_commands.cpp
+@@ -304,6 +304,7 @@ void AddSC_solosim_xp();
+ void AddSC_solosim_quests();
+ void AddSC_solosim_loot();
+ void AddSC_solosim_era();
++void AddSC_solosim_market();
+ 
+ void AddSC_solosim_commands()
+ {
+@@ -312,6 +313,7 @@ void AddSC_solosim_commands()
+     AddSC_solosim_quests();
+     AddSC_solosim_loot();
+     AddSC_solosim_era();
++    AddSC_solosim_market();
+     new solosim_commands();
+     new solosim_bounty_commands();
+     new solosim_player();
+diff --git a/src/server/game/SoloSim/solosim_gear.cpp b/src/server/game/SoloSim/solosim_gear.cpp
+index 7667266..773b7f8 100644
+--- a/src/server/game/SoloSim/solosim_gear.cpp
++++ b/src/server/game/SoloSim/solosim_gear.cpp
+@@ -116,7 +116,8 @@ namespace
+     }
+ }
+ 
+-std::string Refresh(uint8 cls, uint8 level, std::string const& kit, uint8 due, uint64 seed, uint32* changed)
++std::string Refresh(uint8 cls, uint8 level, std::string const& kit, uint8 due, uint64 seed, uint32* changed,
++    std::vector<std::pair<uint32, int32>>* replaced)
+ {
+     if (changed) *changed = 0;
+     if (cls < BOT_CLASS_WARRIOR || cls > BOT_CLASS_DRUID || cls == BOT_CLASS_DEATH_KNIGHT) return kit;
+@@ -139,6 +140,12 @@ std::string Refresh(uint8 cls, uint8 level, std::string const& kit, uint8 due, u
+     }
+     std::ranges::sort(weakest);
+     for (uint32 k = 0; k < weakest.size() && k < due; ++k) todo.push_back(weakest[k].second);
++    // the same ring or trinket worn twice (older kits): the second one is replaced
++    for (auto [a, b] : { std::pair<uint8, uint8>{ BOT_SLOT_FINGER1, BOT_SLOT_FINGER2 }, std::pair<uint8, uint8>{ BOT_SLOT_TRINKET1, BOT_SLOT_TRINKET2 } })
++        if (auto ia = bySlot.find(a), ib = bySlot.find(b); ia != bySlot.end() && ib != bySlot.end() && ia->second.entry == ib->second.entry)
++        { bySlot.erase(ib); if (std::ranges::find(todo, b) == todo.end()) todo.push_back(b); }
++    std::ranges::sort(todo);
++    todo.erase(std::unique(todo.begin(), todo.end()), todo.end());
+     if (todo.empty()) return kit;
+     std::ranges::sort(todo);                                   // main hand first: the off hand depends on it
+ 
+@@ -167,6 +174,7 @@ std::string Refresh(uint8 cls, uint8 level, std::string const& kit, uint8 due, u
+             if (ItemTemplate const* op = sObjectMgr->GetItemTemplate(it->second.entry); op && np && op->ItemLevel + (op->Quality > np->Quality ? 5 : 0) > np->ItemLevel)
+                 continue;                                      // nothing better on offer: keep what they have
+         Piece g; g.slot = s; g.entry = entry; g.suffix = Item::GenerateItemRandomPropertyId(entry);
++        if (replaced && it != bySlot.end()) replaced->emplace_back(it->second.entry, it->second.suffix);   // the old piece: to sell
+         bySlot[s] = g;
+         ++n;
+         if (s == BOT_SLOT_MAINHAND && np && np->InventoryType == INVTYPE_2HWEAPON) bySlot.erase(BOT_SLOT_OFFHAND);   // a two-hander: off hand empty
+diff --git a/src/server/game/SoloSim/solosim_gear.h b/src/server/game/SoloSim/solosim_gear.h
+index 9cb0c2f..f0379f8 100644
+--- a/src/server/game/SoloSim/solosim_gear.h
++++ b/src/server/game/SoloSim/solosim_gear.h
+@@ -2,10 +2,13 @@
+ #define SOLOSIM_GEAR_H
+ #include "Define.h"
+ #include <string>
++#include <utility>
++#include <vector>
+ namespace SoloGear
+ {
+     // the kit after a refresh: an empty kit is built whole; otherwise the open slots are filled and the `due` weakest
+     // pieces replaced where something better fits (changed: how many pieces are new)
+-    std::string Refresh(uint8 cls, uint8 level, std::string const& kit, uint8 due, uint64 seed, uint32* changed = nullptr);
++    std::string Refresh(uint8 cls, uint8 level, std::string const& kit, uint8 due, uint64 seed, uint32* changed = nullptr,
++        std::vector<std::pair<uint32, int32>>* replaced = nullptr);   // replaced: the pieces taken off (entry, suffix)
+ }
+ #endif
+diff --git a/src/server/game/SoloSim/solosim_market.cpp b/src/server/game/SoloSim/solosim_market.cpp
+new file mode 100644
+index 0000000..ca6f4fc
+--- /dev/null
++++ b/src/server/game/SoloSim/solosim_market.cpp
+@@ -0,0 +1,241 @@
++// SoloWoW: the auction houses come alive (Nov 18) - the user's design.
++//
++// Prices come from the game's own values (vendor price, quality, the kind of item, a random suffix), moved by supply
++// and demand: how much of that kind at that level is already up in this house, against how many adventurers of the
++// house's side are at that level. The sim's adventurers put up what they take off (greens and better; the rest goes to
++// a vendor) at prices that suit their character - the greedy ask more, the rest undercut a little - under their own
++// name, in their side's house, or a goblin one now and then. Your auctions sell over time to the sim's people when the
++// price is near the market's - slowly above it, not at all far above (they expire as usual); the buyer is a real
++// adventurer of that side, at about the item's level, with the coin (it comes out of their purse). The sim's own
++// listings sell to one another too, so stock turns over. Alliance, Horde and the neutral houses are separate markets.
++// Unsold sim listings simply go (the core deletes an expired item whose owner has no account); a sim seller's takings
++// reach them through the auction-successful hook.
++#include "AuctionHouseMgr.h"
++#include "AuctionHouseScript.h"
++#include "CharacterCache.h"
++#include "Config.h"
++#include "DatabaseEnv.h"
++#include "GameTime.h"
++#include "Item.h"
++#include "Log.h"
++#include "ObjectMgr.h"
++#include "ScriptMgr.h"
++#include "World.h"
++#include "WorldScript.h"
++#include "solosim.h"
++#include <cmath>
++#include <map>
++#include <random>
++#include <tuple>
++
++namespace
++{
++    constexpr uint32 CYCLE_MS = 5 * MINUTE * IN_MILLISECONDS;    // the market looks around every five minutes
++    constexpr uint32 MAX_SIM_LISTINGS = 500;                     // per house: the sim's own wares
++    constexpr uint32 POST_PER_CYCLE = 40;
++
++    uint32 Base = SoloSim::World::FRIEND_GUID_BASE;
++    bool SimGuid(ObjectGuid g) { return g.IsPlayer() && g.GetCounter() >= Base; }
++    ObjectGuid GuidOf(uint32 agent) { return ObjectGuid::Create<HighGuid::Player>(Base + agent); }
++
++    std::mt19937& Rng() { static std::mt19937 r(std::random_device{}()); return r; }
++    float Roll() { return std::uniform_real_distribution<float>(0.0f, 1.0f)(Rng()); }
++
++    // what the item is worth on its own: the vendor's price by quality, a random suffix a little more
++    float ItemValue(ItemTemplate const* p, int32 suffix)
++    {
++        static float const byQuality[] = { 1.0f, 1.6f, 3.2f, 5.5f, 9.0f, 12.0f, 12.0f, 12.0f };
++        float base = p->SellPrice ? float(p->SellPrice) : float(std::max<uint32>(1, p->ItemLevel)) * float(std::max<uint32>(1, p->ItemLevel)) * 2.0f;
++        float q = byQuality[std::min<uint32>(p->Quality, 7)];
++        if (p->Class == ITEM_CLASS_TRADE_GOODS || p->Class == ITEM_CLASS_REAGENT || p->Class == ITEM_CLASS_GEM) q = std::max(q, 2.2f);
++        if (p->Class == ITEM_CLASS_RECIPE) q = std::max(q, 2.5f);
++        return base * q * (suffix ? 1.15f : 1.0f);
++    }
++
++    uint8 Band(ItemTemplate const* p) { return uint8(std::min<uint32>(8, std::max<uint32>(p->RequiredLevel, p->ItemLevel > 80 ? 70 : 0) / 10)); }
++
++    struct HouseState
++    {
++        AuctionHouseId id;
++        std::map<std::pair<uint32, uint8>, uint32> supply;        // (item class, band) -> listed
++        uint32 simListings = 0;
++    };
++
++    // supply against demand: a kind of item few have up and many could use costs more, and the reverse
++    float MarketMul(HouseState const& h, ItemTemplate const* p)
++    {
++        uint8 band = Band(p);
++        uint32 demand = h.id == AuctionHouseId::Neutral
++            ? (sSoloSim->AdventurersInBand(false, band) + sSoloSim->AdventurersInBand(true, band)) / 3
++            : sSoloSim->AdventurersInBand(h.id == AuctionHouseId::Horde, band);
++        uint32 supply = 0;
++        if (auto it = h.supply.find({ p->Class, band }); it != h.supply.end()) supply = it->second;
++        float mul = 1.0f + 0.35f * std::log((float(demand) / 15.0f + 1.0f) / (float(supply) + 1.0f));
++        return std::clamp(mul, 0.6f, 1.8f);
++    }
++
++    // the chance, over five minutes, that someone takes an auction at this share of the market price
++    float SellChance(float ratio)
++    {
++        if (ratio > 2.5f) return 0.0f;                                 // far above the market: nobody
++        static float const pace = float(std::max<uint32>(10, sConfigMgr->GetOption<uint32>("SoloWoW.Market.CycleSeconds", CYCLE_MS / 1000))) / 300.0f;   // a faster cycle (tests) sells no faster an hour
++        float perHour = ratio <= 0.7f ? 0.6f : std::min(0.6f, 0.22f * std::exp(-3.2f * (ratio - 1.0f)));
++        static float const speed = std::max(0.1f, sConfigMgr->GetOption<float>("SoloWoW.Market.TestSpeed", 1.0f));   // tests only
++        return 1.0f - std::pow(1.0f - std::min(0.95f, perHour * speed), pace / 12.0f);
++    }
++
++    void Survey(HouseState& h)
++    {
++        h.supply.clear(); h.simListings = 0;
++        AuctionHouseObject* house = sAuctionMgr->GetAuctionsMapByHouseId(h.id);
++        if (!house) return;
++        for (auto const& [id, a] : house->GetAuctions())
++        {
++            if (ItemTemplate const* p = sObjectMgr->GetItemTemplate(a->item_template)) ++h.supply[{ p->Class, Band(p) }];
++            if (SimGuid(a->owner)) ++h.simListings;
++        }
++    }
++
++    void Post(HouseState& h, SoloSim::World::MarketListing const& l)
++    {
++        AuctionHouseObject* house = sAuctionMgr->GetAuctionsMapByHouseId(h.id);
++        ItemTemplate const* p = sObjectMgr->GetItemTemplate(l.entry);
++        if (!house || !p) return;
++        if (h.simListings >= MAX_SIM_LISTINGS) { sSoloSim->MarketSold(l.agent, p->SellPrice); return; }   // full: the vendor has it
++        Item* item = Item::CreateItem(l.entry, 1, nullptr);
++        if (!item) return;
++        if (l.suffix) item->SetItemRandomProperties(l.suffix);
++        item->SetOwnerGUID(GuidOf(l.agent));
++        // the price their character asks: the greedy above the market, the rest a little under it
++        float want = ItemValue(p, l.suffix) * MarketMul(h, p) * (0.88f + float(l.greed) / 250.0f) * (0.95f + Roll() * 0.1f);
++        uint32 buyout = std::max<uint32>(p->SellPrice + 1, uint32(want));
++        AuctionEntry* a = new AuctionEntry;
++        a->Id = sObjectMgr->GenerateAuctionID();
++        a->houseId = h.id;
++        a->item_guid = item->GetGUID();
++        a->item_template = l.entry;
++        a->itemCount = 1;
++        a->owner = GuidOf(l.agent);
++        a->startbid = std::max<uint32>(1, buyout * 4 / 5);
++        a->bid = 0;
++        a->buyout = buyout;
++        a->expire_time = GameTime::GetGameTime().count() + (Roll() < 0.5f ? 24 : 48) * HOUR;
++        a->bidder = ObjectGuid::Empty;
++        a->deposit = 0;
++        a->auctionHouseEntry = AuctionHouseMgr::GetAuctionHouseEntryFromHouse(h.id);
++        sAuctionMgr->AddAItem(item);
++        house->AddAuction(a);
++        CharacterDatabaseTransaction trans = CharacterDatabase.BeginTransaction();
++        item->SaveToDB(trans);
++        a->SaveToDB(trans);
++        CharacterDatabase.CommitTransaction(trans);
++        ++h.simListings;
++        ++h.supply[{ p->Class, Band(p) }];
++    }
++
++    // someone of the sim buys it out (the same steps a player's buyout takes)
++    void BuyOut(AuctionHouseObject* house, AuctionEntry* a, uint32 buyer)
++    {
++        a->bidder = GuidOf(buyer);
++        a->bid = a->buyout;
++        CharacterDatabaseTransaction trans = CharacterDatabase.BeginTransaction();
++        sAuctionMgr->SendAuctionSalePendingMail(a, trans);
++        sAuctionMgr->SendAuctionSuccessfulMail(a, trans);              // a player seller: their money comes by mail, as ever
++        sAuctionMgr->SendAuctionWonMail(a, trans);                     // a sim buyer has no mailbox: the item is theirs (gone)
++        sScriptMgr->OnAuctionSuccessful(house, a);
++        a->DeleteFromDB(trans);
++        sAuctionMgr->RemoveAItem(a->item_guid);
++        house->RemoveAuction(a);
++        CharacterDatabase.CommitTransaction(trans);
++    }
++
++    uint32 Trade(HouseState& h)
++    {
++        AuctionHouseObject* house = sAuctionMgr->GetAuctionsMapByHouseId(h.id);
++        if (!house) return 0;
++        std::vector<uint32> sold;
++        std::vector<std::pair<uint32, uint32>> buyers;
++        for (auto const& [id, a] : house->GetAuctions())
++        {
++            if (!a->buyout || a->bidder) continue;
++            ItemTemplate const* p = sObjectMgr->GetItemTemplate(a->item_template);
++            if (!p) continue;
++            float market = ItemValue(p, 0) * MarketMul(h, p) * float(a->itemCount);
++            float chance = SellChance(float(a->buyout) / std::max(1.0f, market));
++            if (SimGuid(a->owner)) chance *= 0.5f;                     // among the sim's own people: slower
++            if (Roll() >= chance) continue;
++            bool horde = h.id == AuctionHouseId::Horde ? true : h.id == AuctionHouseId::Alliance ? false : Roll() < 0.5f;
++            uint8 minLevel = (p->Class == ITEM_CLASS_WEAPON || p->Class == ITEM_CLASS_ARMOR) ? uint8(p->RequiredLevel) : 1;
++            uint32 buyer = sSoloSim->MarketBuyer(horde, a->buyout, minLevel, id);
++            if (!buyer) continue;
++            if (SimGuid(a->owner) && a->owner.GetCounter() - Base == buyer) { sSoloSim->MarketSold(buyer, a->buyout); continue; }   // their own
++            buyers.emplace_back(id, buyer);
++        }
++        for (auto const& [id, buyer] : buyers)
++            if (AuctionEntry* a = house->GetAuction(id)) BuyOut(house, a, buyer);
++        return uint32(buyers.size());
++    }
++
++    class solosim_market_world : public WorldScript
++    {
++    public:
++        solosim_market_world() : WorldScript("solosim_market_world", { WORLDHOOK_ON_UPDATE }) { }
++
++        void OnUpdate(uint32 diff) override
++        {
++            _timer += diff;
++            static uint32 const cycle = std::max<uint32>(10, sConfigMgr->GetOption<uint32>("SoloWoW.Market.CycleSeconds", CYCLE_MS / 1000)) * IN_MILLISECONDS;
++            if (_timer < cycle) return;
++            _timer = 0;
++            if (!sSoloSim->IsLive() || !sConfigMgr->GetOption<bool>("SoloWoW.Market.Enable", true)) return;
++            std::array<HouseState, 3> houses{ { { AuctionHouseId::Alliance }, { AuctionHouseId::Horde }, { AuctionHouseId::Neutral } } };
++            for (HouseState& h : houses) Survey(h);
++            // what the sim's people took off lately goes up for sale
++            std::vector<SoloSim::World::MarketListing> fresh;
++            sSoloSim->TakeListings(fresh);
++            _waiting.insert(_waiting.end(), fresh.begin(), fresh.end());
++            if (_waiting.size() > 3000)                                 // a glut: the oldest go to the vendor
++            {
++                for (size_t i = 0; i < _waiting.size() - 3000; ++i)
++                    if (ItemTemplate const* p = sObjectMgr->GetItemTemplate(_waiting[i].entry)) sSoloSim->MarketSold(_waiting[i].agent, p->SellPrice);
++                _waiting.erase(_waiting.begin(), _waiting.end() - 3000);
++            }
++            uint32 posted = 0;
++            while (!_waiting.empty() && posted < POST_PER_CYCLE)        // a few at a time, the rest next time
++            {
++                SoloSim::World::MarketListing l = _waiting.front();
++                _waiting.erase(_waiting.begin());
++                HouseState& h = houses[l.neutral && Roll() < 0.6f ? 2 : l.horde ? 1 : 0];
++                Post(h, l);
++                ++posted;
++            }
++            uint32 sold = 0;
++            for (HouseState& h : houses) sold += Trade(h);
++            if (posted || sold)
++                LOG_INFO("server.loading", "SoloWoW market: {} put up by the sim's people, {} bought ({} / {} / {} listed: Alliance, Horde, neutral)",
++                    posted, sold, houses[0].simListings, houses[1].simListings, houses[2].simListings);
++        }
++    private:
++        uint32 _timer = 0;
++        std::vector<SoloSim::World::MarketListing> _waiting;
++    };
++
++    // a sim seller's takings: the price, less the house's cut
++    class solosim_market_ah : public AuctionHouseScript
++    {
++    public:
++        solosim_market_ah() : AuctionHouseScript("solosim_market_ah", { AUCTIONHOUSEHOOK_ON_AUCTION_SUCCESSFUL }) { }
++        void OnAuctionSuccessful(AuctionHouseObject* /*ah*/, AuctionEntry* a) override
++        {
++            if (!a || !SimGuid(a->owner)) return;
++            uint32 cut = a->GetAuctionCut();
++            sSoloSim->MarketSold(a->owner.GetCounter() - Base, a->bid > cut ? a->bid - cut : 0);
++        }
++    };
++}
++
++void AddSC_solosim_market()
++{
++    new solosim_market_world();
++    new solosim_market_ah();
++}
+-- 
+2.56.0.windows.2
+

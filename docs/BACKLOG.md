@@ -67,6 +67,16 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
    adventurers list what they don't want like a player (greys still to vendors), at prices by character (greedy high,
    impatient undercut); your auctions sell over time near the market, slowly or not at all above it, expire if you don't
    follow it; sim people buy what they need; Alliance, Horde and the neutral goblin houses are separate markets.
+   **Auction houses done (Nov 18, ~1 am; solosim_market.cpp):** the sim's adventurers put up what they take off when
+   their kits improve (greens and better; whites and greys to a vendor) under their own names (the friend guids), in
+   their side's house or a goblin one, priced from the item's own value (vendor price by quality, kind, suffix) times
+   supply and demand (listed of that kind and level in the house against adventurers of the side at that level), the
+   greedy higher; a few hundred per house at most. Every five minutes each auction may sell: near the market within
+   hours, rarely above, never at 2.5x; buyers are real adventurers of that side and level with the coin (paid from their
+   purse); your auctions too (your money by the usual mail). Unsold sim listings go; sellers are paid through the
+   auction-successful hook. Tested: 277 listings in three houses, trades, clean up. Not yet seen: a sim buyer for one
+   of the player's auctions (same core steps as a player buyout). Later: buyers wear what they buy; raw materials
+   from the gatherers and caravans; prices drifting over days.
    **Dungeons and raids in the sim:** parties walk to the instance portal and disappear inside, simulated boss by boss
    (levels, gear, make-up) - loot or a wipe (deaths rarely final, as now); raid companies form off screen and roll for
    success per boss once the raid is unlocked (raid deaths never count). Loot rolls: need/greed/pass by class, armour type,

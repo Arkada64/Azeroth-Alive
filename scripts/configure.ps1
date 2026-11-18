@@ -112,6 +112,10 @@ $w['SoloWoW.Era.Power.Vanilla'] = '0.75'
 $w['SoloWoW.Era.Power.TBC'] = '0.85'
 $w['SoloWoW.Era.QuestXP'] = if ($NoEra) { '0' } else { '1' }
 $w['SoloWoW.Era.MountCast'] = if ($NoEra) { '0' } else { '1' }   # 3 s to summon a mount, as before 3.2
+# the auction houses (solosim_market.cpp): the sim's people sell, buy, and buy your auctions near the market price
+$w['SoloWoW.Market.Enable'] = '1'
+$w['SoloWoW.Market.CycleSeconds'] = '300'
+$w['SoloWoW.Market.TestSpeed'] = '1'
 $w['SoloWoW.Loot.Enable'] = '1'   # random suffixes and rare finds on loot (solosim_loot.cpp)
 $w['DungeonFinder.OptionsMask'] = if ($NoEra) { '7' } else { '0' }   # 0 = no queue-and-teleport; walk there with hired bots
 # Hiring is free: people come along for their own reasons (regard - see BotBubble::InviteByName / World::HireRefusal), not for gold.
