@@ -46,9 +46,10 @@ DROP TABLE IF EXISTS solo_era_quest_poi, solo_era_quest_poi_points, solo_era_tra
     if (Has-Table 'solo_era_bak_northrend') { Sql "UPDATE creature_template ct JOIN solo_era_bak_northrend b ON b.entry = ct.entry SET ct.DamageModifier = b.DamageModifier, ct.ArmorModifier = b.ArmorModifier" acore_world }
     if (Has-Table 'solo_era_bak_xp')      { Sql "REPLACE INTO player_xp_for_level SELECT * FROM solo_era_bak_xp" acore_world }
     if (Has-Table 'solo_era_bak_gossip')  { Sql "INSERT IGNORE INTO gossip_menu_option SELECT * FROM solo_era_bak_gossip" acore_world }
+    if (Has-Table 'solo_era_bak_gossip_cond') { Sql "INSERT IGNORE INTO conditions SELECT * FROM solo_era_bak_gossip_cond" acore_world }
     if (Has-Table 'solo_era_bak_vendor')  { Sql "INSERT IGNORE INTO npc_vendor SELECT * FROM solo_era_bak_vendor" acore_world }
     if (Has-Table 'solo_era_bak_barber')  { Sql "INSERT IGNORE INTO gameobject SELECT * FROM solo_era_bak_barber" acore_world }
-    Sql "DROP TABLE IF EXISTS solo_era_bak_creature, solo_era_bak_quest, solo_era_bak_xp, solo_era_bak_gossip, solo_era_bak_vendor, solo_era_bak_barber, solo_era_bak_northrend, solo_era_quest_xp, solo_era_xp_curve, solo_era_fact" acore_world
+    Sql "DROP TABLE IF EXISTS solo_era_bak_creature, solo_era_bak_quest, solo_era_bak_xp, solo_era_bak_gossip, solo_era_bak_gossip_cond, solo_era_bak_vendor, solo_era_bak_barber, solo_era_bak_northrend, solo_era_quest_xp, solo_era_xp_curve, solo_era_fact" acore_world
     Write-Host 'Era DB changes reverted (stock 3.3.5 values restored).'
     exit 0
 }
@@ -119,6 +120,12 @@ if (-not (Has-Table 'solo_era_bak_gossip')) {
     Sql "CREATE TABLE solo_era_bak_vendor LIKE npc_vendor; INSERT INTO solo_era_bak_vendor SELECT v.* FROM npc_vendor v JOIN item_template i ON i.entry = v.item WHERE i.Quality = 7" acore_world
     Sql "CREATE TABLE solo_era_bak_barber LIKE gameobject; INSERT INTO solo_era_bak_barber SELECT g.* FROM gameobject g JOIN gameobject_template t ON t.entry = g.id WHERE t.type = 32" acore_world
 }
+# the dual-spec options' own conditions go with them (Nov 18: left behind, they filled Errors.log - "GossipMenuId N Item 2
+# not found" and "Not handled grouped condition" for every trainer menu)
+if (-not (Has-Table 'solo_era_bak_gossip_cond')) {
+    Sql "CREATE TABLE solo_era_bak_gossip_cond LIKE conditions; INSERT INTO solo_era_bak_gossip_cond SELECT c.* FROM conditions c JOIN solo_era_bak_gossip b ON c.SourceTypeOrReferenceId = 15 AND c.SourceGroup = b.MenuID AND c.SourceEntry = b.OptionID" acore_world
+}
+Sql "DELETE c FROM conditions c JOIN solo_era_bak_gossip_cond b ON c.SourceTypeOrReferenceId = b.SourceTypeOrReferenceId AND c.SourceGroup = b.SourceGroup AND c.SourceEntry = b.SourceEntry AND c.SourceId = b.SourceId AND c.ElseGroup = b.ElseGroup AND c.ConditionTypeOrReference = b.ConditionTypeOrReference AND c.ConditionTarget = b.ConditionTarget AND c.ConditionValue1 = b.ConditionValue1 AND c.ConditionValue2 = b.ConditionValue2 AND c.ConditionValue3 = b.ConditionValue3" acore_world
 Sql "DELETE o FROM gossip_menu_option o JOIN solo_era_bak_gossip b ON b.MenuID = o.MenuID AND b.OptionID = o.OptionID" acore_world
 Sql "DELETE v FROM npc_vendor v JOIN solo_era_bak_vendor b ON b.entry = v.entry AND b.item = v.item AND b.ExtendedCost = v.ExtendedCost" acore_world
 Sql "DELETE g FROM gameobject g JOIN solo_era_bak_barber b ON b.guid = g.guid" acore_world
