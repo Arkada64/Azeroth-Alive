@@ -112,6 +112,39 @@ def merge(name, stock_b, ref_b, our_b, log):
     rf.save(os.path.join(STAGE, "DBFilesClient", name))
     return added, changed, kept
 
+# Reforged models that don't show up right in our client: the stock model (from the player's own client) goes back in
+# patch-Y, which loads after Reforged's patches. Each entry is a model; its .skin files come with it. (Nov 17 night:
+# the HD signposts - the arrows show, the posts don't, so the signs hang in mid-air or in a tree.)
+REVERT_MODELS = [
+    r"World\GENERIC\HUMAN\PASSIVE DOODADS\SignPosts\HumanSignPost03.m2",
+    r"World\GENERIC\HUMAN\PASSIVE DOODADS\SignPosts\HumanSignPostPointer03.m2",
+    r"World\GENERIC\HUMAN\PASSIVE DOODADS\SignPosts\WoodSignPostNice01.m2",
+    r"World\GENERIC\HUMAN\PASSIVE DOODADS\SignPosts\WoodSignPointerNice01.m2",
+    r"World\GENERIC\HUMAN\PASSIVE DOODADS\SignPosts\WoodSignPostWorn01.m2",
+    r"World\GENERIC\HUMAN\PASSIVE DOODADS\SignPosts\WoodSignPointerWorn01.m2",
+    r"World\GENERIC\ORC\PASSIVE DOODADS\SignPosts\OrcSignPost03.m2",
+    r"World\GENERIC\ORC\PASSIVE DOODADS\SignPosts\OrcSignPostPointer03.m2",
+]
+
+def revert_models(handles):
+    """Put the stock copy of each listed model (and its skins) into the stage, where Reforged replaced it."""
+    n = 0
+    for m in REVERT_MODELS:
+        files = [m] + [m[:-3] + f"{i:02d}.skin" for i in range(4)]
+        if not any(is_reforged(p) and read(h, m) is not None for p, h in handles): continue
+        for f in files:
+            stock = None
+            for p, h in handles:
+                if is_reforged(p) or is_ours(p): continue
+                b = read(h, f)
+                if b is not None: stock = b
+            if stock is None: continue
+            out = os.path.join(STAGE, f); os.makedirs(os.path.dirname(out), exist_ok=True)
+            with open(out, "wb") as fh: fh.write(stock)
+            n += 1
+    print(f"  {n} stock model files put back over Reforged's ({len(REVERT_MODELS)} models listed)")
+    return n
+
 def main():
     order = load_order()
     handles = [(p, open_mpq(p)) for p in order]
@@ -147,11 +180,12 @@ def main():
         except Exception as ex:
             print(f"  {name}: NOT merged ({ex}) - ours will hide theirs for this table")
     for t in log[:40]: print(t)
+    reverted = revert_models(handles)
     for _, h in handles: storm.SFileCloseArchive(h)
     for f in os.listdir(os.path.join(STAGE, "..")):
         if f.startswith("tmp-"): os.remove(os.path.join(STAGE, "..", f))
     dest = os.path.join(DATA, OUT_NAME)
-    if not done:
+    if not done and not reverted:
         if os.path.exists(dest): os.remove(dest)
         print("nothing to merge - no patch-Y"); return
     if os.path.exists(dest): os.remove(dest)

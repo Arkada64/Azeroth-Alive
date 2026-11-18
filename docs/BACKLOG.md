@@ -11,6 +11,69 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
   later our patch MPQ). Server binaries ship as release downloads, not in git. Core changes live as a patch over a
   pinned trickerer/AzerothCore-wotlk-with-NPCBots commit.
 
+## 0b. The user's order, Nov 17 (night) - biggest first; as far as we get this week
+1. **Difficulty revert (ours, not mod-individual-progression - that one is only a reference: MIT, its data and approach).**
+   Patch 2.3 did most of the easing: XP needed 20-60 cut ~15-20%, quest XP 30-60 up, outdoor and dungeon-entrance elites
+   made normal, elite quests soloable, old dungeon level ranges narrowed (SFK retuned), dungeon bosses' greens made blue.
+   3.0.2: less XP 60-70. 3.1: creature armour cut globally. 3.2: riding at 20, 1.5 s mount cast. 3.3: no daze for 1-5
+   and less for 6-10, cheaper low-level spells, better low-level regen. Wrath's talents and classes: far stronger players.
+   The revert: vanilla's XP curve and quest XP (into the XP bands), elites and elite quests back, the old dungeon ranges,
+   a power penalty for the player in vanilla/TBC content (damage, healing), creature armour as before 3.1, daze and early
+   regen as they were, riding at 40/60 and the 3 s cast, old dungeon loot; the sim paced to match. Also: **where hostile
+   creatures became neutral** (find and restore). To decide with the user: which comforts stay (later flight paths, the
+   dungeon finder, heirlooms...).
+   - **Generated quests reviewed with the revert:** requests and board bounties pay XP and money by difficulty and
+     distance, matched to ordinary quests of the same level after the revert.
+   - **Wrath content to the same rules:** review Northrend; where it lacks what vanilla/TBC had (outdoor elites, elite
+     rares outside dungeons, group quests, real danger), apply the same formula - original difficulty for the first time.
+2. **Outland and Northrend in the sim.**
+3. **Full gear generation** (persistent gear for sim people; truly generated items for loot later).
+4. **Auction houses and the market sim:** prices from the game's own values (vendor price, quality, level, slot,
+   usefulness), moved by supply and demand from the sim (robbed caravans, quiet mines, farmed areas), drifting over days;
+   adventurers list what they don't want like a player (greys still to vendors), at prices by character (greedy high,
+   impatient undercut); your auctions sell over time near the market, slowly or not at all above it, expire if you don't
+   follow it; sim people buy what they need; Alliance, Horde and the neutral goblin houses are separate markets.
+   **Dungeons and raids in the sim:** parties walk to the instance portal and disappear inside, simulated boss by boss
+   (levels, gear, make-up) - loot or a wipe (deaths rarely final, as now); raid companies form off screen and roll for
+   success per boss once the raid is unlocked (raid deaths never count). Loot rolls: need/greed/pass by class, armour type,
+   upgrade or not, character; winners wear it (real items on their bodies), the rest to the AH or a vendor. Your party:
+   adventurer companions roll too, weighing what you roll - they may need against you on a clear upgrade for their class
+   (greedy and low-regard more, close companions less). **Mercenaries never roll** - all loot is yours.
+5. **Launcher / installer:** create and manage accounts on the server (and the graphics step as an option - Reforged and
+   especially LuxVelum are heavy: off, or on per part: HD models, LuxVelum, DXVK, Lexara).
+6. **New civilian types:**
+   - **Mercenaries:** hang about inns and towns, a few per town; hired for money; generated people at about the zone's
+     band with their own gear, level and class; price by level (higher help in higher zones costs more); follow you for
+     about a day, then must be hired again; no relationship (plain hired help); die for good; won't follow into other
+     zones, never into raids, help in dungeons near their level; somewhere too far above them, a zone change, a raid, or
+     the day running out - they hearth home and leave the party.
+   - **Visible jobs:** fishermen fishing (docks, lakes, rivers), herbalists gathering for the alchemists, hunters and
+     trappers after game (hides, meat), miners and prospectors, woodcutters, couriers, pilgrims and travelling traders.
+     Adventurers do the same in the open to level professions. **Spread out** (a rule for the whole sim): people pushed to
+     use every ground, fishing spot, herb patch and road - not crowding in one place, not crawling forever between places.
+7. **Double name fields (WoW Forever) in 3.3.5**, roleplay naming rules enforced as usual.
+8. **Bugs (Nov 17 night):** everyone is a retired adventurer; seated NPCs float above the seat; road signs without their posts.
+
+Also noted the same evening:
+- **Camping, part two:** the fire lasts about 10 minutes (Forever: 10 min, 5 min cooldown) and anyone can light one
+  (Cooking makes it better); camp objects by profession beside it, a limited number per fire, each an hour's buff for
+  everyone resting there (anvil: repair/armour; cauldron or mana well: mana; bandage kit: health; cooking pot: Well Fed;
+  bedroll: rested XP; tanning rack or drums; lantern...); NPCs who carry them set them down at their camps too.
+- **The text generator (decided: ours, not an AI model - within the templated-text rule):** what someone knows (memories,
+  relations, news, what they saw, weather, danger, job, ambitions) + how they feel (mood that moves with events and decays
+  to their temperament; traits colour it: neutral, happy, scared, confused, angry, grieving, bored...) -> what they want to
+  say (gossip, complaint, boast, warning, question, reply, teasing; real exchanges over several turns) -> how they say it
+  (grammar pieces, phrase banks; **race voice true to lore**: troll patter and "mon", dwarf brogue, orc bluntness, Forsaken
+  grim wit, night elf old formality, gnome rapid tech-talk, goblin deals, tauren slow earthiness, draenei devotion, plain
+  human; personality shading) -> delivery (/say, /yell, whisper by mood and distance; emotes /lol /cry /cheer /angry
+  /cower /shrug /bow /thank...; body language). Generated from the sim's own facts - never contradicts the world.
+
+### Bodies keep their spot across restarts (user, Nov 17 21:41)
+- Today the plan/step survives a restart and downtime is caught up, but bodies respawn at the town anchor: 40 in a pile.
+- Save each live body's position, facing, stand state and step every few minutes and at shutdown.
+- On start, after catch-up: same step -> exact saved spot (same chair, already seated); new step -> straight to that step's spot; travellers placed along their road by trip progress.
+- Stagger spawn-in over a few seconds.
+
 ## 1. Correctness (now)
 - **The last batch, Nov 17 (06:55), not yet seen in game:**
   - Requests in the quest log: a pool of 1000 reserved quests (95000-95999, scripts/sim_quests.sql) filled at runtime
