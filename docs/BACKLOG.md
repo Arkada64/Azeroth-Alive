@@ -30,9 +30,15 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
    continents ~485 -> 768), levels, health/damage/armour, aggro range, speed, money; quest levels and objective counts;
    vanilla's XP curve (4.08M to 60); each quest's old XP (core hook); dual spec, heirlooms and barbers gone; mounts take
    3 s again; the player's side at 0.75 in vanilla content and 0.85 in TBC content (you, pets, NPCBots). XP bands now 1.0.
-   **Left:** old dungeon loot (boss greens/blues), regen (the reference itself is unsure of its values), respec prices
-   (check 3.3.5 vs vanilla), the generated quests' XP/money by difficulty and distance, Wrath content to the same formula
-   (outdoor elites, rares, group quests), and a play test of the 0.75/0.85 power numbers.
+   **Also done:** generated quests pay XP by difficulty and distance - an ordinary quest of their level after the revert
+   (median of real quests: 420 XP at 10, 1850 at 30, 3550 at 50, 6600 at 60) times the work (kills or goods against an
+   ordinary quest's eight, a rare 1.8, a threat 3, a group bounty 1.5) and up to +60% for the way there; money stays the
+   townsfolk's own (under a quest's, as decided Nov 17). Northrend measured: its elites are already there (8.5% of outdoor
+   spawns, against 7.5% on the reverted old continents), so it gets what the revert gave the old world's ordinary
+   creatures - x1.22 damage, x1.06 armour (1891 creatures, reversible).
+   **Left:** **rares for Northrend** (28 there, against ~336 in the old world - the sim should field generated rares), old
+   dungeon loot (boss greens/blues), regen (the reference is unsure of its values), respec prices (check), and a play test
+   of the 0.75/0.85 power numbers.
    - **Generated quests reviewed with the revert:** requests and board bounties pay XP and money by difficulty and
      distance, matched to ordinary quests of the same level after the revert.
    - **Wrath content to the same rules:** review Northrend; where it lacks what vanilla/TBC had (outdoor elites, elite

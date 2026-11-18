@@ -1,7 +1,7 @@
 From a4598fcf9740952065e37f1c1f68bc85c4eab234 Mon Sep 17 00:00:00 2001
 From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
 Date: Tue, 17 Nov 2026 13:08:17 -0600
-Subject: [PATCH 28/38] Camping: campfires are camps (resting, an hour of Cozy
+Subject: [PATCH 28/39] Camping: campfires are camps (resting, an hour of Cozy
  Fire, smith and first-aid perks); the sim camps out at bedtime round real
  fires; worgen adventurers; no murloc race left in the sim
 

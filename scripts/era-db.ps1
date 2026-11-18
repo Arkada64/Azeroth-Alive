@@ -43,11 +43,12 @@ DROP TABLE IF EXISTS solo_era_quest_poi, solo_era_quest_poi_points, solo_era_tra
         $set = ($QtCols | ForEach-Object { "q.``$_`` = b.``$_``" }) -join ', '
         Sql "UPDATE quest_template q JOIN solo_era_bak_quest b ON b.ID = q.ID SET $set" acore_world
     }
+    if (Has-Table 'solo_era_bak_northrend') { Sql "UPDATE creature_template ct JOIN solo_era_bak_northrend b ON b.entry = ct.entry SET ct.DamageModifier = b.DamageModifier, ct.ArmorModifier = b.ArmorModifier" acore_world }
     if (Has-Table 'solo_era_bak_xp')      { Sql "REPLACE INTO player_xp_for_level SELECT * FROM solo_era_bak_xp" acore_world }
     if (Has-Table 'solo_era_bak_gossip')  { Sql "INSERT IGNORE INTO gossip_menu_option SELECT * FROM solo_era_bak_gossip" acore_world }
     if (Has-Table 'solo_era_bak_vendor')  { Sql "INSERT IGNORE INTO npc_vendor SELECT * FROM solo_era_bak_vendor" acore_world }
     if (Has-Table 'solo_era_bak_barber')  { Sql "INSERT IGNORE INTO gameobject SELECT * FROM solo_era_bak_barber" acore_world }
-    Sql "DROP TABLE IF EXISTS solo_era_bak_creature, solo_era_bak_quest, solo_era_bak_xp, solo_era_bak_gossip, solo_era_bak_vendor, solo_era_bak_barber, solo_era_quest_xp, solo_era_xp_curve, solo_era_fact" acore_world
+    Sql "DROP TABLE IF EXISTS solo_era_bak_creature, solo_era_bak_quest, solo_era_bak_xp, solo_era_bak_gossip, solo_era_bak_vendor, solo_era_bak_barber, solo_era_bak_northrend, solo_era_quest_xp, solo_era_xp_curve, solo_era_fact" acore_world
     Write-Host 'Era DB changes reverted (stock 3.3.5 values restored).'
     exit 0
 }
@@ -101,6 +102,17 @@ if (Test-Path $EraFacts) {
     Sql "REPLACE INTO player_xp_for_level SELECT lvl, xp FROM solo_era_xp_curve" acore_world
 }
 
+# Northrend to the same rules (Nov 17 night): the revert gave the old world's ordinary outdoor creatures x1.22 damage and
+# x1.06 armour on average (measured: vanilla facts against 3.3.5); Northrend's ordinary outdoor creatures get the same.
+# Its elites are already there (8.5% of outdoor spawns, against 7.5% on the reverted old continents); its missing rares
+# (28, against ~336 in the old world) are the sim's work, not data.
+$NrDmg = 1.22; $NrArmor = 1.06
+if (-not (Has-Table 'solo_era_bak_northrend')) {
+    Sql "CREATE TABLE solo_era_bak_northrend AS SELECT ct.entry, ct.DamageModifier, ct.ArmorModifier FROM creature_template ct WHERE ct.``rank`` = 0 AND ct.npcflag = 0 AND ct.type <> 8 AND ct.entry IN (SELECT id FROM creature WHERE map = 571) AND ct.entry NOT IN (SELECT id FROM creature WHERE map <> 571) AND ct.entry NOT IN (SELECT k FROM solo_era_fact WHERE tbl = 'creature_template')" acore_world
+    Sql "ALTER TABLE solo_era_bak_northrend ADD PRIMARY KEY (entry)" acore_world
+}
+Sql "UPDATE creature_template ct JOIN solo_era_bak_northrend b ON b.entry = ct.entry SET ct.DamageModifier = b.DamageModifier * $NrDmg, ct.ArmorModifier = b.ArmorModifier * $NrArmor" acore_world
+
 # comforts that go (the user, Nov 17 22:30 - only the later flight paths stay): dual spec, heirlooms, the barbershop
 if (-not (Has-Table 'solo_era_bak_gossip')) {
     Sql "CREATE TABLE solo_era_bak_gossip LIKE gossip_menu_option; INSERT INTO solo_era_bak_gossip SELECT * FROM gossip_menu_option WHERE OptionText LIKE '%Dual Talent%'" acore_world
@@ -112,6 +124,6 @@ Sql "DELETE v FROM npc_vendor v JOIN solo_era_bak_vendor b ON b.entry = v.entry 
 Sql "DELETE g FROM gameobject g JOIN solo_era_bak_barber b ON b.guid = g.guid" acore_world
 
 Write-Host 'Era DB applied:'
-Sql "SELECT 'era creatures', COUNT(DISTINCT k) FROM solo_era_fact WHERE tbl = 'creature_template' UNION ALL SELECT 'era quests', COUNT(DISTINCT k) FROM solo_era_fact WHERE tbl = 'quest_template' UNION ALL SELECT 'XP to 60 (vanilla 4.08M)', SUM(Experience) FROM player_xp_for_level WHERE Level < 60 UNION ALL SELECT 'quests with old XP', COUNT(*) FROM solo_era_quest_xp" acore_world
+Sql "SELECT 'era creatures', COUNT(DISTINCT k) FROM solo_era_fact WHERE tbl = 'creature_template' UNION ALL SELECT 'era quests', COUNT(DISTINCT k) FROM solo_era_fact WHERE tbl = 'quest_template' UNION ALL SELECT 'XP to 60 (vanilla 4.08M)', SUM(Experience) FROM player_xp_for_level WHERE Level < 60 UNION ALL SELECT 'quests with old XP', COUNT(*) FROM solo_era_quest_xp UNION ALL SELECT 'Northrend creatures x1.22 dmg', COUNT(*) FROM solo_era_bak_northrend" acore_world
 Sql "SELECT 'quest_poi rows', COUNT(*) FROM quest_poi UNION ALL SELECT 'backed up', COUNT(*) FROM solo_era_quest_poi" acore_world
 Sql "SELECT SpellId, ReqLevel, MoneyCost/10000 AS gold FROM trainer_spell WHERE SpellId IN (33388,33391,34090) GROUP BY SpellId, ReqLevel, MoneyCost" acore_world

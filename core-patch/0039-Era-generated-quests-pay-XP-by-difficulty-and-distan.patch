@@ -1,0 +1,237 @@
+From f184d97a4ad5ce29197e2daa0c3e8f9c53f568d0 Mon Sep 17 00:00:00 2001
+From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 23:08:31 -0600
+Subject: [PATCH 39/39] Era: generated quests pay XP by difficulty and distance
+ (an ordinary quest of their level after the revert, times the work and the
+ way there); bounties carry their effort (threat, camp, rare, group); quest XP
+ tables load at startup
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01JU37XfnHTvru3VVz2sNN7z
+---
+ src/server/game/SoloSim/solosim.cpp        |  6 ++
+ src/server/game/SoloSim/solosim.h          |  2 +
+ src/server/game/SoloSim/solosim_era.cpp    | 64 ++++++++++++++++++++++
+ src/server/game/SoloSim/solosim_era.h      |  2 +
+ src/server/game/SoloSim/solosim_quests.cpp | 32 +++++++++++
+ 5 files changed, 106 insertions(+)
+
+diff --git a/src/server/game/SoloSim/solosim.cpp b/src/server/game/SoloSim/solosim.cpp
+index 7d600a3..08a06fc 100644
+--- a/src/server/game/SoloSim/solosim.cpp
++++ b/src/server/game/SoloSim/solosim.cpp
+@@ -6110,11 +6110,13 @@ bool World::BountyQuestInfo(uint32 bountyId, uint32 guid, ErrandQuest& out)
+         {
+             out.kind = 0;                                           // an event: the sim marks it
+             if (SimAgent const* t = AgentById(b->target & ~THREAT_MARK)) out.level = t->level;
++            out.effort = 3.0f;                                      // a threat roaming the land: a group's work
+             out.title = Acore::StringFormat("Wanted: {}", name);
+             out.objective = Acore::StringFormat("Put down {}, last seen near {}, then collect at the board in {}.", name, area, town);
+         }
+         else if (b->target & CAMP_MARK)
+         {
++            out.effort = 1.2f * float(b->count) / 8.0f;            // a camp to break up
+             out.kind = ERRAND_CULL;
+             for (SimCamp const& k : _camps)
+                 if (k.id == (b->target & ~CAMP_MARK)) { out.entry = k.entry; out.level = k.level; out.x = k.x; out.y = k.y; out.creatureName = k.name; }
+@@ -6124,6 +6126,7 @@ bool World::BountyQuestInfo(uint32 bountyId, uint32 guid, ErrandQuest& out)
+         else
+         {
+             out.kind = ERRAND_OLDFOE; out.entry = b->target; if (b->targetLevel) out.level = b->targetLevel;
++            out.effort = 1.8f;                                      // a named rare
+             out.title = Acore::StringFormat("Wanted: {}", name);
+             out.objective = Acore::StringFormat("Kill {} near {}, then collect at the board in {}.", name, area, town);
+         }
+@@ -6131,10 +6134,13 @@ bool World::BountyQuestInfo(uint32 bountyId, uint32 guid, ErrandQuest& out)
+     else
+     {
+         out.kind = ERRAND_CULL; out.creatureName = s->creatureName; out.minLevel = s->minLevel; out.maxLevel = s->maxLevel;
++        out.effort = float(b->count) / 8.0f * (b->kind == BOUNTY_PACK ? 1.3f : 1.0f) * (s->elite ? 1.6f : 1.0f);
+         out.title = b->kind == BOUNTY_PACK ? Acore::StringFormat("Bounty: the {} Pack", s->creatureName) : Acore::StringFormat("Bounty: {}", s->creatureName);
+         out.objective = Acore::StringFormat("Kill {} {} near {}{}, then collect at the board in {}.", b->count, s->creatureName, area,
+             b->party > 1 ? " - bring friends" : "", town);
+     }
++    out.party = std::max<uint8>(1, b->party);
++    if (out.party > 1) out.effort *= 1.5f;                          // "bring friends"
+     out.details = Acore::StringFormat("A notice on the board in {}: {}\n\nThe town pays {} on proof.", town, out.objective, Money(b->reward));
+     return true;
+ }
+diff --git a/src/server/game/SoloSim/solosim.h b/src/server/game/SoloSim/solosim.h
+index 2e5a2f3..88cb707 100644
+--- a/src/server/game/SoloSim/solosim.h
++++ b/src/server/game/SoloSim/solosim.h
+@@ -312,6 +312,8 @@ namespace SoloSim
+             std::string title, details, objective, request, offer, creatureName; uint8 minLevel = 0, maxLevel = 0;
+             uint32 map = 0, zone = 0; float x = 0, y = 0; bool hasPlace = false;
+             uint32 giverMap = 0, giverZone = 0; float giverX = 0, giverY = 0;
++            float effort = 0.0f;        // how much work against an ordinary quest of its level (0: the quest works it out from kind and count)
++            uint8 party = 1;            // a bounty meant for a group
+         };
+         bool ErrandQuestInfo(uint32 errandId, uint32 guid, ErrandQuest& out);
+         bool ErrandBySlot(uint32 guid, uint32 slot, uint32 pool, SimErrand& out);   // the player's open request in this pool slot
+diff --git a/src/server/game/SoloSim/solosim_era.cpp b/src/server/game/SoloSim/solosim_era.cpp
+index bbdc2e6..eee1f32 100644
+--- a/src/server/game/SoloSim/solosim_era.cpp
++++ b/src/server/game/SoloSim/solosim_era.cpp
+@@ -18,8 +18,14 @@
+ #include "SpellInfo.h"
+ #include "Unit.h"
+ #include "UnitScript.h"
++#include "WorldScript.h"
+ #include <algorithm>
++#include <array>
+ #include <mutex>
++#include <shared_mutex>
++#include <vector>
++#include "ObjectMgr.h"
++#include "QuestDef.h"
+ #include <unordered_map>
+ 
+ namespace SoloEra
+@@ -40,12 +46,59 @@ namespace
+     }
+ }
+ 
++namespace
++{
++    std::shared_mutex liveLock;
++    std::unordered_map<uint32, uint32> liveXp;         // generated quests (pool ids), set when the sim writes them
++    std::once_flag ordinaryOnce;
++    std::array<uint32, 81> ordinary{};                 // level -> median full XP of ordinary solo quests
++
++    void LoadOrdinary()
++    {
++        std::call_once(questXpOnce, LoadQuestXP);
++        std::array<std::vector<uint32>, 81> by;
++        for (auto const& [id, q] : sObjectMgr->GetQuestTemplates())
++        {
++            int32 lvl = q->GetQuestLevel();
++            if (lvl < 1 || lvl > 80 || q->GetSuggestedPlayers() > 1 || q->GetQuestMethod() == 0 || q->IsDaily() || q->IsRepeatable()) continue;
++            if (q->GetType() != 0) continue;            // elite, dungeon, raid, PvP, group... - ordinary quests only
++            if (q->GetQuestId() >= 95000 && q->GetQuestId() < 97000) continue;   // our own pool
++            auto it = questXp.find(id);
++            uint32 xp = it != questXp.end() ? it->second : q->XPValue(uint8(lvl));
++            if (xp) by[lvl].push_back(xp);
++        }
++        for (uint32 l = 1; l <= 80; ++l)
++            if (!by[l].empty()) { std::ranges::nth_element(by[l], by[l].begin() + by[l].size() / 2); ordinary[l] = by[l][by[l].size() / 2]; }
++        for (uint32 l = 2; l <= 80; ++l) if (!ordinary[l]) ordinary[l] = ordinary[l - 1];          // gaps: the level below
++        for (uint32 l = 79; l >= 1; --l) if (!ordinary[l]) ordinary[l] = ordinary[l + 1];
++        LOG_INFO("server.loading", "SoloWoW era: ordinary quest XP - level 10 {}, 30 {}, 50 {}, 60 {}, 70 {}", ordinary[10], ordinary[30], ordinary[50], ordinary[60], ordinary[70]);
++    }
++}
++
+ uint32 QuestXP(uint32 questId)
+ {
++    if (questId >= 95000 && questId < 97000)
++    {
++        std::shared_lock lock(liveLock);
++        auto it = liveXp.find(questId);
++        return it == liveXp.end() ? 0 : it->second;
++    }
+     std::call_once(questXpOnce, LoadQuestXP);
+     auto it = questXp.find(questId);
+     return it == questXp.end() ? 0 : it->second;
+ }
++
++uint32 OrdinaryQuestXP(uint8 level)
++{
++    std::call_once(ordinaryOnce, LoadOrdinary);
++    return ordinary[std::clamp<uint32>(level, 1, 80)];
++}
++
++void SetQuestXP(uint32 questId, uint32 xp)
++{
++    std::unique_lock lock(liveLock);
++    liveXp[questId] = xp;
++}
+ }
+ 
+ namespace
+@@ -121,7 +174,18 @@ namespace
+     };
+ }
+ 
++namespace
++{
++    class solosim_era_world : public WorldScript
++    {
++    public:
++        solosim_era_world() : WorldScript("solosim_era_world", { WORLDHOOK_ON_STARTUP }) { }
++        void OnStartup() override { SoloEra::OrdinaryQuestXP(1); }   // load (and log) the quest XP tables now, not mid-game
++    };
++}
++
+ void AddSC_solosim_era()
+ {
+     new solosim_era_power();
++    new solosim_era_world();
+ }
+diff --git a/src/server/game/SoloSim/solosim_era.h b/src/server/game/SoloSim/solosim_era.h
+index 52bd05a..e14ee9e 100644
+--- a/src/server/game/SoloSim/solosim_era.h
++++ b/src/server/game/SoloSim/solosim_era.h
+@@ -4,5 +4,7 @@
+ namespace SoloEra
+ {
+     uint32 QuestXP(uint32 questId);     // the quest's full XP before Blizzard's boosts, 0 = not known (use the game's)
++    uint32 OrdinaryQuestXP(uint8 level);  // what an ordinary solo quest of this level pays (vanilla's, where the era data has it)
++    void SetQuestXP(uint32 questId, uint32 xp);   // a generated quest's own XP (the sim's requests and bounties)
+ }
+ #endif
+diff --git a/src/server/game/SoloSim/solosim_quests.cpp b/src/server/game/SoloSim/solosim_quests.cpp
+index bf46338..142dc1f 100644
+--- a/src/server/game/SoloSim/solosim_quests.cpp
++++ b/src/server/game/SoloSim/solosim_quests.cpp
+@@ -17,7 +17,9 @@
+ #include "QuestDef.h"
+ #include "ScriptMgr.h"
+ #include <algorithm>
++#include <algorithm>
+ #include <cmath>
++#include "solosim_era.h"
+ #include <mutex>
+ #include <unordered_map>
+ 
+@@ -56,8 +58,38 @@ public:
+                 q->SpecialFlags |= QUEST_SPECIAL_FLAGS_EXPLORATION_OR_EVENT;
+                 break;
+         }
++        q->SuggestedPlayers = in.party > 1 ? in.party : 0;
++        SoloEra::SetQuestXP(q->GetQuestId(), XPFor(in));
+         q->InitializeQueryData();
+     }
++
++    // XP by difficulty and distance (Nov 17 night): what an ordinary quest of its level pays after the revert, times the
++    // work - kills or things to gather against an ordinary quest's eight or so, a rare, a group - and the way there
++    static uint32 XPFor(SoloSim::World::ErrandQuest const& in)
++    {
++        float effort = in.effort;
++        if (effort <= 0.0f)
++            switch (in.kind)
++            {
++                case SoloSim::ERRAND_CULL:    effort = float(std::max<uint32>(1, in.count)) / 8.0f; break;
++                case SoloSim::ERRAND_STOLEN:  effort = float(std::max<uint32>(1, in.count)) / 5.0f; break;   // humanoids, and the search
++                case SoloSim::ERRAND_FETCH:   effort = 0.8f * float(std::max<uint32>(1, in.count)) / 8.0f; break;
++                case SoloSim::ERRAND_OLDFOE:  effort = 1.8f; break;
++                case SoloSim::ERRAND_ESCORT:  effort = 1.1f; break;
++                case SoloSim::ERRAND_MISSING: effort = 0.9f; break;
++                case SoloSim::ERRAND_MESSAGE: effort = 0.4f; break;
++                case SoloSim::ERRAND_CARAVAN: effort = 1.5f; break;
++                default:                      effort = 1.0f; break;
++            }
++        float travel = 1.0f;
++        if (in.hasPlace && in.map == in.giverMap)
++        {
++            float d = std::hypot(in.x - in.giverX, in.y - in.giverY);
++            travel += std::clamp((d - 300.0f) / 2000.0f, 0.0f, 0.6f);       // up to +60% for a long walk
++        }
++        float f = std::clamp(effort * travel, 0.25f, 4.0f);
++        return std::max<uint32>(1, uint32(float(SoloEra::OrdinaryQuestXP(uint8(std::clamp<uint32>(in.level, 1, 80)))) * f + 0.5f));
++    }
+ };
+ 
+ namespace SoloQuests
+-- 
+2.56.0.windows.2
+

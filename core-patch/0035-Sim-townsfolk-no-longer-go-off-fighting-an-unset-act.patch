@@ -1,7 +1,7 @@
 From 1a00e1771c726bcbfb9c528a300a663d3bcf34e3 Mon Sep 17 00:00:00 2001
 From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
 Date: Tue, 17 Nov 2026 21:52:51 -0600
-Subject: [PATCH 35/38] Sim: townsfolk no longer go off fighting (an unset
+Subject: [PATCH 35/39] Sim: townsfolk no longer go off fighting (an unset
  activity: the working-day branch swallowed the rest, and they came back as
  level-60 retired adventurers); a bad saved step is cleared on load; townsfolk
  sit at a chair's own height instead of floating on its collision
