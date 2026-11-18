@@ -75,10 +75,11 @@ def load_order():
         return (1, 1, 0)
     return [names[k] for k in sorted(names, key=rank)]
 
+IGNORE = {"patch-X.MPQ"}                                 # generated-item ids (scripts\gen-items.py): not Reforged's, not merged
 def is_ours(p): return os.path.basename(p) in OURS or os.path.basename(p) == OUT_NAME
 def is_reforged(p):
     b = os.path.basename(p)
-    return os.path.dirname(os.path.relpath(p, DATA)) == "" and len(b) == 11 and b.lower().startswith("patch-") and b[6].isalpha() and not is_ours(p)
+    return os.path.dirname(os.path.relpath(p, DATA)) == "" and len(b) == 11 and b.lower().startswith("patch-") and b[6].isalpha() and not is_ours(p) and b not in IGNORE
 
 def tmpdbc(blob, tag):
     p = os.path.join(STAGE, "..", "tmp-" + tag + ".dbc"); open(p, "wb").write(blob); return Dbc(p)

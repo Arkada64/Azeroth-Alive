@@ -71,6 +71,8 @@ if ($WoWee) {
     $wow = Start-Process "$wd\wowee.exe" -WorkingDirectory $wd -PassThru
 } else {
     Say "Opening WoW. Account: $Acct   Password: $Pass"
+    # the client's item/name cache: generated items and townsfolk re-use ids, so old entries would show stale names
+    Remove-Item (Join-Path $Client 'Cache\WDB') -Recurse -Force -ErrorAction SilentlyContinue
     $wow = Start-Process "$Client\Wow.exe" -WorkingDirectory $Client -PassThru
 }
 Say 'Keep this window open - it saves and shuts the server down when you close WoW.'

@@ -1,0 +1,901 @@
+From ba7d8c1e7fead1b7d0a11e6d79be255236dc0eaa Mon Sep 17 00:00:00 2001
+From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 02:47:55 -0600
+Subject: [PATCH 46/46] Sim: truly generated items - reserved ids filled at
+ runtime from a real item the player can use: its stat budget respent on a
+ theme of its own (never more), a look of the same kind, a name of its own
+ (themes, of-the endings, coined epics, the named foe's possessive); kept in
+ solo_gen_item, unused ids freed at start-up; from rare finds, dungeon bosses
+ and the bigger bounties; .sim genitem. Text: third pass - culprits, whispers
+ and talk to the player, closers, bounty wording (plurals, no
+ near-the-same-town)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01JU37XfnHTvru3VVz2sNN7z
+---
+ src/server/game/AI/NpcBots/botbubble.cpp      |  15 +
+ src/server/game/Globals/ObjectMgr.cpp         |   3 +-
+ src/server/game/Globals/ObjectMgr.h           |   2 +
+ src/server/game/SoloSim/solosim.cpp           |  42 ++-
+ src/server/game/SoloSim/solosim.h             |   7 +-
+ src/server/game/SoloSim/solosim_civilians.cpp |  11 +
+ src/server/game/SoloSim/solosim_commands.cpp  |  13 +
+ src/server/game/SoloSim/solosim_dungeons.cpp  |   2 +-
+ src/server/game/SoloSim/solosim_genitems.cpp  | 325 ++++++++++++++++++
+ src/server/game/SoloSim/solosim_genitems.h    |  21 ++
+ src/server/game/SoloSim/solosim_loot.cpp      |  22 +-
+ src/server/game/SoloSim/solosim_quests.cpp    |  35 ++
+ src/server/game/SoloSim/solosim_talk.cpp      |  64 +++-
+ src/server/game/World/World.cpp               |   2 +
+ 14 files changed, 542 insertions(+), 22 deletions(-)
+ create mode 100644 src/server/game/SoloSim/solosim_genitems.cpp
+ create mode 100644 src/server/game/SoloSim/solosim_genitems.h
+
+diff --git a/src/server/game/AI/NpcBots/botbubble.cpp b/src/server/game/AI/NpcBots/botbubble.cpp
+index fac4b03..f828e54 100644
+--- a/src/server/game/AI/NpcBots/botbubble.cpp
++++ b/src/server/game/AI/NpcBots/botbubble.cpp
+@@ -346,6 +346,21 @@ namespace
+                     && bot->GetStandState() != UNIT_STAND_STATE_SLEEP                      // the sleeping don't talk (Nov 17)
+                     && GetMSTimeDiffToNow(saidAt[entry]) > 60000)
+                     nearBodies.emplace_back(bot, agent);
++            // now and then one of them, close by, has a word for the player (Nov 18): a whisper if it's personal
++            static uint32 spokeToPlayerAt = 0;
++            if (!nearBodies.empty() && urand(1, 100) <= 25 && GetMSTimeDiffToNow(spokeToPlayerAt) > 120000)
++                for (auto const& [nb, na] : nearBodies)
++                    if (nb->GetExactDist(player) < 10.0f && sSoloSim->AgentIsHorde(na) == (player->GetTeamId() == TEAM_HORDE))
++                    {
++                        SoloSim::World::TalkLine line = sSoloSim->TalkToPlayer(na, player->GetGUID().GetCounter(), player->GetName());
++                        if (line.text.empty()) break;
++                        nb->SetFacingToObject(player);
++                        nb->HandleEmoteCommand(Emote(line.emote ? line.emote : EMOTE_ONESHOT_TALK));
++                        if (line.whisper) nb->Whisper(line.text, LANG_UNIVERSAL, player); else nb->Say(line.text, LANG_UNIVERSAL, player);
++                        saidAt[nb->GetEntry()] = getMSTime();
++                        spokeToPlayerAt = getMSTime();
++                        break;
++                    }
+             if (!nearBodies.empty())
+             {
+                 auto [bot, agent] = nearBodies[urand(0, uint32(nearBodies.size()) - 1)];
+diff --git a/src/server/game/Globals/ObjectMgr.cpp b/src/server/game/Globals/ObjectMgr.cpp
+index e7391f7..fb46696 100644
+--- a/src/server/game/Globals/ObjectMgr.cpp
++++ b/src/server/game/Globals/ObjectMgr.cpp
+@@ -16,6 +16,7 @@
+  */
+ 
+ #include "ObjectMgr.h"
++#include "solosim_genitems.h"
+ #include "solosim_civilians.h" // SoloWoW
+ #include "solosim_boards.h" // SoloWoW
+ #include "AchievementMgr.h"
+@@ -3909,7 +3910,7 @@ void ObjectMgr::LoadItemTemplates()
+         if (max)
+         {
+             _itemTemplateStoreFast.clear();
+-            _itemTemplateStoreFast.resize(max + 1, nullptr);
++            _itemTemplateStoreFast.resize(std::max<uint32>(max + 1, SoloGen::GEN_ID_END), nullptr); // SoloWoW: room for generated items
+             for (ItemTemplateContainer::iterator itr = _itemTemplateStore.begin(); itr != _itemTemplateStore.end(); ++itr)
+                 _itemTemplateStoreFast[itr->first] = &(itr->second);
+         }
+diff --git a/src/server/game/Globals/ObjectMgr.h b/src/server/game/Globals/ObjectMgr.h
+index 1dccf6d..2e46e76 100644
+--- a/src/server/game/Globals/ObjectMgr.h
++++ b/src/server/game/Globals/ObjectMgr.h
+@@ -800,6 +800,8 @@ public:
+     ItemTemplate const* GetItemTemplate(uint32 entry);
+     [[nodiscard]] ItemTemplateContainer const* GetItemTemplateStore() const { return &_itemTemplateStore; }
+     [[nodiscard]] std::vector<ItemTemplate*> const* GetItemTemplateStoreFast() const { return &_itemTemplateStoreFast; }
++    // SoloWoW: a generated item (SoloSim/solosim_genitems.cpp) - its template lives there, only the id's slot is set here
++    void SetGeneratedItemTemplate(uint32 entry, ItemTemplate* t) { if (entry < _itemTemplateStoreFast.size()) _itemTemplateStoreFast[entry] = t; }
+ 
+     uint32 GetModelForTotem(SummonSlot totemSlot, Races race) const;
+ 
+diff --git a/src/server/game/SoloSim/solosim.cpp b/src/server/game/SoloSim/solosim.cpp
+index 8788aaf..aa32515 100644
+--- a/src/server/game/SoloSim/solosim.cpp
++++ b/src/server/game/SoloSim/solosim.cpp
+@@ -1027,6 +1027,22 @@ static std::string AreaOf(std::string const& name)
+     return p == std::string::npos ? name : name.substr(p + 6);
+ }
+ 
++// " near the Broken Front" - or nothing when that is the town's own name ("Forlorn Woods ... near Forlorn Woods")
++std::string World::NearText(uint32 hub, uint32 site) const
++{
++    std::string area = AreaOf(SiteName(site)), town = SiteName(hub);
++    if (area.empty() || area == town || AreaOf(town) == area) return "";
++    return " near " + area;
++}
++
++// what a bounty was for: a named rare, or the creatures in plural ("Tarantulas")
++std::string World::BountyPrey(SimBounty const& b) const
++{
++    if (b.kind == BOUNTY_RARE && b.target) return RareName(b.target);
++    SimSite const* s = SiteById(b.site);
++    return s && !s->creatureName.empty() ? Plural(s->creatureName) : SiteName(b.site);
++}
++
+ static std::string PlaceOnly(std::string const& name)
+ {
+     size_t p = name.find(" near ");
+@@ -1843,8 +1859,8 @@ void World::PostBounties()
+             uint32 lvl = (s->minLevel + s->maxLevel) / 2;
+             b.kind = BOUNTY_ELITE; b.site = s->id; b.count = r.Range(5, 8); b.party = 3;
+             b.reward = lvl * lvl * 30 + 500;
+-            text = Acore::StringFormat("{} wants the {} dealt with: {} of them ({}). They are dangerous - bring friends.",
+-                SiteName(h.id), SiteName(s->id), b.count, Money(b.reward));
++            text = Acore::StringFormat("{} wants the {}{} dealt with: {} of them ({}). They are dangerous - bring friends.",
++                SiteName(h.id), Plural(s->creatureName), NearText(h.id, s->id), b.count, Money(b.reward));
+         }
+         else if (roll > 55 && !packs.empty())
+         {
+@@ -1852,8 +1868,8 @@ void World::PostBounties()
+             uint32 lvl = (s->minLevel + s->maxLevel) / 2;
+             b.kind = BOUNTY_PACK; b.site = s->id; b.count = r.Range(25, 40); b.party = 2;
+             b.reward = lvl * lvl * 30 + 500;
+-            text = Acore::StringFormat("{} is paying to break up the {}: {} of them ({}). Not a job for one.",
+-                SiteName(h.id), SiteName(s->id), b.count, Money(b.reward));
++            text = Acore::StringFormat("{} is paying to break up the {}{}: {} of them ({}). Not a job for one.",
++                SiteName(h.id), Plural(s->creatureName), NearText(h.id, s->id), b.count, Money(b.reward));
+         }
+         else
+         {
+@@ -1862,7 +1878,7 @@ void World::PostBounties()
+             uint32 lvl = (s->minLevel + s->maxLevel) / 2;
+             b.kind = BOUNTY_THIN; b.site = s->id; b.count = r.Range(10, 20); b.party = 1;
+             b.reward = lvl * lvl * 30 + 500;
+-            text = Acore::StringFormat("{} posted a bounty on the {} near {}: {} of them ({}).", SiteName(h.id), Plural(s->creatureName), AreaOf(SiteName(s->id)), b.count, Money(b.reward));
++            text = Acore::StringFormat("{} posted a bounty on the {}{}: {} of them ({}).", SiteName(h.id), Plural(s->creatureName), NearText(h.id, s->id), b.count, Money(b.reward));
+         }
+         _bounties.push_back(b);
+         Log(EventType::BountyPosted, Nobody(), h.id, text, true);
+@@ -2017,7 +2033,7 @@ void World::ClaimBounty(SimAgent& a)
+         if (b.player)                                        // a player was after it too: they hear it's gone
+             _mail.push_back({ b.player, b.hub, "Too late: " + (b.kind == BOUNTY_RARE ? RareName(b.target) : SiteName(b.site)),
+                 Acore::StringFormat("Sorry - {} came back with the job done before you did, and the board paid them.\n\nThere will be other work.", a.FullName()), 0 });
+-        Log(EventType::BountyDone, a, b.hub, Acore::StringFormat("{} collected the {} bounty for the {} ({}).", Who(a), SiteName(b.hub), SiteName(b.site), Money(b.reward)), true);
++        Log(EventType::BountyDone, a, b.hub, Acore::StringFormat("{} collected the {} bounty for the {}{} ({}).", Who(a), SiteName(b.hub), BountyPrey(b), NearText(b.hub, b.site), Money(b.reward)), true);
+         a.bounty = 0; a.bountyProgress = 0;
+         return;
+     }
+@@ -2269,7 +2285,9 @@ bool World::InParty(SimAgent const& o, uint32 party) const
+ 
+ std::string World::Culprit(SimSite const& site) const
+ {
+-    return _culprit.empty() ? SiteName(site.id) : _culprit;
++    if (!_culprit.empty()) return _culprit;
++    if (site.type == SiteType::Hub) return "trouble on the road near " + AreaOf(SiteName(site.id));   // never "beaten by Goldshire" (Nov 18)
++    return SiteName(site.id);
+ }
+ 
+ // A body was killed in the game world, in front of the player: in the sim that is a defeat like any other.
+@@ -4401,7 +4419,7 @@ std::string World::PlayerBoard(uint32 map, float x, float y, uint32 guid)
+             if (b.done || b.hub != hub) continue;
+             ++i;
+             std::string what = b.kind == BOUNTY_RARE ? Acore::StringFormat("{} (level {}), seen near {}", RareName(b.target), b.targetLevel, AreaOf(SiteName(b.site)))
+-                                                     : Acore::StringFormat("{} of the {}", b.count, SiteName(b.site));
++                                                     : Acore::StringFormat("{} {}{}", b.count, BountyPrey(b), NearText(b.hub, b.site));
+             std::string others;
+             if (b.taker)
+                 if (SimAgent const* t = const_cast<World*>(this)->AgentById(b.taker))
+@@ -4439,7 +4457,7 @@ std::string World::PlayerTake(uint32 map, float x, float y, uint32 guid, std::st
+         Log(EventType::PlayerBounty, Nobody(), hub, Acore::StringFormat("{} put their name down for the {} bounty on {}.", name, SiteName(hub),
+             b.kind == BOUNTY_RARE ? RareName(b.target) : SiteName(b.site)), true);
+         std::string out = Acore::StringFormat("You took the bounty: {}. {} days to do it. Come back here to collect.",
+-            b.kind == BOUNTY_RARE ? Acore::StringFormat("{} near {}", RareName(b.target), AreaOf(SiteName(b.site))) : Acore::StringFormat("{} of the {}", b.count, SiteName(b.site)),
++            b.kind == BOUNTY_RARE ? Acore::StringFormat("{} near {}", RareName(b.target), AreaOf(SiteName(b.site))) : Acore::StringFormat("{} {}{}", b.count, BountyPrey(b), NearText(b.hub, b.site)),
+             b.expires > _clock ? (b.expires - _clock + MIN_PER_DAY - 1) / MIN_PER_DAY : 0);
+         if (b.party > 1) out += Acore::StringFormat(" The board says to bring {} - people in town can be hired.", b.party);
+         if (b.taker)
+@@ -4580,7 +4598,7 @@ std::vector<std::pair<std::string, uint32>> World::PlayerBoardMenu(uint32 map, f
+         if (b.done || b.hub != hubOut) continue;
+         ++i;
+         std::string what = b.kind == BOUNTY_RARE ? Acore::StringFormat("{} (level {}), near {}", RareName(b.target), b.targetLevel, AreaOf(SiteName(b.site)))
+-                                                 : Acore::StringFormat("{} of the {}", b.count, SiteName(b.site));
++                                                 : Acore::StringFormat("{} {}{}", b.count, BountyPrey(b), NearText(b.hub, b.site));
+         std::string text = Acore::StringFormat("{}{} - {}{}", kinds[(b.target & THREAT_MARK) ? 4 : (b.target & CAMP_MARK) ? 1 : std::min<uint8>(b.kind, 3)], what, Money(b.reward), b.party > 1 ? Acore::StringFormat(", bring {}", b.party) : std::string());
+         if (b.player == guid) text = Acore::StringFormat("Yours ({}/{}): {}", b.playerProgress, b.count, text);
+         else if (SimAgent const* t = const_cast<World*>(this)->AgentById(b.taker)) text += Acore::StringFormat(" - {} is after it", t->FullName());
+@@ -5862,7 +5880,7 @@ std::string World::Rumor(uint32 agentId)
+     std::string const& news = it->second[(a->id + _clock / 30) % it->second.size()];
+     static char const* const lead[] = { "Did you hear? ", "They were saying at the inn: ", "Word is: ", "You'll not believe this. ",
+         "Heard it from the innkeeper: ", "Don't spread it about, but ", "Old news by now, maybe - ", "Everyone's talking about it: " };
+-    return lead[(a->id + _clock / 45) % 8] + news;
++    return lead[(a->id + _clock / 45) % 8] + SpokenText(news);   // without the chronicle's brackets (Nov 18)
+ }
+ 
+ std::vector<SimSite> World::InnTowns(uint32 map) const
+@@ -5884,7 +5902,7 @@ std::string World::Board() const
+         if (b.done) continue;
+         ++shown;
+         std::string what = b.kind == BOUNTY_RARE ? ((b.target & (THREAT_MARK | CAMP_MARK)) ? Acore::StringFormat("{} near {}", RareName(b.target), AreaOf(SiteName(b.site)))
+-        : Acore::StringFormat("one rare near {}", AreaOf(SiteName(b.site)))) : Acore::StringFormat("{} of the {}", b.count, SiteName(b.site));
++        : Acore::StringFormat("one rare near {}", AreaOf(SiteName(b.site)))) : Acore::StringFormat("{} {}{}", b.count, BountyPrey(b), NearText(b.hub, b.site));
+         std::string who = "nobody has taken it";
+         if (b.taker)
+             for (auto const& [id, a] : _agents)
+diff --git a/src/server/game/SoloSim/solosim.h b/src/server/game/SoloSim/solosim.h
+index 3878092..23c3f47 100644
+--- a/src/server/game/SoloSim/solosim.h
++++ b/src/server/game/SoloSim/solosim.h
+@@ -52,6 +52,7 @@ namespace SoloSim
+     std::string PluralText(std::string const& name);
+     std::string RaceText(uint8 race);
+     std::string ClassText(uint8 cls);
++    std::string SpokenText(std::string const& s);   // the chronicle's words, for saying out loud (solosim_talk.cpp)
+ 
+     // ---------------------------------------------------------------- sites
+     enum class SiteType : uint8 { Hub = 1, Hunt = 2 };
+@@ -380,13 +381,15 @@ namespace SoloSim
+         // and by how they get on, or about their own life - the hunt, wounds, a bounty, an ambition, a grudge (Nov 17)
+         std::string AdventurerChatter(uint32 agentId, uint32 otherAgentId);
+         // the text generator (Nov 18; solosim_talk.cpp): what someone would say now, and an answer to it
+-        struct TalkLine { std::string text; uint32 emote = 0; bool yell = false; uint8 act = 0; uint32 topic = 0; uint8 mood = 0; uint8 tone = 0; };
++        struct TalkLine { std::string text; uint32 emote = 0; bool yell = false; bool whisper = false; uint8 act = 0; uint32 topic = 0; uint8 mood = 0; uint8 tone = 0; };
+         struct TalkTurn { bool second = false; TalkLine line; };                 // second: the listener speaks
+         std::vector<TalkTurn> Conversation(uint32 a, uint32 b);                  // up to four turns: say, answer, follow-up, close
++        TalkLine TalkToPlayer(uint32 agentId, uint32 guid, std::string const& name);   // a word to the player near them (whisper if personal)
+         TalkLine TalkFollow(uint32 speakerId, uint32 replierId, TalkLine const& said, TalkLine const& back);   // (lock held)
+         TalkLine TalkClose(uint32 replierId, uint32 speakerId, TalkLine const& follow);                       // (lock held)
+         TalkLine Talk(uint32 speakerId, uint32 listenerId);                       // empty text: nothing of their own to say
+         TalkLine TalkReply(uint32 replierId, uint32 speakerId, TalkLine const& said);
++        std::string RareNameOf(uint32 entry) const { return RareName(entry); }   // for the bounty rewards (solosim_quests.cpp)
+         std::string TalkSample(uint32 n);                                          // GM: exchanges it would make now
+         std::string ReachedPlace(uint32 guid, uint32 map, float x, float y);
+         void HelpedBy(uint32 agentId, uint32 guid, std::string const& name);
+@@ -558,6 +561,8 @@ namespace SoloSim
+         void Log(EventType t, SimAgent const& a, uint32 site, std::string text, bool notable, uint32 target = 0, int32 n1 = 0, int32 n2 = 0);
+         std::string Who(SimAgent const& a) const;
+         std::string SiteName(uint32 id) const;
++        std::string NearText(uint32 hub, uint32 site) const;
++        std::string BountyPrey(SimBounty const& b) const;
+ 
+         uint64 _seed = 0x5010C0DEull;
+         SimTime _clock = 6 * 60;
+diff --git a/src/server/game/SoloSim/solosim_civilians.cpp b/src/server/game/SoloSim/solosim_civilians.cpp
+index 7603414..7f99366 100644
+--- a/src/server/game/SoloSim/solosim_civilians.cpp
++++ b/src/server/game/SoloSim/solosim_civilians.cpp
+@@ -459,6 +459,17 @@ namespace
+             // what's on their mind, in their own voice, and an answer if it's one of their own they're talking to (the text
+             // generator, solosim_talk.cpp; Nov 18) - else the small talk of their work below
+             uint32 npcAgent = npc ? AgentOf(npc) : 0;
++            if (Player* p = me->SelectNearestPlayer(8.0f); p && urand(1, 100) <= 20 && sSoloSim->AgentIsHorde(agent) == (p->GetTeamId() == TEAM_HORDE))
++            {
++                SoloSim::World::TalkLine line = sSoloSim->TalkToPlayer(agent, p->GetGUID().GetCounter(), p->GetName());
++                if (!line.text.empty())
++                {
++                    me->SetFacingToObject(p);
++                    me->HandleEmoteCommand(Emote(line.emote ? line.emote : EMOTE_ONESHOT_TALK));
++                    if (line.whisper) me->Whisper(line.text, LANG_UNIVERSAL, p); else me->Say(line.text, LANG_UNIVERSAL, p);
++                    return;
++                }
++            }
+             if (urand(1, 100) <= 65)
+             {
+                 std::vector<SoloSim::World::TalkTurn> turns = sSoloSim->Conversation(agent, npcAgent);
+diff --git a/src/server/game/SoloSim/solosim_commands.cpp b/src/server/game/SoloSim/solosim_commands.cpp
+index 0633494..c6913f3 100644
+--- a/src/server/game/SoloSim/solosim_commands.cpp
++++ b/src/server/game/SoloSim/solosim_commands.cpp
+@@ -3,6 +3,8 @@
+ //   .sim status       population summary
+ //   .sim reset        wipe sim data in this save; the next run builds a new world
+ #include "solosim.h"
++#include "solosim_genitems.h"
++#include "ItemTemplate.h"
+ #include "solosim_boards.h"
+ #include "solosim_civilians.h"
+ #include "solosim_camps.h"
+@@ -43,6 +45,7 @@ public:
+             { "caravan", HandleCaravan, rbac::RBAC_PERM_COMMAND_NPCBOT_DUMP_WRITE, Console::No },
+             { "hunters", HandleHunters, rbac::RBAC_PERM_COMMAND_NPCBOT_DUMP_WRITE, Console::No },
+             { "talk",   HandleTalk,   rbac::RBAC_PERM_COMMAND_NPCBOT_DUMP_WRITE, Console::Yes },
++            { "genitem", HandleGenItem, rbac::RBAC_PERM_COMMAND_NPCBOT_DUMP_WRITE, Console::Yes },
+         };
+         static ChatCommandTable root =
+         {
+@@ -67,6 +70,16 @@ public:
+         return true;
+     }
+ 
++    // .sim genitem <class 1-11> <level> <quality 2-4> [n] [source]: sample generated items (they are kept only if someone holds one)
++    static bool HandleGenItem(ChatHandler* handler, uint32 cls, uint32 level, uint32 quality, Optional<uint32> n, Tail source)
++    {
++        if (!SoloGen::Ready()) { handler->SendSysMessage("Generated items are off (no reserved ids in Item.dbc)."); return true; }
++        for (uint32 i = 0; i < std::clamp<uint32>(n.value_or(5), 1, 20); ++i)
++            if (ItemTemplate const* t = SoloGen::Make(nullptr, uint8(std::clamp<uint32>(level, 1, 80)), std::clamp<uint32>(quality, 2, 4), std::string(source), std::clamp<uint32>(cls, 1, 11)))
++                handler->SendSysMessage(SoloGen::Describe(t));
++        return true;
++    }
++
+     static bool HandleHours(ChatHandler* handler, uint32 hours)
+     {
+         if (hours == 0 || hours > 240) { handler->SendSysMessage("Usage: .sim hours <1-240>"); return true; }
+diff --git a/src/server/game/SoloSim/solosim_dungeons.cpp b/src/server/game/SoloSim/solosim_dungeons.cpp
+index 8ccb4ba..6fd10d6 100644
+--- a/src/server/game/SoloSim/solosim_dungeons.cpp
++++ b/src/server/game/SoloSim/solosim_dungeons.cpp
+@@ -252,7 +252,7 @@ void World::ResolveRun(SimRun& run)
+             {
+                 m->wounds = uint8(std::min<uint32>(100, m->wounds + 45));
+                 if (!d.raid && r.Chance(0.15f))
+-                    if (SimSite const* s = SiteById(m->site)) { float keep = _deathScale; _deathScale = 0.15f; Defeat(*m, *s); _deathScale = keep; }
++                    if (SimSite const* s = SiteById(m->site)) { float keep = _deathScale; _deathScale = 0.15f; _culprit = b.name + " in " + d.name; Defeat(*m, *s); _culprit.clear(); _deathScale = keep; }
+             }
+             notes.push_back(Acore::StringFormat("{} beat them back", b.name));
+             stoppedBy = b.name;
+diff --git a/src/server/game/SoloSim/solosim_genitems.cpp b/src/server/game/SoloSim/solosim_genitems.cpp
+new file mode 100644
+index 0000000..70f9f64
+--- /dev/null
++++ b/src/server/game/SoloSim/solosim_genitems.cpp
+@@ -0,0 +1,325 @@
++// SoloWoW: truly generated items (Nov 18) - the user's pick (DESIGN.md "Loot", option B: new named items with reserved
++// ids, the stat budget of real items of the same slot, quality and item level - never more).
++//
++// The client knows the reserved ids (950000 up) from scripts\gen-items.py: three for each look the game's weapons and
++// armour have. A generated item:
++//   - starts from a real item the player can use, of the right slot, level and quality (its armour, damage, speed,
++//     durability, price stay);
++//   - takes that item's own stat budget (the game's costs: stamina at two thirds, attack power at half...) and spends
++//     it again on a theme of its own - never more than the real item had;
++//   - wears a free reserved id of the same look;
++//   - gets a name of its own: an adjective of its theme and the item's noun ("Savage Claymore"), "of the..." for blues,
++//     a coined name for epics ("Grimfang, Claymore of Ruin"), and the name of the named foe it came from now and then
++//     ("Hexir's Runed Staff"), with "Taken from ..." under it.
++// Generated items are kept (world DB solo_gen_item) and loaded before anything that holds items; at start-up an id no
++// copy of which is left anywhere (bags, bank, mail, auctions) is freed for re-use - the launcher clears the client's
++// item cache, so a re-used id never shows old stats.
++#include "solosim_genitems.h"
++#include "DBCStores.h"
++#include "DatabaseEnv.h"
++#include "Field.h"
++#include "Log.h"
++#include "ObjectMgr.h"
++#include "Player.h"
++#include "QueryResult.h"
++#include "Random.h"
++#include <cstdio>
++#include <deque>
++#include <map>
++#include <mutex>
++#include <set>
++#include <sstream>
++
++namespace SoloGen
++{
++namespace
++{
++    constexpr uint32 GEN_BASE = 950000, GEN_END = 1010000;
++    std::recursive_mutex lock;
++    std::deque<ItemTemplate> made;                               // stable addresses: the fast store points into it
++    std::set<uint32> inUse;                                      // ids that hold a generated item
++    std::map<uint64, std::vector<uint32>> poolByLook;            // (class, subclass, slot, display) -> reserved ids
++    std::map<uint64, std::vector<uint32>> poolByKind;            // (class, subclass, slot) -> reserved ids
++    std::map<uint32, std::vector<ItemTemplate const*>> bases;    // quality << 8 | required level -> real items
++    bool ready = false, basesBuilt = false;
++
++    uint64 LookKey(uint32 cls, uint32 sub, uint32 inv, uint32 disp) { return (uint64(cls) << 48) | (uint64(sub) << 40) | (uint64(inv) << 32) | disp; }
++    uint64 KindKey(uint32 cls, uint32 sub, uint32 inv) { return (uint64(cls) << 16) | (uint64(sub) << 8) | inv; }
++
++    // what a point of each stat costs in an item's budget (the game's own weights)
++    float Cost(uint32 type)
++    {
++        switch (type)
++        {
++            case ITEM_MOD_STAMINA: return 0.667f;
++            case ITEM_MOD_ATTACK_POWER: case ITEM_MOD_RANGED_ATTACK_POWER: case ITEM_MOD_BLOCK_VALUE: return 0.5f;
++            case ITEM_MOD_SPELL_POWER: case ITEM_MOD_SPELL_DAMAGE_DONE: return 0.86f;
++            case ITEM_MOD_SPELL_HEALING_DONE: return 0.45f;
++            case ITEM_MOD_MANA_REGENERATION: case ITEM_MOD_HEALTH_REGEN: return 2.0f;
++            case ITEM_MOD_MANA: case ITEM_MOD_HEALTH: return 0.1f;
++            default: return 1.0f;
++        }
++    }
++    bool IsRating(uint32 type) { return (type >= 12 && type <= 37) || type == ITEM_MOD_ARMOR_PENETRATION_RATING || type == ITEM_MOD_SPELL_PENETRATION; }
++
++    void BuildPool()
++    {
++        for (uint32 id = GEN_BASE; id < GEN_END; ++id)
++            if (ItemEntry const* e = sItemStore.LookupEntry(id))
++            {
++                poolByLook[LookKey(e->ClassID, e->SubclassID, e->InventoryType, e->DisplayInfoID)].push_back(id);
++                poolByKind[KindKey(e->ClassID, e->SubclassID, e->InventoryType)].push_back(id);
++            }
++    }
++
++    void BuildBases()
++    {
++        basesBuilt = true;
++        for (auto const& [id, t] : *sObjectMgr->GetItemTemplateStore())
++        {
++            if (id >= GEN_BASE || (t.Class != ITEM_CLASS_ARMOR && t.Class != ITEM_CLASS_WEAPON)) continue;
++            if (t.Quality < ITEM_QUALITY_UNCOMMON || t.Quality > ITEM_QUALITY_EPIC || !t.StatsCount || !t.RequiredLevel || !t.DisplayInfoID) continue;
++            if (t.StartQuest || t.Bonding == BIND_QUEST_ITEM || t.HasFlag(ITEM_FLAG_IS_BOUND_TO_ACCOUNT) || t.ItemLimitCategory || t.HolidayId) continue;
++            if (t.InventoryType == INVTYPE_BODY || t.InventoryType == INVTYPE_TABARD || t.InventoryType == INVTYPE_RELIC) continue;
++            if (t.Name1.find("Test") != std::string::npos || t.Name1.find("Monster") != std::string::npos || t.Name1.find("Deprecated") != std::string::npos) continue;
++            bases[(t.Quality << 8) | std::min<uint32>(t.RequiredLevel, 80)].push_back(&t);
++        }
++    }
++
++    std::string Noun(std::string const& name)
++    {
++        std::string n = name.substr(0, name.find(" of "));
++        size_t sp = n.find_last_of(' ');
++        return sp == std::string::npos ? n : n.substr(sp + 1);
++    }
++
++    // for the GM sample command (no player): the class may use it, and its best armour type
++    bool TestFits(ItemTemplate const* t, uint32 cls)
++    {
++        if (!(t->AllowableClass & (1u << (cls - 1)))) return false;
++        if (t->Class != ITEM_CLASS_ARMOR || t->InventoryType == INVTYPE_CLOAK || t->SubClass == ITEM_SUBCLASS_ARMOR_MISC) return true;
++        uint32 best = cls == CLASS_MAGE || cls == CLASS_PRIEST || cls == CLASS_WARLOCK ? ITEM_SUBCLASS_ARMOR_CLOTH
++            : cls == CLASS_ROGUE || cls == CLASS_DRUID ? ITEM_SUBCLASS_ARMOR_LEATHER : cls == CLASS_HUNTER || cls == CLASS_SHAMAN ? ITEM_SUBCLASS_ARMOR_MAIL : ITEM_SUBCLASS_ARMOR_PLATE;
++        if (t->SubClass == ITEM_SUBCLASS_ARMOR_SHIELD) return cls == CLASS_WARRIOR || cls == CLASS_PALADIN || cls == CLASS_SHAMAN;
++        return t->SubClass == best;
++    }
++
++    template <typename T> T const& Any(std::vector<T> const& v) { return v[urand(0, uint32(v.size()) - 1)]; }
++
++    std::string Name(ItemTemplate const& base, uint32 theme, uint32 quality, std::string const& source)
++    {
++        static std::map<uint32, std::vector<std::string>> const adj = {
++            { ITEM_MOD_STRENGTH,  { "Brutal", "Ironclad", "Savage", "Warbound", "Crushing", "Battle-Worn", "Bloodied", "Unyielding" } },
++            { ITEM_MOD_AGILITY,   { "Swift", "Shadowed", "Feral", "Nimble", "Stalker's", "Keen", "Wolfhide", "Silent" } },
++            { ITEM_MOD_INTELLECT, { "Arcane", "Runed", "Mystic", "Starlit", "Sorcerous", "Ember-Touched", "Eldritch", "Whispering" } },
++            { ITEM_MOD_SPIRIT,    { "Serene", "Blessed", "Hallowed", "Tranquil", "Pilgrim's", "Radiant", "Dawnlit" } },
++            { ITEM_MOD_STAMINA,   { "Sturdy", "Stalwart", "Enduring", "Hardened", "Steadfast", "Weathered" } } };
++        static std::vector<std::string> const ofThe = { "the Fallen Watch", "the Wolf King", "the Deep Roads", "the Last Light", "the Broken Crown",
++            "the Silent Grove", "the Burning Sky", "the Hollow Moon", "the Iron Tide", "the Red Wastes", "the Old Kings", "the Lost Legion",
++            "the Ashen Vale", "the First Frost", "the Long Night", "the Drowned Coast" };
++        static std::vector<std::string> const ofWord = { "Ruin", "Thorns", "Dusk", "Embers", "Sorrow", "Valor", "the Tempest", "Whispers", "Vengeance", "Echoes" };
++        static std::vector<std::string> const coinA = { "Dusk", "Grim", "Storm", "Night", "Blood", "Frost", "Ember", "Doom", "Soul", "Thunder", "Ash", "Shadow", "Iron", "Sun", "Star", "Wraith" };
++        static std::vector<std::string> const coinB = { "rend", "fang", "caller", "bane", "reaver", "song", "ward", "bringer", "fall", "edge", "heart", "maw", "whisper", "forge" };
++        std::string noun = Noun(base.Name1);
++        auto a = adj.find(theme);
++        std::string adjective = a != adj.end() ? Any(a->second) : Any(adj.at(ITEM_MOD_STAMINA));
++        std::string ending = urand(0, 1) ? Any(ofThe) : Any(ofWord);
++        std::string owner;
++        if (!source.empty())
++        {
++            owner = source.rfind("The ", 0) == 0 ? source : source.substr(0, source.find(' '));   // "The Rake's", "Hexir's"
++            if (!owner.empty() && owner.back() == 's') owner += "'"; else owner += "'s";
++        }
++        if (quality >= ITEM_QUALITY_EPIC)
++        {
++            std::string coined = Any(coinA) + Any(coinB);
++            return !owner.empty() && urand(0, 2) == 0 ? owner + " " + coined : coined + ", " + noun + " of " + ending;
++        }
++        if (!owner.empty() && urand(0, 1)) return owner + " " + adjective + " " + noun;
++        if (quality == ITEM_QUALITY_RARE) return adjective + " " + noun + " of " + ending;
++        return adjective + " " + noun;
++    }
++
++    // the real item's budget, spent again on a theme of its own
++    uint32 Restat(ItemTemplate& t, ItemTemplate const& base)
++    {
++        float budget = 0; bool ratings = false;
++        std::map<uint32, float> by;
++        for (uint32 i = 0; i < base.StatsCount && i < MAX_ITEM_PROTO_STATS; ++i)
++        {
++            uint32 type = base.ItemStat[i].ItemStatType; int32 v = base.ItemStat[i].ItemStatValue;
++            if (v <= 0) continue;
++            budget += float(v) * Cost(type);
++            by[type] += float(v) * Cost(type);
++            ratings |= IsRating(type);
++        }
++        if (budget <= 0) return 0;
++        uint32 theme = ITEM_MOD_STAMINA; float best = 0;
++        for (uint32 p : { ITEM_MOD_STRENGTH, ITEM_MOD_AGILITY, ITEM_MOD_INTELLECT, ITEM_MOD_SPIRIT })
++            if (by[p] > best) { best = by[p]; theme = p; }
++        if (theme == ITEM_MOD_STAMINA)                                // a stamina-only piece: by what wears it
++            theme = base.SubClass == ITEM_SUBCLASS_ARMOR_CLOTH ? ITEM_MOD_INTELLECT : base.SubClass == ITEM_SUBCLASS_ARMOR_PLATE ? ITEM_MOD_STRENGTH : ITEM_MOD_AGILITY;
++        bool plate = base.Class == ITEM_CLASS_ARMOR && base.SubClass == ITEM_SUBCLASS_ARMOR_PLATE;
++        std::vector<uint32> second, third;
++        switch (theme)
++        {
++            case ITEM_MOD_STRENGTH:  second = { ITEM_MOD_STAMINA, ITEM_MOD_STAMINA, ITEM_MOD_AGILITY };
++                                     third = ratings ? std::vector<uint32>{ ITEM_MOD_CRIT_RATING, ITEM_MOD_HIT_RATING, uint32(plate ? ITEM_MOD_DEFENSE_SKILL_RATING : ITEM_MOD_HASTE_RATING), uint32(plate ? ITEM_MOD_PARRY_RATING : ITEM_MOD_ATTACK_POWER) } : std::vector<uint32>{ ITEM_MOD_AGILITY, ITEM_MOD_SPIRIT }; break;
++            case ITEM_MOD_AGILITY:   second = { ITEM_MOD_STAMINA, ITEM_MOD_STAMINA, ITEM_MOD_STRENGTH };
++                                     third = ratings ? std::vector<uint32>{ ITEM_MOD_CRIT_RATING, ITEM_MOD_HIT_RATING, ITEM_MOD_HASTE_RATING, ITEM_MOD_ATTACK_POWER } : std::vector<uint32>{ ITEM_MOD_STRENGTH, ITEM_MOD_ATTACK_POWER }; break;
++            case ITEM_MOD_INTELLECT: second = { ITEM_MOD_STAMINA, ITEM_MOD_SPIRIT };
++                                     third = ratings ? std::vector<uint32>{ ITEM_MOD_SPELL_POWER, ITEM_MOD_CRIT_RATING, ITEM_MOD_HASTE_RATING, ITEM_MOD_MANA_REGENERATION } : std::vector<uint32>{ ITEM_MOD_SPIRIT, ITEM_MOD_SPELL_POWER, ITEM_MOD_MANA_REGENERATION }; break;
++            default:                 second = { ITEM_MOD_INTELLECT, ITEM_MOD_STAMINA };
++                                     third = ratings ? std::vector<uint32>{ ITEM_MOD_SPELL_POWER, ITEM_MOD_MANA_REGENERATION } : std::vector<uint32>{ ITEM_MOD_STAMINA, ITEM_MOD_SPELL_POWER }; break;
++        }
++        uint32 s2 = Any(second), s3 = Any(third);
++        if (s3 == s2 || s3 == theme) s3 = 0;
++        float m = 0.45f + float(urand(0, 15)) / 100.0f, n = 0.22f + float(urand(0, 10)) / 100.0f;   // the third gets at least an eighth
++        if (!s3 || t.Quality < ITEM_QUALITY_RARE && urand(0, 2) == 0) { n = 1.0f - m; s3 = 0; }
++        std::vector<std::pair<uint32, float>> spend = { { theme, budget * m }, { s2, budget * n } };
++        if (s3) spend.push_back({ s3, budget * (1.0f - m - n) });
++        t.StatsCount = 0;
++        for (uint32 i = 0; i < MAX_ITEM_PROTO_STATS; ++i) { t.ItemStat[i].ItemStatType = 0; t.ItemStat[i].ItemStatValue = 0; }
++        for (auto const& [type, points] : spend)
++        {
++            int32 v = int32(points / Cost(type));                    // rounded down: never more than the real item
++            if (v <= 0) continue;
++            t.ItemStat[t.StatsCount].ItemStatType = type; t.ItemStat[t.StatsCount].ItemStatValue = v; ++t.StatsCount;
++        }
++        return theme;
++    }
++
++    std::string StatsString(ItemTemplate const& t)
++    {
++        std::string s;
++        for (uint32 i = 0; i < t.StatsCount; ++i) s += (s.empty() ? "" : ",") + std::to_string(t.ItemStat[i].ItemStatType) + ":" + std::to_string(t.ItemStat[i].ItemStatValue);
++        return s;
++    }
++
++    // a generated item from its base: everything the base has but its name, stats, look and the extras that make it
++    // that particular item (spells, set, sockets, uniqueness)
++    ItemTemplate& Shape(uint32 id, ItemTemplate const& base, uint32 quality, std::string const& name, std::string const& description)
++    {
++        made.push_back(base);
++        ItemTemplate& t = made.back();
++        ItemEntry const* e = sItemStore.LookupEntry(id);
++        t.ItemId = id; t.Name1 = name; t.Quality = quality; t.Description = description;
++        if (e) { t.DisplayInfoID = e->DisplayInfoID; t.Class = e->ClassID; t.SubClass = e->SubclassID; t.InventoryType = e->InventoryType; t.Material = e->Material; t.Sheath = e->SheatheType; t.SoundOverrideSubclass = e->SoundOverrideSubclassID; }
++        t.RandomProperty = 0; t.RandomSuffix = 0; t.ItemSet = 0; t.MaxCount = 0; t.StartQuest = 0; t.ScriptId = 0; t.Duration = 0;
++        t.ItemLimitCategory = 0; t.HolidayId = 0; t.Area = 0; t.Map = 0; t.socketBonus = 0; t.GemProperties = 0;
++        t.RequiredReputationFaction = 0; t.RequiredReputationRank = 0; t.RequiredHonorRank = 0; t.RequiredCityRank = 0;
++        t.Bonding = BIND_WHEN_EQUIPPED;
++        for (auto& sp : t.Spells) { sp.SpellId = 0; sp.SpellTrigger = 0; sp.SpellCharges = 0; sp.SpellPPMRate = 0; sp.SpellCooldown = -1; sp.SpellCategory = 0; sp.SpellCategoryCooldown = -1; }
++        for (auto& so : t.Socket) { so.Color = 0; so.Content = 0; }
++        t.Flags = ItemFlags(uint32(t.Flags) & ~uint32(ITEM_FLAG_UNIQUE_EQUIPPABLE));
++        return t;
++    }
++
++    void Publish(ItemTemplate& t)
++    {
++        sObjectMgr->SetGeneratedItemTemplate(t.ItemId, &t);
++        inUse.insert(t.ItemId);
++    }
++
++    uint32 FreeId(ItemTemplate const& base)
++    {
++        auto pick = [](std::vector<uint32> const& ids) -> uint32 {
++            for (uint32 id : ids) if (!inUse.contains(id)) return id;
++            return 0;
++        };
++        if (auto it = poolByLook.find(LookKey(base.Class, base.SubClass, base.InventoryType, base.DisplayInfoID)); it != poolByLook.end())
++            if (uint32 id = pick(it->second)) return id;
++        if (auto it = poolByKind.find(KindKey(base.Class, base.SubClass, base.InventoryType)); it != poolByKind.end())
++            if (uint32 id = pick(it->second)) return id;           // another look of the same kind of item
++        return 0;
++    }
++}
++
++void LoadTemplates()
++{
++    std::lock_guard<std::recursive_mutex> g(lock);
++    BuildPool();
++    if (poolByLook.empty()) { LOG_INFO("server.loading", "SoloWoW loot: no generated-item ids in Item.dbc (run scripts\\gen-items.py) - generated items off"); return; }
++    WorldDatabase.DirectExecute("CREATE TABLE IF NOT EXISTS solo_gen_item (id INT UNSIGNED NOT NULL PRIMARY KEY, base INT UNSIGNED NOT NULL, name VARCHAR(120) NOT NULL, "
++        "quality TINYINT UNSIGNED NOT NULL, stats VARCHAR(255) NOT NULL, description VARCHAR(255) NOT NULL DEFAULT '', created INT UNSIGNED NOT NULL DEFAULT 0) ENGINE=InnoDB");
++    // ids no copy of which is left anywhere are freed
++    std::set<uint32> held;
++    if (QueryResult r = CharacterDatabase.Query("SELECT DISTINCT itemEntry FROM item_instance WHERE itemEntry >= {}", GEN_BASE))
++        do { held.insert(r->Fetch()[0].Get<uint32>()); } while (r->NextRow());
++    uint32 loaded = 0, freed = 0;
++    if (QueryResult r = WorldDatabase.Query("SELECT id, base, name, quality, stats, description FROM solo_gen_item"))
++        do
++        {
++            Field* f = r->Fetch();
++            uint32 id = f[0].Get<uint32>();
++            if (!held.contains(id)) { WorldDatabase.Execute("DELETE FROM solo_gen_item WHERE id = {}", id); ++freed; continue; }
++            ItemTemplate const* base = sObjectMgr->GetItemTemplate(f[1].Get<uint32>());
++            if (!base || !sItemStore.LookupEntry(id)) continue;
++            ItemTemplate& t = Shape(id, *base, f[3].Get<uint32>(), f[2].Get<std::string>(), f[5].Get<std::string>());
++            t.StatsCount = 0;
++            for (uint32 i = 0; i < MAX_ITEM_PROTO_STATS; ++i) { t.ItemStat[i].ItemStatType = 0; t.ItemStat[i].ItemStatValue = 0; }
++            std::istringstream in(f[4].Get<std::string>());
++            std::string part;
++            while (std::getline(in, part, ',') && t.StatsCount < MAX_ITEM_PROTO_STATS)
++            {
++                uint32 type = 0; int32 v = 0;
++                if (std::sscanf(part.c_str(), "%u:%d", &type, &v) == 2) { t.ItemStat[t.StatsCount].ItemStatType = type; t.ItemStat[t.StatsCount].ItemStatValue = v; ++t.StatsCount; }
++            }
++            Publish(t);
++            ++loaded;
++        } while (r->NextRow());
++    ready = true;
++    LOG_INFO("server.loading", "SoloWoW loot: {} generated items kept, {} ids freed, {} ids for new ones", loaded, freed, uint32(GEN_END - GEN_BASE));
++}
++
++bool Ready() { return ready; }
++
++ItemTemplate const* Make(Player const* player, uint8 level, uint32 quality, std::string const& source, uint32 testClass)
++{
++    std::lock_guard<std::recursive_mutex> g(lock);
++    if (!ready || (!player && !testClass)) return nullptr;
++    if (!basesBuilt) BuildBases();
++    // a real item for the player, of that quality, at about their level: one they could wear (class, armour, weapons)
++    std::vector<ItemTemplate const*> fit;
++    for (uint32 l = level > 3 ? level - 3 : 1; l <= level; ++l)
++        if (auto it = bases.find((quality << 8) | l); it != bases.end())
++            for (ItemTemplate const* t : it->second)
++                if (player ? player->CanUseItem(t) == EQUIP_ERR_OK : TestFits(t, testClass)) fit.push_back(t);
++    if (fit.empty()) return nullptr;
++    for (uint32 attempt = 0; attempt < 8; ++attempt)
++    {
++        ItemTemplate const* base = Any(fit);
++        uint32 id = FreeId(*base);
++        if (!id) continue;
++        ItemTemplate probe = *base;                                  // restat on a copy first, to know the theme for the name
++        probe.Quality = quality;
++        uint32 theme = Restat(probe, *base);
++        if (!theme || !probe.StatsCount) continue;
++        std::string name = Name(*base, theme, quality, source);
++        std::string description = !source.empty() && quality >= ITEM_QUALITY_RARE ? "Taken from " + source + "." : std::string();
++        ItemTemplate& t = Shape(id, *base, quality, name, description);
++        t.StatsCount = probe.StatsCount;
++        for (uint32 i = 0; i < MAX_ITEM_PROTO_STATS; ++i) t.ItemStat[i] = probe.ItemStat[i];
++        Publish(t);
++        std::string qName = name, qDesc = description;                // names carry apostrophes ("Hexir's")
++        WorldDatabase.EscapeString(qName); WorldDatabase.EscapeString(qDesc);
++        WorldDatabase.Execute("REPLACE INTO solo_gen_item (id, base, name, quality, stats, description, created) VALUES ({}, {}, '{}', {}, '{}', '{}', UNIX_TIMESTAMP())",
++            id, base->ItemId, qName, quality, StatsString(t), qDesc);
++        return &t;
++    }
++    return nullptr;
++}
++
++std::string Describe(ItemTemplate const* t)
++{
++    static char const* names[] = { "", "", "", "Agi", "Str", "Int", "Spi", "Sta" };
++    std::string s = t->Name1 + " [q" + std::to_string(t->Quality) + " req " + std::to_string(t->RequiredLevel) + ", id " + std::to_string(t->ItemId) + "]:";
++    for (uint32 i = 0; i < t->StatsCount; ++i)
++    {
++        uint32 type = t->ItemStat[i].ItemStatType;
++        s += " +" + std::to_string(t->ItemStat[i].ItemStatValue) + " " + (type < 8 && names[type][0] ? std::string(names[type]) : "mod" + std::to_string(type));
++    }
++    if (!t->Description.empty()) s += " (" + t->Description + ")";
++    return s;
++}
++}
+diff --git a/src/server/game/SoloSim/solosim_genitems.h b/src/server/game/SoloSim/solosim_genitems.h
+new file mode 100644
+index 0000000..3524c18
+--- /dev/null
++++ b/src/server/game/SoloSim/solosim_genitems.h
+@@ -0,0 +1,21 @@
++// SoloWoW: truly generated items (see solosim_genitems.cpp)
++#ifndef SOLOSIM_GENITEMS_H
++#define SOLOSIM_GENITEMS_H
++
++#include "Define.h"
++#include <string>
++
++class Player;
++struct ItemTemplate;
++
++namespace SoloGen
++{
++    constexpr uint32 GEN_ID_END = 1010000;                      // the fast item store is sized to hold the reserved ids
++    void LoadTemplates();                                       // right after the item templates, before anything holds items
++    bool Ready();
++    // a new item for this player: a real one of that quality near `level` they can use, re-statted and re-named; null if none
++    ItemTemplate const* Make(Player const* player, uint8 level, uint32 quality, std::string const& source, uint32 testClass = 0);
++    std::string Describe(ItemTemplate const* t);       // a line for the GM command
++}
++
++#endif
+diff --git a/src/server/game/SoloSim/solosim_loot.cpp b/src/server/game/SoloSim/solosim_loot.cpp
+index b00bde8..3dc98f4 100644
+--- a/src/server/game/SoloSim/solosim_loot.cpp
++++ b/src/server/game/SoloSim/solosim_loot.cpp
+@@ -9,6 +9,7 @@
+ // The suffix pools are the game's own: the groups items of the same kind already use. Truly generated items are later.
+ // Re-infested dungeons as a source wait for that system. Never copies another project's files.
+ #include "Config.h"
++#include "solosim_genitems.h"
+ #include "Creature.h"
+ #include "Item.h"
+ #include "ItemEnchantmentMgr.h"
+@@ -106,18 +107,31 @@ namespace
+             if (int32(c->GetLevel()) < int32(owner->GetLevel()) - 6) return;
+             uint32 rank = c->GetCreatureTemplate()->rank;
+             uint32 per10k = rank == CREATURE_ELITE_RARE || rank == CREATURE_ELITE_RAREELITE || rank == CREATURE_ELITE_WORLDBOSS ? 1000 : rank == CREATURE_ELITE_ELITE ? 250 : 60;
++            bool boss = c->GetMap()->IsDungeon() && c->IsDungeonBoss();   // a dungeon's boss: one in five, always an item of its own
++            if (boss) per10k = 2000;
+             if (urand(1, 10000) > per10k) return;
+             uint32 lvl = c->GetLevel();
+             std::vector<uint32> pool;
+             for (uint32 l = lvl > 3 ? lvl - 3 : 1; l <= lvl + 1; ++l)
+                 if (auto it = worldGreens.find(l); it != worldGreens.end()) pool.insert(pool.end(), it->second.begin(), it->second.end());
+-            if (pool.empty()) return;
++            // half the finds are items of their own (solosim_genitems.cpp): blue off rares, now and then an epic off the greatest
++            bool special = boss || rank == CREATURE_ELITE_RARE || rank == CREATURE_ELITE_RAREELITE || rank == CREATURE_ELITE_WORLDBOSS;
++            ItemTemplate const* gen = nullptr;
++            if (SoloGen::Ready() && (boss || urand(0, 1)))
++            {
++                uint32 quality = rank == CREATURE_ELITE_WORLDBOSS || (rank == CREATURE_ELITE_RAREELITE && urand(1, 10) == 1) ? ITEM_QUALITY_EPIC
++                    : special || urand(1, 4) == 1 ? ITEM_QUALITY_RARE : ITEM_QUALITY_UNCOMMON;
++                uint8 at = uint8(std::min<uint32>(std::min<uint32>(lvl, owner->GetLevel() + 1), 80));
++                gen = SoloGen::Make(owner, at, quality, special ? c->GetName() : std::string());
++                if (!gen && quality > ITEM_QUALITY_UNCOMMON) gen = SoloGen::Make(owner, at, ITEM_QUALITY_UNCOMMON, special ? c->GetName() : std::string());
++            }
++            if (pool.empty() && !gen) return;
+             LootItem li;
+-            li.itemid = pool[urand(0, uint32(pool.size()) - 1)];
++            li.itemid = gen ? gen->ItemId : pool[urand(0, uint32(pool.size()) - 1)];
+             li.itemIndex = uint32(loot->items.size());
+             li.count = 1;
+-            li.randomPropertyId = Item::GenerateItemRandomPropertyId(li.itemid);
+-            li.randomSuffix = GenerateEnchSuffixFactor(li.itemid);
++            li.randomPropertyId = gen ? 0 : Item::GenerateItemRandomPropertyId(li.itemid);
++            li.randomSuffix = gen ? 0 : GenerateEnchSuffixFactor(li.itemid);
+             li.is_looted = false; li.is_blocked = false; li.freeforall = false; li.is_underthreshold = false;
+             li.is_counted = false; li.needs_quest = false; li.follow_loot_rules = true; li.groupid = 0;
+             loot->items.push_back(li);
+diff --git a/src/server/game/SoloSim/solosim_quests.cpp b/src/server/game/SoloSim/solosim_quests.cpp
+index 142dc1f..8d9e935 100644
+--- a/src/server/game/SoloSim/solosim_quests.cpp
++++ b/src/server/game/SoloSim/solosim_quests.cpp
+@@ -20,6 +20,10 @@
+ #include <algorithm>
+ #include <cmath>
+ #include "solosim_era.h"
++#include "solosim_genitems.h"
++#include "DatabaseEnv.h"
++#include "Item.h"
++#include "Mail.h"
+ #include <mutex>
+ #include <unordered_map>
+ 
+@@ -203,6 +207,36 @@ bool OfferBounty(Player* player, Object* board, uint32 bountyId)
+     return true;
+ }
+ 
++// SoloWoW (Nov 18): the bigger bounties pay in gear of their own too - a named rare's bounty usually an item of its name,
++// the elite and pack hunts sometimes (SoloSim/solosim_genitems.cpp). Into the bags, or by mail when they are full.
++static void GenReward(Player* player, SoloSim::SimBounty const& b)
++{
++    if (!SoloGen::Ready()) return;
++    uint32 chance = b.kind == SoloSim::BOUNTY_RARE ? 70 : b.kind == SoloSim::BOUNTY_ELITE ? 35 : b.kind == SoloSim::BOUNTY_PACK ? 12 : 0;
++    if (urand(1, 100) > chance) return;
++    std::string source;
++    if (b.kind == SoloSim::BOUNTY_RARE && b.target) source = sSoloSim->RareNameOf(b.target);
++    uint32 quality = b.kind == SoloSim::BOUNTY_RARE || (b.kind == SoloSim::BOUNTY_ELITE && urand(0, 1)) ? ITEM_QUALITY_RARE : ITEM_QUALITY_UNCOMMON;
++    ItemTemplate const* t = SoloGen::Make(player, uint8(std::min<uint32>(player->GetLevel(), 80)), quality, source);
++    if (!t && quality > ITEM_QUALITY_UNCOMMON) t = SoloGen::Make(player, uint8(std::min<uint32>(player->GetLevel(), 80)), ITEM_QUALITY_UNCOMMON, source);
++    if (!t) return;
++    ItemPosCountVec dest;
++    if (player->CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, t->ItemId, 1) == EQUIP_ERR_OK)
++    {
++        if (Item* it = player->StoreNewItem(dest, t->ItemId, true)) player->SendNewItem(it, 1, true, false);
++        return;
++    }
++    if (Item* it = Item::CreateItem(t->ItemId, 1, player))
++    {
++        CharacterDatabaseTransaction trans = CharacterDatabase.BeginTransaction();
++        it->SaveToDB(trans);
++        MailDraft("Your bounty", "Your bags were full, so the board's keeper sent this on.").AddItem(it)
++            .SendMailTo(trans, MailReceiver(player, player->GetGUID().GetCounter()), MailSender(MAIL_NORMAL, 0, MAIL_STATIONERY_DEFAULT));
++        CharacterDatabase.CommitTransaction(trans);
++        ChatHandler(player->GetSession()).SendSysMessage("Your bags are full: the bounty's reward went by mail.");
++    }
++}
++
+ uint32 TurnInBounties(Player* player, Object* board)
+ {
+     uint32 paid = 0, guid = player->GetGUID().GetCounter();
+@@ -219,6 +253,7 @@ uint32 TurnInBounties(Player* player, Object* board)
+         sSoloSim->ForceBountyProgress(b.id);
+         paid += uint32(std::max<int32>(0, q->GetRewOrReqMoney(player->GetLevel())));
+         player->RewardQuest(q, 0, board);
++        GenReward(player, b);
+     }
+     return paid;
+ }
+diff --git a/src/server/game/SoloSim/solosim_talk.cpp b/src/server/game/SoloSim/solosim_talk.cpp
+index 088358b..ead269b 100644
+--- a/src/server/game/SoloSim/solosim_talk.cpp
++++ b/src/server/game/SoloSim/solosim_talk.cpp
+@@ -444,8 +444,8 @@ World::TalkLine World::TalkFollow(uint32 speakerId, uint32 replierId, TalkLine c
+             break;
+         case TONE_AGREE:
+             out.text = said.act == ACT_WARN ? say({ "Somebody ought to tell the guards.", "I'm keeping my door barred, I can tell you." })
+-                     : GrimNews(said.text) ? say({ "Strange times.", "Makes you wonder what's next.", "There's always something, isn't there?", "It's getting worse out there." })
+-                                           : say({ "Good for them, I say.", "Nice to hear some good news for a change.", "Maybe I'll try my luck too.", "Lucky sort." });
++                     : GrimNews(said.text) ? say({ "Strange times.", "Makes you wonder what's next.", "There's always something, isn't there?", "It's getting worse out there.", "Mark my words, it'll get worse before it gets better.", "Somebody ought to do something about it." })
++                                           : say({ "Good for them, I say.", "Nice to hear some good news for a change.", "Maybe I'll try my luck too.", "Lucky sort.", "Some people have all the luck.", "That's the spirit." });
+             break;
+         case TONE_FEAR:  out.text = say({ "Best we all stay in, then.", "Keep your door barred.", "Don't go wandering at night, that's all." }); break;
+         case TONE_BOLD:  out.text = say({ "Then go and deal with it.", "Brave words. Let's see you do it.", "I'll hold you to that." }); out.emote = EMOTE_ONESHOT_LAUGH; break;
+@@ -515,10 +515,68 @@ std::vector<World::TalkTurn> World::Conversation(uint32 a, uint32 b)
+     if (follow.text.empty()) return turns;
+     turns.push_back({ false, follow });
+     TalkLine close = TalkClose(b, a, follow);
+-    if (!close.text.empty()) turns.push_back({ true, close });
++    if (!close.text.empty() && back.text.find(close.text) == std::string::npos && said.text.find(close.text) == std::string::npos)
++        turns.push_back({ true, close });
+     return turns;
+ }
+ 
++// news for saying out loud, for the rest of the sim (the gossip menu's Rumor)
++std::string SpokenText(std::string const& s) { return Speakable(s); }
++
++// someone near the player talks to them (Nov 18): by what they remember of the player - thanks, a warm word and a
++// question, cold words - or, from a stranger, a question about the road, the danger near town, a place they dream of
++World::TalkLine World::TalkToPlayer(uint32 agentId, uint32 guid, std::string const& name)
++{
++    std::lock_guard<std::mutex> guard(sBodyLock);
++    TalkLine out;
++    SimAgent const* a = AgentById(agentId);
++    if (!a || a->status != AgentStatus::Active || a->doing == Verb::Sleep) return out;
++    Rng r(_seed, agentId, _clock * 29 + guid, 9986);
++    Voice const& v = VoiceOf(a->race);
++    int32 regard = 0; bool helped = false, crossed = false; uint32 helpedAt = 0;
++    for (SimMemory const& m : _memories)
++        if (m.agent == agentId && m.subjectType == 4 && m.subject == guid)
++        {
++            regard += int32(m.valence) * m.intensity / 100;
++            if (m.eventType == uint8(EventType::PlayerHelped) && _clock - m.at < 3 * MIN_PER_DAY) { helped = true; helpedAt = m.at; }
++            if (m.eventType == uint8(EventType::Clash)) crossed = true;
++        }
++    (void)helpedAt;
++    auto say = [&](std::initializer_list<std::string> l) { return Pick(std::vector<std::string>(l), r); };
++    if (crossed || regard < -30)
++    {
++        out.text = crossed ? say({ "You've got some nerve showing your face here, " + name + ".", "I remember you, " + name + ". Keep walking.", "Not another step closer, " + name + "." })
++                           : say({ "Stay away from me, " + name + ".", "I've nothing to say to you.", "Go bother someone else." });
++        out.whisper = true; out.emote = EMOTE_ONESHOT_NO;
++        return out;
++    }
++    if (helped)
++    {
++        out.text = say({ name + "! You're the one who helped me out there. I owe you one.", "Thanks again for the help, " + name + ". I won't forget it.",
++            "If you ever need a hand, " + name + ", you know where to find me." });
++        out.whisper = true; out.emote = EMOTE_ONESHOT_BOW;
++        return out;
++    }
++    if (regard >= 30)
++    {
++        out.text = Fill(Pick(v.hello, r), name) + " " + say({ "Where are you headed?", "Any good hunting lately?", "Watch yourself out there.", "Stay for a drink, if you've time." });
++        out.whisper = r.Chance(0.5f); out.emote = EMOTE_ONESHOT_WAVE;
++        return out;
++    }
++    if (a->sociability < 40 || !r.Chance(0.6f)) return out;            // strangers mostly leave you be
++    std::vector<std::string> asks = { "You've come a long way by the look of you. Any news from the road?", "Is it as bad out there as they say?",
++        "Passing through, or staying a while?" };
++    if (std::string w = WorryLine(*a); !w.empty())
++        asks.push_back("You look handy with a blade. " + w);
++    if (a->ambition == AmbitionType::SeePlace && a->ambitionTarget)
++        asks.push_back("Have you ever been to " + SiteName(a->ambitionTarget) + "? Is it as grand as they say?");
++    if (a->ambition == AmbitionType::SaveGold) asks.push_back("You wouldn't know where a body can earn some honest coin, would you?");
++    if (a->role == ROLE_ADVENTURER && a->level + 3 < 80) asks.push_back("Fancy some company on the road sometime? Just ask.");
++    out.text = Pick(asks, r);
++    out.emote = EMOTE_ONESHOT_QUESTION;
++    return out;
++}
++
+ // the danger near their town, in their words (TownWorry without the lock)
+ std::string World::WorryLine(SimAgent const& a) const
+ {
+diff --git a/src/server/game/World/World.cpp b/src/server/game/World/World.cpp
+index 0405afd..76ce7ec 100644
+--- a/src/server/game/World/World.cpp
++++ b/src/server/game/World/World.cpp
+@@ -20,6 +20,7 @@
+ */
+ 
+ #include "World.h"
++#include "solosim_genitems.h"
+ #include "AccountMgr.h"
+ #include "AchievementMgr.h"
+ #include "AddonMgr.h"
+@@ -524,6 +525,7 @@ void World::SetInitialWorldSettings()
+ 
+     LOG_INFO("server.loading", "Loading Items...");                         // must be after LoadRandomEnchantmentsTable and LoadPageTexts
+     sObjectMgr->LoadItemTemplates();
++    SoloGen::LoadTemplates();                                     // SoloWoW: generated items, before anything holds items
+ 
+     LOG_INFO("server.loading", "Loading Item Set Names...");                // must be after LoadItemPrototypes
+     sObjectMgr->LoadItemSetNames();
+-- 
+2.56.0.windows.2
+

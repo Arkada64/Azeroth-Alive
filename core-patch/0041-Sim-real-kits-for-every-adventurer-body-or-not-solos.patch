@@ -1,7 +1,7 @@
 From 4fca82f447845b089eaa608273b4d2b3dabe64d1 Mon Sep 17 00:00:00 2001
 From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
 Date: Wed, 18 Nov 2026 00:17:24 -0600
-Subject: [PATCH 41/45] Sim: real kits for every adventurer, body or not
+Subject: [PATCH 41/46] Sim: real kits for every adventurer, body or not
  (solosim_gear.cpp): the rules their body uses (bot_ai::CanEquipFor split out
  of _canEquip), quality by level band, matching armour, level-gated slots, no
  doubled ring or trinket; pieces due from level-ups, finds and purchases

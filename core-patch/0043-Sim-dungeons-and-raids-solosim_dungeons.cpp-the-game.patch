@@ -1,7 +1,7 @@
 From cab47aff8d6179921f0bb618739ff444612bf2a3 Mon Sep 17 00:00:00 2001
 From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
 Date: Wed, 18 Nov 2026 01:13:29 -0600
-Subject: [PATCH 43/45] Sim: dungeons and raids (solosim_dungeons.cpp) - the
+Subject: [PATCH 43/46] Sim: dungeons and raids (solosim_dungeons.cpp) - the
  game's own entrances, level ranges, bosses and loot tables; parties and raid
  companies go in off-screen, boss by boss against their levels, kits and
  numbers; XP, coin, wipes; need/greed/pass by class, upgrade and character -

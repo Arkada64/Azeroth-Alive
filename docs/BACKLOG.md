@@ -60,8 +60,18 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
    world in turn - not anyone whose body was near the player lately (the body wears and records the kit). The kit sets
    the gear tier the fights use, now against a normal item for the level (Outland's and Northrend's item levels too).
    99% of adventurers had a kit after a 61-hour test; 48 sim-hours still run in ~17 s.
-   **Left:** purchases from town vendors and the AH (with the market), dungeon and raid loot (with that sim), truly
-   generated items.
+   **Left:** purchases from town vendors and the AH (with the market), dungeon and raid loot (with that sim).
+   **Truly generated items (Nov 18, done):** 58,191 reserved ids (950000 up, three per look of the game's weapons and
+   armour) in the client's own patch-X.MPQ and the server's Item.dbc, built by scripts\gen-items.py from the client's
+   own Item.dbc (re-run after patch-W changes). A generated item starts from a real one the player can use (slot, level,
+   quality: armour, damage, price stay), spends that item's own stat budget again on a theme of its own (never more),
+   wears a free id of the same look and gets its own name ("Savage Claymore", "... of the Iron Tide" for blues, coined
+   names for epics, the named foe's possessive: "Hexir's Runed Staff", "Taken from ..."). Kept in world DB
+   solo_gen_item; ids nobody holds any more are freed at start-up; the launcher and play.ps1 clear the client's WDB
+   cache. Sources: half the rare finds, a dungeon boss one kill in five, named-rare bounties (70%), elite (35%) and pack
+   (12%) bounties - into the bags or by mail. GM: `.sim genitem <class> <level> <quality> [n] [source]`.
+   **Left there:** in-game check (tooltip, model, a re-used id after a restart), sim people finding them too,
+   low-level pieces with only one point of stats.
 4. **Auction houses and the market sim:** prices from the game's own values (vendor price, quality, level, slot,
    usefulness), moved by supply and demand from the sim (robbed caravans, quiet mines, farmed areas), drifting over days;
    adventurers list what they don't want like a player (greys still to vendors), at prices by character (greedy high,
