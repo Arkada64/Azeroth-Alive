@@ -1,0 +1,274 @@
+From 153b008874e05668824bb9544d0c64beff7a6f60 Mon Sep 17 00:00:00 2001
+From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 23:51:16 -0600
+Subject: [PATCH 40/40] Sim: Outland and Northrend - 17 zones, their towns,
+ hunting grounds and adventurers at the land's level (blood elves among the
+ Horde there); the Dark Portal and the Northrend boats and zeppelins, trips
+ over two crossings; levels and threats to 80; dock towns cached
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01JU37XfnHTvru3VVz2sNN7z
+---
+ src/server/game/SoloSim/solosim.cpp | 107 +++++++++++++++++++++-------
+ src/server/game/SoloSim/solosim.h   |   5 +-
+ 2 files changed, 84 insertions(+), 28 deletions(-)
+
+diff --git a/src/server/game/SoloSim/solosim.cpp b/src/server/game/SoloSim/solosim.cpp
+index 08a06fc..be4bcb1 100644
+--- a/src/server/game/SoloSim/solosim.cpp
++++ b/src/server/game/SoloSim/solosim.cpp
+@@ -56,7 +56,7 @@ namespace
+     constexpr uint32 SCHEMA_VERSION = 2;
+     // Region for v1/v2: Elwynn, Westfall, Redridge, Duskwood, Stormwind (map 0).
+     constexpr uint32 SIM_MAP = 0;                      // the Eastern Kingdoms (the first map; tools that look at one map use it)
+-    const std::set<uint32> SIM_MAPS = { 0, 1 };         // Eastern Kingdoms and Kalimdor
++    const std::set<uint32> SIM_MAPS = { 0, 1, 530, 571 };   // Eastern Kingdoms, Kalimdor, Outland, Northrend (Nov 17 night)
+     // v1: Elwynn, Westfall, Redridge, Duskwood, Stormwind. v3 (the wider world, Nov 2026): Dun Morogh, Ironforge, Loch Modan,
+     // Wetlands, Hillsbrad Foothills, Arathi Highlands, Stranglethorn Vale, Badlands, Swamp of Sorrows. Saves made before a zone
+     // was added get it on their next load (ExpandRegion).
+@@ -70,7 +70,14 @@ namespace
+                                             // Thousand Needles, Feralas, Tanaris, Un'Goro, Silithus, Felwood, Winterspring,
+                                             // Azshara, Moonglade
+                                             36, 47, 51, 46, 4, 41, 28, 139,
+-                                            400, 357, 440, 490, 1377, 361, 618, 16, 493 };
++                                            400, 357, 440, 490, 1377, 361, 618, 16, 493,
++                                            // Outland (Nov 17 night): Hellfire, Zangarmarsh, Terokkar, Nagrand, Blade's Edge,
++                                            // Netherstorm, Shadowmoon, Shattrath
++                                            3483, 3521, 3519, 3518, 3522, 3523, 3520, 3703,
++                                            // Northrend: Borean Tundra, Howling Fjord, Dragonblight, Grizzly Hills, Zul'Drak,
++                                            // Sholazar Basin, Crystalsong, the Storm Peaks, Icecrown (the TBC isles and
++                                            // Dalaran have no road nodes yet; Wintergrasp is a battlefield)
++                                            3537, 495, 65, 394, 66, 3711, 2817, 67, 210 };
+     // the capitals and how many live there. The Horde's three have no road nodes inside, so their towns were filed under
+     // the zone outside (Durotar, Tirisfal, Mulgore) and sized as villages: a town within reach of a capital's centre
+     // belongs to it (Nov 17).
+@@ -84,13 +91,20 @@ namespace
+     const std::set<uint32> ELF_ZONES = { 141, 1657, 148 };   // where night elves are most of the folk
+     // the sea crossings of 3.3.5 between the two old continents (Nov 17): dock positions; each dock is served by the nearest
+     // town with an inn within 900 yd that will have the traveller. Alliance boats, Horde zeppelins, the goblins' boat.
+-    struct SeaRoute { float ax, ay; float bx, by; uint8 side; uint32 minutes; char const* name; };   // a on map 0, b on map 1
++    // each end: a map and a spot; the town serving it is the nearest inn within the route's reach (the Dark Portal stands
++    // well away from Nethergarde, Stonard, Honor Hold and Thrallmar). Nov 17 night: Outland and Northrend.
++    struct SeaRoute { uint32 amap; float ax, ay; uint32 bmap; float bx, by; uint8 side; uint32 minutes; float reach; char const* name; };
+     const SeaRoute SEA_ROUTES[] = {
+-        { -3895.0f,  -605.0f, -3995.0f, -4725.0f, 0, 25, "the boat from Menethil Harbor to Theramore" },
+-        { -3725.0f,  -575.0f,  6420.0f,   820.0f, 0, 25, "the boat from Menethil Harbor to Auberdine" },
+-        { -14280.0f,  555.0f,  -995.0f, -3830.0f, 2, 25, "the boat from Booty Bay to Ratchet" },
+-        { -12415.0f,  210.0f,  1320.0f, -4650.0f, 1, 20, "the zeppelin from Grom'gol to Orgrimmar" },
+-        {  2065.0f,   290.0f,  1320.0f, -4650.0f, 1, 20, "the zeppelin from Tirisfal to Orgrimmar" },
++        { 0,  -3895.0f,  -605.0f, 1,   -3995.0f, -4725.0f, 0, 25,  900.0f, "the boat from Menethil Harbor to Theramore" },
++        { 0,  -3725.0f,  -575.0f, 1,    6420.0f,   820.0f, 0, 25,  900.0f, "the boat from Menethil Harbor to Auberdine" },
++        { 0, -14280.0f,   555.0f, 1,    -995.0f, -3830.0f, 2, 25,  900.0f, "the boat from Booty Bay to Ratchet" },
++        { 0, -12415.0f,   210.0f, 1,    1320.0f, -4650.0f, 1, 20,  900.0f, "the zeppelin from Grom'gol to Orgrimmar" },
++        { 0,   2065.0f,   290.0f, 1,    1320.0f, -4650.0f, 1, 20,  900.0f, "the zeppelin from Tirisfal to Orgrimmar" },
++        { 0, -11900.0f, -3207.0f, 530,  -248.0f,   945.0f, 2,  5, 3000.0f, "the Dark Portal" },
++        { 0,  -8290.0f,  1405.0f, 571,  2282.0f,  5211.0f, 0, 30, 1500.0f, "the boat from Stormwind Harbor to Valiance Keep" },
++        { 0,  -3725.0f,  -575.0f, 571,   599.0f, -4928.0f, 0, 30,  900.0f, "the boat from Menethil Harbor to Valgarde" },
++        { 0,   2065.0f,   290.0f, 571,  1873.0f, -6218.0f, 1, 30,  900.0f, "the zeppelin from Tirisfal to Vengeance Landing" },
++        { 1,   1320.0f, -4650.0f, 571,  2804.0f,  6154.0f, 1, 30,  900.0f, "the zeppelin from Orgrimmar to Warsong Hold" },
+     };
+     const std::set<uint32> DWARF_ZONES = { 1, 1537, 38 };   // where dwarves and gnomes are most of the folk
+ 
+@@ -139,6 +153,9 @@ namespace
+         static NameKit draenei { {"Ar","Kor","Mor","Nob","Vel","Tor","Hal"}, {"aan","uun","ius","ek","ahn","oor"},
+                                {"Ira","Ish","Sar","Yaa","Nel","Ama"}, {"nia","ella","ura","ena","ari"},
+                                {}, {} };
++        static NameKit belf  { {"Ael","Bel","Kael","Lor","Sil","Vael","Ith","Ral","Ther","Rom"}, {"thas","ion","ran","dor","ar","iel","onar","amir"},
++                               {"Vel","Lia","Sael","Ely","Ithi","Syl","Ana","Vara"}, {"anna","ara","ia","wyn","ssa","ena","driel"},
++                               {"Sun","Dawn","Blood","Gold","Spell","Silver","Flame","High","Swift"}, {"strider","blade","weaver","fire","bloom","sorrow","wing","spire","leaf"} };   // Nov 17 night
+         static NameKit orc   { {"Gor","Thra","Dur","Kro","Mog","Nar","Ug","Zar","Grom","Krag"}, {"gash","mok","rok","gar","nak","dush","rim","tar"},
+                                {"Gar","Mag","Shy","Kra","Zug","Ura"}, {"ka","ra","sha","na","gra"},
+                                {"Blood","Skull","Iron","Storm","Black","War","Bone","Grim"}, {"fist","axe","maw","tusk","howl","hammer","rage"} };
+@@ -152,7 +169,7 @@ namespace
+                                {"Kiz","Liz","Nix","Ziz","Bix","Tink"}, {"zy","ette","ka","bit","zle"},
+                                {"Gold","Copper","Rust","Spark","Coin","Bang","Grease"}, {"grin","fuse","pocket","nose","toe","wrench","spark"} };
+         switch (race) { case 2: return orc; case 3: return dwarf; case 4: return nelf; case 6: return tauren; case 7: return gnome; case 8: return troll;
+-                        case 9: return goblin; case 11: return draenei; default: return human; }
++                        case 9: return goblin; case 10: return belf; case 11: return draenei; default: return human; }
+     }
+ 
+     float Dist2d(float x1, float y1, float x2, float y2) { float dx = x1 - x2, dy = y1 - y2; return std::sqrt(dx * dx + dy * dy); }
+@@ -580,7 +597,7 @@ void World::SettleNewHubs(uint32 firstNew)
+             uint32 id = _nextAgent++;
+             Rng r(_seed, id, h.id, P_GEN + 200);
+             int32 lvl = int32(h.regionLevel) + int32(r.Range(0, 8)) - 4;
+-            uint8 level = uint8(std::clamp<int32>(lvl, 1, 60));
++            uint8 level = uint8(std::clamp<int32>(lvl, 1, 80));
+             uint8 race = NativeRace(h, r, false);
+             if (!race && h.side == SIDE_NEUTRAL && r.Chance(0.5f)) race = r.Chance(0.5f) ? 2 : 6;   // both sides pass through
+             if (!race && DWARF_ZONES.contains(h.zone)) race = r.Chance(0.7f) ? 3 : (r.Chance(0.7f) ? 7 : 0);
+@@ -1044,16 +1061,22 @@ void World::Log(EventType t, SimAgent const& a, uint32 site, std::string text, b
+ }
+ 
+ // the town serving a dock: the nearest hub with an inn within 900 yd that will have this traveller (0 = none)
+-uint32 World::DockTown(uint32 map, float x, float y, SimAgent const& a) const
+-{
+-    if (map > 1) return 0;
+-    uint32 best = 0; float bd = 900.0f;
++uint32 World::DockTown(uint32 map, float x, float y, SimAgent const& a, float reach) const
++{
++    // the same few docks are asked about thousands of times a sim-day; the answer depends only on whose side the
++    // traveller is (Welcome), and changes only when towns are added
++    if (_dockCacheSites != _sites.size()) { _dockCache.clear(); _dockCacheSites = _sites.size(); }
++    uint8 who = a.role == ROLE_THREAT ? 3 : IsHordeRace(a.race) ? 2 : 1;
++    auto key = std::make_tuple(map, uint32(int32(x) + 100000), uint32(int32(y) + 100000), uint32(reach), who);
++    if (auto it = _dockCache.find(key); it != _dockCache.end()) return it->second;
++    uint32 best = 0; float bd = reach;
+     for (SimSite const& s : _sites)
+     {
+         if (s.type != SiteType::Hub || !(s.services & SVC_INN) || s.map != map || !Welcome(a, s)) continue;
+         float d = Dist2d(s.x, s.y, x, y);
+         if (d < bd) { bd = d; best = s.id; }
+     }
++    _dockCache[key] = best;
+     return best;
+ }
+ 
+@@ -1063,16 +1086,44 @@ uint32 World::TravelMinutes(uint32 fromSite, uint32 toSite, SimAgent const& a) c
+     if (!f || !t || f == t) return 0;
+     if (f->map != t->map)
+     {
+-        // another continent: walk to a dock their side may use, cross (boat or zeppelin), walk on from the far dock
+-        uint32 best = UINT32_MAX;
++        // another continent: walk to a dock their side may use, cross (boat, zeppelin, the Dark Portal), walk on from the
++        // far dock - by way of a third continent when no crossing joins the two (Outland to Kalimdor; Nov 17 night)
+         bool horde = IsHordeRace(a.race);
++        auto mayUse = [&](SeaRoute const& sr) { return sr.side == SIDE_NEUTRAL || a.role == ROLE_THREAT || sr.side == (horde ? SIDE_HORDE : SIDE_ALLIANCE); };
++        auto end = [](SeaRoute const& sr, uint32 map, float& x, float& y) {
++            if (sr.amap == map) { x = sr.ax; y = sr.ay; return true; }
++            if (sr.bmap == map) { x = sr.bx; y = sr.by; return true; }
++            return false;
++        };
++        auto other = [](SeaRoute const& sr, uint32 map) { return sr.amap == map ? sr.bmap : sr.amap; };
++        uint32 best = UINT32_MAX;
+         for (SeaRoute const& sr : SEA_ROUTES)
+         {
+-            if (sr.side != SIDE_NEUTRAL && a.role != ROLE_THREAT && sr.side != (horde ? SIDE_HORDE : SIDE_ALLIANCE)) continue;
+-            uint32 here = DockTown(f->map, f->map == 0 ? sr.ax : sr.bx, f->map == 0 ? sr.ay : sr.by, a);
+-            uint32 there = DockTown(t->map, t->map == 0 ? sr.ax : sr.bx, t->map == 0 ? sr.ay : sr.by, a);
+-            if (!here || !there) continue;
+-            best = std::min(best, TravelMinutes(fromSite, here, a) + sr.minutes + TravelMinutes(there, toSite, a));
++            float hx, hy, tx, ty;
++            if (!mayUse(sr) || !end(sr, f->map, hx, hy)) continue;
++            uint32 here = DockTown(f->map, hx, hy, a, sr.reach);
++            if (!here) continue;
++            uint32 mid = other(sr, f->map);
++            if (mid == t->map)
++            {
++                end(sr, t->map, tx, ty);
++                if (uint32 there = DockTown(t->map, tx, ty, a, sr.reach))
++                    best = std::min(best, TravelMinutes(fromSite, here, a) + sr.minutes + TravelMinutes(there, toSite, a));
++                continue;
++            }
++            // a second crossing from the middle continent
++            float mx, my; end(sr, mid, mx, my);
++            uint32 landed = DockTown(mid, mx, my, a, sr.reach);
++            if (!landed) continue;
++            for (SeaRoute const& s2 : SEA_ROUTES)
++            {
++                float ax2, ay2, bx2, by2;
++                if (&s2 == &sr || !mayUse(s2) || !end(s2, mid, ax2, ay2) || !end(s2, t->map, bx2, by2)) continue;
++                uint32 dock2 = DockTown(mid, ax2, ay2, a, s2.reach), there = DockTown(t->map, bx2, by2, a, s2.reach);
++                if (!dock2 || !there) continue;
++                best = std::min(best, TravelMinutes(fromSite, here, a) + sr.minutes + TravelMinutes(landed, dock2, a) + s2.minutes
++                    + TravelMinutes(there, toSite, a));
++            }
+         }
+         return best == UINT32_MAX ? 24 * 60 : best;
+     }
+@@ -1112,6 +1163,8 @@ uint8 World::NativeRace(SimSite const& h, Rng& r, bool civilian) const
+     if (ORC_LANDS.contains(h.zone))      return roll <= 55 ? 2 : roll <= (civilian ? 92u : 100u) ? 8 : 9;
+     if (TAUREN_LANDS.contains(h.zone))   return roll <= 85 ? 6 : roll <= 95 ? 2 : 8;
+     if (FORSAKEN_LANDS.contains(h.zone)) return roll <= 90 ? 5 : roll <= 95 ? 2 : 8;
++    if (h.map == 530 || h.map == 571)                                 // Outland and Northrend: blood elves among them (Nov 17 night)
++        return roll <= 30 ? 2 : roll <= 50 ? 6 : roll <= 65 ? 8 : roll <= 80 ? 5 : 10;
+     return roll <= 40 ? 2 : roll <= 65 ? 6 : roll <= 85 ? 8 : 5;     // the Barrens and the rest of the Horde's roads
+ }
+ 
+@@ -1389,7 +1442,7 @@ SimAgent World::MakeSettler(SimSite const& h, uint32 id, uint32 salt)
+     int32 lvl = int32(h.regionLevel) + int32(r.Range(0, 10)) - 5;
+     if (r.Chance(0.15f)) lvl += int32(r.Range(0, 16)) - 8;        // a few far from the land's level, either way
+     if (IsStartCamp(h)) lvl = int32(r.Range(1, 6));                // a starting camp: the youngest
+-    uint8 level = uint8(std::clamp<int32>(lvl, 1, 60));
++    uint8 level = uint8(std::clamp<int32>(lvl, 1, 80));
+     uint8 race = NativeRace(h, r, false);
+     if (!race && h.side == SIDE_NEUTRAL && r.Chance(0.5f)) race = r.Chance(0.5f) ? 2 : 6;
+     if (!race && DWARF_ZONES.contains(h.zone)) race = r.Chance(0.7f) ? 3 : (r.Chance(0.7f) ? 7 : 0);
+@@ -2333,7 +2386,7 @@ static uint8 CivilianLevel(uint64 seed, SimAgent const& a, SimSite const& home)
+     float f = lo + (hi - lo) * float(r.Range(0, 1000)) / 1000.0f;
+     int32 lvl = int32(base * f + 0.5f);
+     if (r.Chance(0.06f)) lvl = int32(base) + int32(r.Range(8, 20));    // a retired adventurer
+-    return uint8(std::clamp(lvl, 1, 60));
++    return uint8(std::clamp(lvl, 1, 80));
+ }
+ 
+ // one townsperson of h (their look, name, job and nature); age is set by the caller when it matters
+@@ -3110,7 +3163,7 @@ void World::SpawnThreats(bool force)
+         if (!force && !AwayAllows(map + 1)) continue;
+         std::vector<SimSite const*> lairs;
+         for (SimSite const& s : _sites)
+-            if (s.type == SiteType::Hunt && s.map == map && !s.elite && (s.minLevel + s.maxLevel) / 2 >= 20 && (s.minLevel + s.maxLevel) / 2 <= 60 && TownOf(s.id))
++            if (s.type == SiteType::Hunt && s.map == map && !s.elite && (s.minLevel + s.maxLevel) / 2 >= 20 && (s.minLevel + s.maxLevel) / 2 <= 80 && TownOf(s.id))
+                 lairs.push_back(&s);
+         if (lairs.empty()) continue;
+         SimSite const& lair = *lairs[r.Range(0, uint32(lairs.size()) - 1)];
+@@ -3121,7 +3174,7 @@ void World::SpawnThreats(bool force)
+         SimAgent t;
+         t.id = _nextAgent++; t.role = ROLE_THREAT; t.cls = h.cls; t.race = h.race; t.sourceEntry = h.entry;
+         t.given = h.name; t.family = std::string("the ") + HeroTitle(h.cls);
+-        t.level = uint8(std::clamp<int32>((lair.minLevel + lair.maxLevel) / 2 + 3, 20, 60));
++        t.level = uint8(std::clamp<int32>((lair.minLevel + lair.maxLevel) / 2 + 3, 20, 80));
+         t.home = lair.id; t.site = lair.id; t.born = _clock; t.status = AgentStatus::Active; t.wakeAt = _clock + 1;
+         t.bravery = 100; t.caution = 0;
+         _agents[t.id] = t;
+@@ -6492,7 +6545,7 @@ std::string World::NotePlayer(uint32 guid, std::string const& name, PlayerSeen c
+     std::lock_guard<std::mutex> guard(sBodyLock);
+     std::string say;
+     _seen[guid] = { seen, _clock };
+-    bool openWorld = seen.map <= 1;
++    bool openWorld = SIM_MAPS.contains(seen.map);
+     bool inTown = openWorld && HubNear(seen.map, seen.x, seen.y, 250.0f) != 0;
+ 
+     // ---- a caravan the player rides with: once they're with the wagons, the wagons follow them, at their pace
+@@ -6543,7 +6596,7 @@ std::string World::NotePlayer(uint32 guid, std::string const& name, PlayerSeen c
+         // gone another way (or away too long): they carry on without you - and the trader won't pay
+         if (_clock - c.lastWith > 10)
+         {
+-            uint32 at = seen.map <= 1 ? ClosestSite(seen.map, seen.x, seen.y) : c.from;
++            uint32 at = SIM_MAPS.contains(seen.map) ? ClosestSite(seen.map, seen.x, seen.y) : c.from;
+             for (SimErrand& e : _errands)
+                 if (e.id == c.errand && !e.done)
+                 {
+diff --git a/src/server/game/SoloSim/solosim.h b/src/server/game/SoloSim/solosim.h
+index 88cb707..6a18284 100644
+--- a/src/server/game/SoloSim/solosim.h
++++ b/src/server/game/SoloSim/solosim.h
+@@ -8,6 +8,7 @@
+ #include <array>
+ #include <cstdint>
+ #include <map>
++#include <tuple>
+ #include <set>
+ #include <string>
+ #include <deque>
+@@ -512,7 +513,7 @@ namespace SoloSim
+         void CaravanOnward(SimCaravan& c, uint32 fromSite);   // back to walking on their own
+         bool IsCapital(SimSite const& s) const;
+         void FileCapitals();                           // towns inside the Horde's capitals belong to the city
+-        uint32 DockTown(uint32 map, float x, float y, SimAgent const& a) const;   // the town serving a boat or zeppelin dock
++        uint32 DockTown(uint32 map, float x, float y, SimAgent const& a, float reach = 900.0f) const;   // the town serving a boat or zeppelin dock
+         bool HasFittingHunt(SimAgent const& a, uint32 nearHub, float radius) const;
+         Rng R(SimAgent const& a, uint32 purpose) const { return Rng(_seed, a.id, _clock, purpose); }
+         void Log(EventType t, SimAgent const& a, uint32 site, std::string text, bool notable, uint32 target = 0, int32 n1 = 0, int32 n2 = 0);
+@@ -564,6 +565,8 @@ namespace SoloSim
+         std::map<uint32, std::vector<std::string>> _rumors;         // town -> recent notable happenings nearby (runtime)
+         mutable std::map<uint32, uint32> _townOf;                 // site -> its town (nearest inn town)                                // letters waiting to go out (world thread sends them)                                      // set while resolving a death seen in the game world
+ 
++        mutable std::map<std::tuple<uint32, uint32, uint32, uint32, uint8>, uint32> _dockCache;   // (map, x, y, reach, who) -> town (Nov 17 night)
++        mutable size_t _dockCacheSites = 0;
+         mutable bool _roadsBuilt = false;
+         mutable std::vector<RoadNode> _roads;
+         mutable std::unordered_map<uint32, uint32> _roadIdx;
+-- 
+2.56.0.windows.2
+

@@ -1,7 +1,7 @@
 From afbd2f5f39947a3c55c12e48bc46d44d776e6ec4 Mon Sep 17 00:00:00 2001
 From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
 Date: Tue, 17 Nov 2026 14:25:24 -0600
-Subject: [PATCH 33/39] Loot worth looking at, step one: the games own random
+Subject: [PATCH 33/40] Loot worth looking at, step one: the games own random
  suffixes on drops and quest rewards that had none (harder quests likelier),
  magic whites, rare world-drop greens on foes near your level
 

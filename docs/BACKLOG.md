@@ -43,7 +43,14 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
      distance, matched to ordinary quests of the same level after the revert.
    - **Wrath content to the same rules:** review Northrend; where it lacks what vanilla/TBC had (outdoor elites, elite
      rares outside dungeons, group quests, real danger), apply the same formula - original difficulty for the first time.
-2. **Outland and Northrend in the sim.**
+2. **Outland and Northrend in the sim.** **Done (Nov 17 night):** 17 zones (Outland's eight, Northrend's nine: the TBC
+   isles and Dalaran have no road nodes yet, Wintergrasp is a battlefield); 185 towns and outposts, ~1870 hunting
+   grounds, ~610 adventurers at the land's level (Outland ~64, Northrend ~73), blood elves among the Horde there; the
+   crossings - the Dark Portal, Stormwind-Valiance Keep, Menethil-Valgarde, Tirisfal-Vengeance Landing, Orgrimmar-
+   Warsong Hold - with two-crossing trips (Outland to Kalimdor); levels to 80, threats up to 80. 263 crossings in a
+   61-hour test; caravans in Outland. Dock towns cached (the first try ran 20x slower; now as fast as before).
+   **Next there:** generated rares for Northrend; road nodes for the TBC isles (Eversong, Ghostlands, Azuremyst,
+   Bloodmyst) and Dalaran so blood elves and draenei have homes; the Exodar boat and the Silvermoon orb.
 3. **Full gear generation** (persistent gear for sim people; truly generated items for loot later).
 4. **Auction houses and the market sim:** prices from the game's own values (vendor price, quality, level, slot,
    usefulness), moved by supply and demand from the sim (robbed caravans, quiet mines, farmed areas), drifting over days;

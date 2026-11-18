@@ -1,7 +1,7 @@
 From d995fc1e6234189204ac2ca9bd2699ce7f70ca11 Mon Sep 17 00:00:00 2001
 From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
 Date: Tue, 17 Nov 2026 13:51:03 -0600
-Subject: [PATCH 30/39] Caravans: goods by wagon from towns with plenty to
+Subject: [PATCH 30/40] Caravans: goods by wagon from towns with plenty to
  towns that are short, guarded by the towns adventurers, a night on the way,
  bandits by the road; pack animals near you; the restless move home further
 
