@@ -1,7 +1,7 @@
 From 3bf4e981f810f57503f27d3f90e7e619fc880b03 Mon Sep 17 00:00:00 2001
 From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
 Date: Tue, 17 Nov 2026 22:55:40 -0600
-Subject: [PATCH 38/43] Era: the player side deals and heals less in old
+Subject: [PATCH 38/44] Era: the player side deals and heals less in old
  content (0.75 vanilla, 0.85 TBC: players, pets, NPCBots; Northrend as built);
  mounts take 3 s to summon again (as before 3.2)
 

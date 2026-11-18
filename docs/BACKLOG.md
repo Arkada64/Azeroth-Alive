@@ -121,6 +121,17 @@ Also noted the same evening:
   grim wit, night elf old formality, gnome rapid tech-talk, goblin deals, tauren slow earthiness, draenei devotion, plain
   human; personality shading) -> delivery (/say, /yell, whisper by mood and distance; emotes /lol /cry /cheer /angry
   /cower /shrug /bow /thank...; body language). Generated from the sim's own facts - never contradicts the world.
+  **First version done (Nov 18, ~2 am; solosim_talk.cpp):** moods from memories and state (content, happy, proud,
+  grieving, angry, scared, hurt, tired, bored); acts picked by weight from real facts - town news (spoken without the
+  chronicle's brackets; their own news told as "I..."), the danger near home, a dungeon run and what they won, a rare
+  brought down, a friend lost, a beating or a clash with the other side, their ambition, a friend or rival in front of
+  them - then the town's small talk when there's nothing of their own; eleven race voices (openers, agreement, surprise,
+  comfort, praise, curses, fear, tags, greetings, scorn); personality shading; /yell for a proud boast or a warning by
+  the bold; emotes (cry, cheer, flex, point, roar, wave, laugh, rude, no, yes); the listener's answer by what they know,
+  the relation and the speaker's state. Used by townsfolk and by adventurers near you; GM .sim talk [n] prints samples.
+  Also: generated names are checked against a list of hateful/crude words (the troll kit had made "Nazi") and existing
+  ones renamed on load. **Next:** longer exchanges (three or four turns), questions to the player, whispers, more
+  phrase banks per voice, the gossip/menu Rumor() through Speakable too.
 
 ### Lighter world save (user, Nov 17 22:26 - fit in alongside other sim work)
 - The 10-minute save rewrites every sim table (~4 MB, ~12 MB on disk with InnoDB overhead). Write only rows changed since the last save (dirty flags per agent/table; events are append-only already).
