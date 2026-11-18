@@ -1,0 +1,182 @@
+From 3bf4e981f810f57503f27d3f90e7e619fc880b03 Mon Sep 17 00:00:00 2001
+From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 22:55:40 -0600
+Subject: [PATCH 38/38] Era: the player side deals and heals less in old
+ content (0.75 vanilla, 0.85 TBC: players, pets, NPCBots; Northrend as built);
+ mounts take 3 s to summon again (as before 3.2)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01JU37XfnHTvru3VVz2sNN7z
+---
+ src/server/game/SoloSim/solosim_commands.cpp  |  2 +
+ src/server/game/SoloSim/solosim_era.cpp       | 89 +++++++++++++++++++
+ .../game/Spells/SpellInfoCorrections.cpp      | 16 ++++
+ 3 files changed, 107 insertions(+)
+
+diff --git a/src/server/game/SoloSim/solosim_commands.cpp b/src/server/game/SoloSim/solosim_commands.cpp
+index d6aa445..3c13e38 100644
+--- a/src/server/game/SoloSim/solosim_commands.cpp
++++ b/src/server/game/SoloSim/solosim_commands.cpp
+@@ -303,6 +303,7 @@ namespace SoloPlainsrunning { void AddScripts(); }
+ void AddSC_solosim_xp();
+ void AddSC_solosim_quests();
+ void AddSC_solosim_loot();
++void AddSC_solosim_era();
+ 
+ void AddSC_solosim_commands()
+ {
+@@ -310,6 +311,7 @@ void AddSC_solosim_commands()
+     AddSC_solosim_xp();
+     AddSC_solosim_quests();
+     AddSC_solosim_loot();
++    AddSC_solosim_era();
+     new solosim_commands();
+     new solosim_bounty_commands();
+     new solosim_player();
+diff --git a/src/server/game/SoloSim/solosim_era.cpp b/src/server/game/SoloSim/solosim_era.cpp
+index 43ad33b..bbdc2e6 100644
+--- a/src/server/game/SoloSim/solosim_era.cpp
++++ b/src/server/game/SoloSim/solosim_era.cpp
+@@ -2,12 +2,23 @@
+ // (vanilla/TBC facts for creatures and quests, the XP curve - backed up and reversible); here:
+ //   - quest XP: a quest pays what it paid before Blizzard boosted it (solo_era_quest_xp, filled by era-db.ps1); the
+ //     usual fall-off for quests far below you stays (vanilla had the same 80/60/40/20/10% steps)
++//   - power: Wrath's talents and classes made the player's side far stronger than the world was built for. In vanilla
++//     content (the old continents, classic dungeons) and TBC content (Outland, the TBC isles and instances) the
++//     player's side - you, your pets, every NPCBot (the sim's adventurers are Wrath-strong too) - deals and heals less
++//     (SoloWoW.Era.Power.Vanilla / .TBC, defaults 0.75 / 0.85). Northrend is as built. Creatures are untouched: their
++//     vanilla/TBC numbers come with the era facts.
+ #include "solosim_era.h"
+ #include "Config.h"
+ #include "DatabaseEnv.h"
+ #include "Field.h"
+ #include "QueryResult.h"
+ #include "Log.h"
++#include "Map.h"
++#include "ScriptMgr.h"
++#include "SpellInfo.h"
++#include "Unit.h"
++#include "UnitScript.h"
++#include <algorithm>
+ #include <mutex>
+ #include <unordered_map>
+ 
+@@ -36,3 +47,81 @@ uint32 QuestXP(uint32 questId)
+     return it == questXp.end() ? 0 : it->second;
+ }
+ }
++
++namespace
++{
++    struct Power
++    {
++        bool on = true; float vanilla = 0.75f, tbc = 0.85f;
++        Power()
++        {
++            on = sConfigMgr->GetOption<bool>("SoloWoW.Era.Power.Enable", true);
++            vanilla = std::clamp(sConfigMgr->GetOption<float>("SoloWoW.Era.Power.Vanilla", 0.75f), 0.1f, 2.0f);
++            tbc = std::clamp(sConfigMgr->GetOption<float>("SoloWoW.Era.Power.TBC", 0.85f), 0.1f, 2.0f);
++        }
++    };
++    Power const& ThePower() { static Power const p; return p; }
++
++    // the player's side: players, what they own or control (pets, totems, guardians), NPCBots and their pets
++    bool PlayerSide(Unit const* u)
++    {
++        if (!u) return false;
++        if (u->GetCharmerOrOwnerPlayerOrPlayerItself()) return true;
++        if (u->IsNPCBotOrPet()) return true;
++        if (Unit const* owner = u->GetCharmerOrOwner()) return owner->IsNPCBotOrPet();
++        return false;
++    }
++
++    // how much of their power the player's side brings to this place's content (1 = all of it)
++    float Share(Unit const* u)
++    {
++        Power const& p = ThePower();
++        if (!p.on || !u || !u->IsInWorld()) return 1.0f;
++        Map const* m = u->FindMap();
++        MapEntry const* e = m ? m->GetEntry() : nullptr;
++        if (!e) return 1.0f;
++        switch (e->Expansion())
++        {
++            case 0:  return p.vanilla;
++            case 1:  return p.tbc;
++            default: return 1.0f;
++        }
++    }
++
++    template <typename T> void Scale(T& amount, float share)
++    {
++        if (share >= 0.999f || amount <= 0) return;
++        amount = std::max<T>(1, T(float(amount) * share + 0.5f));
++    }
++
++    class solosim_era_power : public UnitScript
++    {
++    public:
++        solosim_era_power() : UnitScript("solosim_era_power", true, { UNITHOOK_MODIFY_MELEE_DAMAGE, UNITHOOK_MODIFY_SPELL_DAMAGE_TAKEN,
++            UNITHOOK_MODIFY_PERIODIC_DAMAGE_AURAS_TICK, UNITHOOK_MODIFY_HEAL_RECEIVED }) { }
++
++        void ModifyMeleeDamage(Unit* target, Unit* attacker, uint32& damage) override
++        {
++            if (PlayerSide(attacker) && !PlayerSide(target)) Scale(damage, Share(attacker));
++        }
++        void ModifySpellDamageTaken(Unit* target, Unit* attacker, int32& damage, SpellInfo const* /*spell*/) override
++        {
++            if (PlayerSide(attacker) && !PlayerSide(target)) Scale(damage, Share(attacker));
++        }
++        void ModifyPeriodicDamageAurasTick(Unit* target, Unit* attacker, uint32& damage, SpellInfo const* /*spell*/) override
++        {
++            // periodic heals come through here too, then through the heal hook: only hostile ticks count here
++            if (PlayerSide(attacker) && !PlayerSide(target)) Scale(damage, Share(attacker));
++        }
++        void ModifyHealReceived(Unit* a, Unit* b, uint32& heal, SpellInfo const* /*spell*/) override
++        {
++            // (the core passes healer and target in either order) - a heal within the player's side
++            if (PlayerSide(a) && PlayerSide(b)) Scale(heal, Share(a));
++        }
++    };
++}
++
++void AddSC_solosim_era()
++{
++    new solosim_era_power();
++}
+diff --git a/src/server/game/Spells/SpellInfoCorrections.cpp b/src/server/game/Spells/SpellInfoCorrections.cpp
+index c11f429..197946c 100644
+--- a/src/server/game/Spells/SpellInfoCorrections.cpp
++++ b/src/server/game/Spells/SpellInfoCorrections.cpp
+@@ -15,6 +15,7 @@
+  * with this program. If not, see <http://www.gnu.org/licenses/>.
+  */
+ 
++#include "Config.h"
+ #include "DBCStores.h"
+ #include "DBCStructure.h"
+ #include "GameGraveyard.h"
+@@ -40,6 +41,21 @@ void SpellMgr::LoadSpellInfoCorrections()
+ {
+     uint32 oldMSTime = getMSTime();
+ 
++    // SoloWoW Era (Nov 17 night): mounts took 3 seconds to summon before patch 3.2 cut it to 1.5 (the server tells the
++    // client the cast time, so the cast bar follows). SoloWoW.Era.MountCast = 0 keeps 1.5.
++    if (sConfigMgr->GetOption<bool>("SoloWoW.Era.MountCast", true))
++    {
++        SpellCastTimesEntry const* three = nullptr;
++        for (uint32 i = 0; i < sSpellCastTimesStore.GetNumRows() && !three; ++i)
++            if (SpellCastTimesEntry const* e = sSpellCastTimesStore.LookupEntry(i); e && e->CastTime == 3000) three = e;
++        uint32 mounts = 0;
++        if (three)
++            for (uint32 id = 0; id < GetSpellInfoStoreSize(); ++id)
++                if (SpellInfo* s = mSpellInfoMap[id]; s && s->CastTimeEntry && s->CastTimeEntry->CastTime == 1500 && s->HasAura(SPELL_AURA_MOUNTED))
++                { s->CastTimeEntry = three; ++mounts; }
++        LOG_INFO("server.loading", ">> SoloWoW era: {} mounts take 3 seconds to summon again", mounts);
++    }
++
+     // SoloWoW: Plainsrunning (12821, a leftover tauren racial from the beta, still named in the 3.3.5 client) becomes
+     // a stacking run-speed aura the server drives (see SoloSim/solosim_plainsrunning.cpp): +2% per stack, unlimited
+     // duration, can't be cancelled. MOD_INCREASE_SPEED takes the strongest only, so it doesn't stack with other speed
+-- 
+2.56.0.windows.2
+

@@ -1,7 +1,7 @@
 From a433b8488757664efeb712a5712ec62282d293d2 Mon Sep 17 00:00:00 2001
 From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
 Date: Mon, 16 Nov 2026 21:13:50 -0600
-Subject: [PATCH 01/37] Azeroth Alive: living-world sim, bot bubble, townsfolk,
+Subject: [PATCH 01/38] Azeroth Alive: living-world sim, bot bubble, townsfolk,
  boards, camps, threats, grid unloading
 
 The SoloSim living world (solosim*.cpp), the bot bubble that embodies it (botbubble.cpp), and small marked hooks (// SoloWoW) in NPCBots, ObjectMgr, PlayerQuest and Map.

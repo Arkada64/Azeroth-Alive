@@ -106,6 +106,12 @@ $w['SoloWoW.XPBands.Enable'] = if ($NoEra) { '0' } else { '1' }
 # with the difficulty revert (era-db.ps1: vanilla's XP curve and each quest's old XP) the game's own numbers are vanilla's:
 # the bands stay on (they set the sim's pace too) at 1.0 - no stand-in multipliers any more (Nov 17 night)
 $w['SoloWoW.XPBands'] = '"1-80:1.0/1.0"'
+# the player's side in old content (solosim_era.cpp): vanilla content 0.75, TBC 0.85 of their damage and healing
+$w['SoloWoW.Era.Power.Enable'] = if ($NoEra) { '0' } else { '1' }
+$w['SoloWoW.Era.Power.Vanilla'] = '0.75'
+$w['SoloWoW.Era.Power.TBC'] = '0.85'
+$w['SoloWoW.Era.QuestXP'] = if ($NoEra) { '0' } else { '1' }
+$w['SoloWoW.Era.MountCast'] = if ($NoEra) { '0' } else { '1' }   # 3 s to summon a mount, as before 3.2
 $w['SoloWoW.Loot.Enable'] = '1'   # random suffixes and rare finds on loot (solosim_loot.cpp)
 $w['DungeonFinder.OptionsMask'] = if ($NoEra) { '7' } else { '0' }   # 0 = no queue-and-teleport; walk there with hired bots
 # Hiring is free: people come along for their own reasons (regard - see BotBubble::InviteByName / World::HireRefusal), not for gold.

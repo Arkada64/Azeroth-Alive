@@ -23,6 +23,16 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
    creatures became neutral** (find and restore). To decide with the user: which comforts stay (later flight paths, the
    dungeon finder, heirlooms...).
    **Decided (Nov 17 22:30): keep only the later flight paths.** Dual spec, heirlooms, the barbershop and the cheap respecs go back to vanilla/TBC.
+   **Done (Nov 17 night):** era-db.ps1 applies the vanilla/TBC facts (mod-individual-progression, pinned, fetched at
+   install, allow-list only): factions - **the "hostile made neutral" were the starting areas' foes** (Defias Thugs,
+   Frostmane, Scarlet converts, Night Web and Webwood spiders, Bristleback, Durotar's boars and demons, the Sunstrider and
+   Ammen Vale foes: faction 7 since 3.x; nothing above level 7 was touched) - elite rank (outdoor elites on the old
+   continents ~485 -> 768), levels, health/damage/armour, aggro range, speed, money; quest levels and objective counts;
+   vanilla's XP curve (4.08M to 60); each quest's old XP (core hook); dual spec, heirlooms and barbers gone; mounts take
+   3 s again; the player's side at 0.75 in vanilla content and 0.85 in TBC content (you, pets, NPCBots). XP bands now 1.0.
+   **Left:** old dungeon loot (boss greens/blues), regen (the reference itself is unsure of its values), respec prices
+   (check 3.3.5 vs vanilla), the generated quests' XP/money by difficulty and distance, Wrath content to the same formula
+   (outdoor elites, rares, group quests), and a play test of the 0.75/0.85 power numbers.
    - **Generated quests reviewed with the revert:** requests and board bounties pay XP and money by difficulty and
      distance, matched to ordinary quests of the same level after the revert.
    - **Wrath content to the same rules:** review Northrend; where it lacks what vanilla/TBC had (outdoor elites, elite
