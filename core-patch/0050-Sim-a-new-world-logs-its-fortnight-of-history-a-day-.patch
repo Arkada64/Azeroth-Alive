@@ -1,0 +1,32 @@
+From 902dd562938b36b4ff7514ce8739a4892ec030dd Mon Sep 17 00:00:00 2001
+From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 04:54:42 -0600
+Subject: [PATCH 50/50] Sim: a new world logs its fortnight of history a day at
+ a time (it takes ~6 minutes; the log looked stuck)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01JU37XfnHTvru3VVz2sNN7z
+---
+ src/server/game/SoloSim/solosim.cpp | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/src/server/game/SoloSim/solosim.cpp b/src/server/game/SoloSim/solosim.cpp
+index 5b692f7..4fdaff1 100644
+--- a/src/server/game/SoloSim/solosim.cpp
++++ b/src/server/game/SoloSim/solosim.cpp
+@@ -1008,7 +1008,11 @@ std::string World::EnsureReady()
+     // a fortnight of history before anyone arrives: people have levels, friends, grudges and a few graves
+     SimTime start = _clock;
+     uint32 wakes = 0;
+-    Advance(_clock + 14 * MIN_PER_DAY, wakes);
++    for (uint32 day = 1; day <= 14; ++day)               // a day at a time, so the log (and the launcher) shows it going
++    {
++        Advance(start + day * MIN_PER_DAY, wakes);
++        LOG_INFO("server.loading", "SoloWoW sim: a new world is making its history - day {} of 14", day);
++    }
+     Flush(Acore::StringFormat("######## Before you arrived: {} -> {} ########", Clock(start), Clock(_clock)));
+     Persist();
+     uint32 hubs = 0, hunts = 0;
+-- 
+2.56.0.windows.2
+

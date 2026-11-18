@@ -1,7 +1,7 @@
 From 5def82f9284c84e7deeafabf3813fd8f3408c82e Mon Sep 17 00:00:00 2001
 From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
 Date: Mon, 16 Nov 2026 22:21:59 -0600
-Subject: [PATCH 07/49] XP bands: levelling pace by band instead of a flat rate
+Subject: [PATCH 07/50] XP bands: levelling pace by band instead of a flat rate
  (off by default)
 
 - SoloWoW.XPBands.Enable / SoloWoW.XPBands (kill/quest multipliers per level band) replace Rate.XP.* for players

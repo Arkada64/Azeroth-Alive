@@ -1,7 +1,7 @@
 From ba7d8c1e7fead1b7d0a11e6d79be255236dc0eaa Mon Sep 17 00:00:00 2001
 From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
 Date: Wed, 18 Nov 2026 02:47:55 -0600
-Subject: [PATCH 46/49] Sim: truly generated items - reserved ids filled at
+Subject: [PATCH 46/50] Sim: truly generated items - reserved ids filled at
  runtime from a real item the player can use: its stat budget respent on a
  theme of its own (never more), a look of the same kind, a name of its own
  (themes, of-the endings, coined epics, the named foe's possessive); kept in

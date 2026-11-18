@@ -19,6 +19,8 @@ struct Shared {
     sim: String,                 // .sim status line
     chronicle: Vec<String>,
     console: Vec<String>,        // the world console's answers
+    log: Vec<String>,            // the log the Server tab shows (read in the background)
+    log_pick: usize,
     accounts: Vec<core::Account>,
     worlds: Vec<core::SavedWorld>,
     refresh_lists: bool,
@@ -73,6 +75,8 @@ impl App {
                     (core::soap(".sim status").ok(), core::players_online())
                 } else { (None, None) };
                 let chron = core::chronicle_tail(60);
+                let pick = s.lock().unwrap().log_pick;
+                let log = core::log_tail(LOGS[pick].1, 400);
                 let refresh = { let mut g = s.lock().unwrap(); std::mem::take(&mut g.refresh_lists) };
                 let lists = if refresh && st.database.open { Some((core::accounts().unwrap_or_default(), core::saved_worlds())) } else if refresh { Some((Vec::new(), core::saved_worlds())) } else { None };
                 let stop_now = {
@@ -80,6 +84,7 @@ impl App {
                     g.status = st;
                     g.ready = ready;
                     g.chronicle = chron;
+                    g.log = log;
                     if let Some(line) = sim { g.sim = line; }
                     if players.is_some() { g.players = players; }
                     if !st.world.open { g.sim.clear(); g.players = None; }
@@ -198,7 +203,7 @@ impl eframe::App for App {
                 }
             });
             ui.add_space(2.0);
-            if let Some(b) = &busy { ui.horizontal(|ui| { ui.spinner(); ui.label(b); }); }
+            if let Some(b) = &busy { ui.label(format!("... {b}")); }
             else if !message.is_empty() { ui.label(&message); }
             if ask_force && idle {
                 ui.horizontal(|ui| {
@@ -222,7 +227,7 @@ impl eframe::App for App {
         });
 
         if let Some(c) = self.confirm.clone() { self.confirm_window(ctx, c, &st); }
-        ctx.request_repaint_after(Duration::from_millis(500));
+        ctx.request_repaint_after(Duration::from_millis(1500));
     }
 }
 
@@ -338,7 +343,7 @@ impl App {
             ui.label("Log:");
             for (i, (name, _)) in LOGS.iter().enumerate() { ui.selectable_value(&mut self.log_pick, i, *name); }
         });
-        let lines = core::log_tail(LOGS[self.log_pick].1, 400);
+        let lines = { let mut g = self.shared.lock().unwrap(); if g.log_pick != self.log_pick { g.log_pick = self.log_pick; g.log = core::log_tail(LOGS[self.log_pick].1, 400); } g.log.clone() };
         let console_h = 150.0;
         egui::ScrollArea::vertical().id_salt("log").stick_to_bottom(true).auto_shrink([false, false]).max_height(ui.available_height() - console_h - 40.0).show(ui, |ui| {
             for l in &lines { ui.label(egui::RichText::new(l).monospace().size(11.5)); }

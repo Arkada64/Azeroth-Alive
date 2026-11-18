@@ -1,7 +1,7 @@
 From a0bf4a704ad74b4f1b9a27b66caa0c03c7922d11 Mon Sep 17 00:00:00 2001
 From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
 Date: Wed, 18 Nov 2026 04:43:22 -0600
-Subject: [PATCH 49/49] Sim: townsfolk walk out to their work in the country
+Subject: [PATCH 49/50] Sim: townsfolk walk out to their work in the country
  and home again (gatherers, a quiet ground nearby, in stretches of real path);
  no body for a newcomer still on the road (one stood idle at Northshire); sim
  adventurers always keep their talk flag, and say why when they won't talk;
