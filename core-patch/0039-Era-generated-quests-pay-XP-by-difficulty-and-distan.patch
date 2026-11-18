@@ -1,7 +1,7 @@
 From f184d97a4ad5ce29197e2daa0c3e8f9c53f568d0 Mon Sep 17 00:00:00 2001
 From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
 Date: Tue, 17 Nov 2026 23:08:31 -0600
-Subject: [PATCH 39/48] Era: generated quests pay XP by difficulty and distance
+Subject: [PATCH 39/49] Era: generated quests pay XP by difficulty and distance
  (an ordinary quest of their level after the revert, times the work and the
  way there); bounties carry their effort (threat, camp, rare, group); quest XP
  tables load at startup

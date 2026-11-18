@@ -1,7 +1,7 @@
 From 9402732f8182df1abef1c6973a4d1ac149169ed4 Mon Sep 17 00:00:00 2001
 From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
 Date: Wed, 18 Nov 2026 04:22:38 -0600
-Subject: [PATCH 48/48] Sim: save the people with their columns named - a fresh
+Subject: [PATCH 48/49] Sim: save the people with their columns named - a fresh
  world's sim_agent has its later columns in another order, so every save of a
  new world failed and each start built yet another world; a failed save is now
  logged

@@ -1,0 +1,315 @@
+From a0bf4a704ad74b4f1b9a27b66caa0c03c7922d11 Mon Sep 17 00:00:00 2001
+From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 04:43:22 -0600
+Subject: [PATCH 49/49] Sim: townsfolk walk out to their work in the country
+ and home again (gatherers, a quiet ground nearby, in stretches of real path);
+ no body for a newcomer still on the road (one stood idle at Northshire); sim
+ adventurers always keep their talk flag, and say why when they won't talk;
+ .bounty opens the board you stand at
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01JU37XfnHTvru3VVz2sNN7z
+---
+ src/server/game/AI/NpcBots/bot_ai.cpp         |  4 ++
+ src/server/game/AI/NpcBots/botbubble.cpp      |  4 ++
+ src/server/game/SoloSim/solosim.cpp           | 36 ++++++++++
+ src/server/game/SoloSim/solosim.h             |  3 +
+ src/server/game/SoloSim/solosim_boards.cpp    | 12 ++++
+ src/server/game/SoloSim/solosim_boards.h      |  2 +
+ src/server/game/SoloSim/solosim_civilians.cpp | 66 ++++++++++++++++++-
+ src/server/game/SoloSim/solosim_commands.cpp  |  6 +-
+ 8 files changed, 128 insertions(+), 5 deletions(-)
+
+diff --git a/src/server/game/AI/NpcBots/bot_ai.cpp b/src/server/game/AI/NpcBots/bot_ai.cpp
+index 9ca2d12..f9f298e 100644
+--- a/src/server/game/AI/NpcBots/bot_ai.cpp
++++ b/src/server/game/AI/NpcBots/bot_ai.cpp
+@@ -7742,6 +7742,10 @@ bool bot_ai::OnGossipHello(Player* player, uint32 /*option*/)
+         (me->GetVehicle() && me->GetVehicle()->GetBase()->IsInCombat()) ||
+         (!player->IsGameMaster() && ((IsWanderer() && !BotBubble::SimAgentOf(me->GetEntry())) || me->IsSummon()))) // SoloWoW: sim people can be talked to and hired
+     {
++        if (BotBubble::SimAgentOf(me->GetEntry()))   // SoloWoW: why a sim person wouldn't talk (Nov 18)
++            LOG_INFO("npcbots", "SoloWoW gossip: {} won't talk - combat {} cced {} casting {} teleport {} orders {} summon {} class {}", me->GetName(),
++                me->IsInCombat(), CCed(me), IsCasting(), IsDuringTeleport(), HasBotCommandState(BOT_COMMAND_ISSUED_ORDER | BOT_COMMAND_NOGOSSIP), me->IsSummon(),
++                IsWanderer() ? BotCfg::IsWanderingClassEnabled(_botclass) : BotCfg::IsClassEnabled(_botclass));
+         player->PlayerTalkClass->SendCloseGossip();
+         return true;
+     }
+diff --git a/src/server/game/AI/NpcBots/botbubble.cpp b/src/server/game/AI/NpcBots/botbubble.cpp
+index 308f417..94d9dab 100644
+--- a/src/server/game/AI/NpcBots/botbubble.cpp
++++ b/src/server/game/AI/NpcBots/botbubble.cpp
+@@ -178,6 +178,10 @@ namespace
+             if (!bot)
+                 continue;
+             auto h = hiredBy.find(agent);
++            // you can always talk to them (Nov 18: right-clicking an adventurer did nothing - a body could keep the flags
++            // of a fight it had left, or never get them)
++            if (bot->IsInWorld() && bot->IsAlive() && bot->IsFreeBot() && !bot->IsInCombat() && !bot->HasNpcFlag(UNIT_NPC_FLAG_GOSSIP))
++                const_cast<Creature*>(bot)->SetNpcFlag(UNIT_NPC_FLAG_GOSSIP);
+             // a mercenary's day (Nov 18): over when the day is, or when their employer leaves the land they were hired in,
+             // goes into a raid, or somewhere far above them - they hearth home and leave the party
+             if (!bot->IsFreeBot() && h != hiredBy.end() && sSoloSim->IsMercenary(agent))
+diff --git a/src/server/game/SoloSim/solosim.cpp b/src/server/game/SoloSim/solosim.cpp
+index 70fa9ad..5b692f7 100644
+--- a/src/server/game/SoloSim/solosim.cpp
++++ b/src/server/game/SoloSim/solosim.cpp
+@@ -2523,6 +2523,31 @@ std::vector<uint32> const& World::DistrictsOf(uint32 town) const
+ }
+ 
+ // where in town a townsperson lives and works: a district, chosen by how much goes on there
++// the townsfolk whose work is out in the country (Nov 18 - "NPCs actually going out into the world"): the fisher, the
++// herbalist, the woodcutter, the miner and the trapper walk out of town to a quiet hunting ground nearby - out of the
++// city gates and into Elwynn from Stormwind - one their level can live with, a different one most days
++SimSite const* World::WorkGround(SimAgent const& a) const
++{
++    if (a.role != ROLE_CIVILIAN || a.job < JOB_FISHER || a.job > JOB_TRAPPER) return nullptr;
++    SimSite const* home = DistrictOf(a);
++    if (!home) return nullptr;
++    uint32 land = Land(*home);
++    float reach = IsCapital(*SiteById(a.home)) ? 1700.0f : 1100.0f;
++    std::vector<SimSite const*> calm, any;
++    for (SimSite const& s : _sites)
++    {
++        if (s.type != SiteType::Hunt || s.elite || Land(s) != land) continue;
++        float d = Dist2d(s.x, s.y, home->x, home->y);
++        if (d < 180.0f || d > reach) continue;
++        any.push_back(&s);
++        if (s.maxLevel <= a.level + 4) calm.push_back(&s);
++    }
++    std::vector<SimSite const*> const& pool = calm.empty() ? any : calm;
++    if (pool.empty()) return nullptr;
++    uint32 day = _clock / MIN_PER_DAY;
++    return pool[uint32(Mix((uint64(a.id) << 24) ^ (day / (2 + a.id % 3)) ^ 0x30A7) % pool.size())];   // the same ground for a few days
++}
++
+ SimSite const* World::DistrictOf(SimAgent const& a) const
+ {
+     SimSite const* home = SiteById(a.home);
+@@ -4176,6 +4201,7 @@ std::vector<uint32> World::Route(uint32 fromIdx, uint32 toIdx) const
+ bool World::BodyOf(SimAgent const& a, SimBody& b) const
+ {
+     if (a.status != AgentStatus::Active || !a.sourceEntry || a.doing == Verb::Delve) return false;   // inside a dungeon: no body
++    if (a.born > _clock) return false;                  // a newcomer still on the road here (Nov 18: one stood idle at Northshire)
+     SimSite const* here = SiteById(a.site);
+     if (!here) return false;
+     b.agent = a.id; b.name = a.FullName(); b.race = a.race; b.cls = a.cls; b.gender = a.gender; b.level = a.level;
+@@ -4204,6 +4230,14 @@ bool World::BodyOf(SimAgent const& a, SimBody& b) const
+         // townsfolk are out unless they're home asleep; they appear at their own door (the body finds it)
+         if (a.doing == Verb::Sleep || a.doing == Verb::Goto || hereIdx == UINT32_MAX) return false;   // asleep, or on the road to a new home
+         SimSite const* d = DistrictOf(a);                  // in a big town, their own quarter of it
++        if (SimSite const* g = a.doing == Verb::Work ? WorkGround(a) : nullptr)   // out at their work in the country (Nov 18)
++            if (uint32 gi = SiteRoad(g->id); gi != UINT32_MAX)
++            {
++                b.x = g->x; b.y = g->y; b.z = g->z;
++                b.spawnNode = b.goalNode = _roads[gi].id;
++                b.zone = _roads[gi].zone;
++                return true;
++            }
+         b.x = d->x; b.y = d->y; b.z = d->z;
+         b.spawnNode = b.goalNode = _roads[hereIdx].id;
+         b.zone = _roads[hereIdx].zone;
+@@ -4298,6 +4332,8 @@ bool World::Intent(uint32 agentId, SimIntent& out)
+     out.follow = a->follow; out.followKind = a->followKind;
+     if (SimCaravan const* c = CaravanOf(*a)) out.caravanLead = (out.travelling || a->followKind == 1) && !c->guards.empty() && c->guards.front() == a->id;
+     if (SimSite const* hs = a->role == ROLE_CIVILIAN ? DistrictOf(*a) : SiteById(a->home)) { out.homeX = hs->x; out.homeY = hs->y; out.homeZ = hs->z; }
++    if (a->role == ROLE_CIVILIAN && a->doing == Verb::Work)
++        if (SimSite const* g = WorkGround(*a)) { out.workOut = true; out.workX = g->x; out.workY = g->y; out.workZ = g->z; }
+     if (a->role == ROLE_CIVILIAN)
+         for (SimErrand const& e : _errands)
+             if (e.agent == a->id && !e.done && e.kind == ERRAND_ESCORT && e.player)
+diff --git a/src/server/game/SoloSim/solosim.h b/src/server/game/SoloSim/solosim.h
+index d1603f3..7bf470b 100644
+--- a/src/server/game/SoloSim/solosim.h
++++ b/src/server/game/SoloSim/solosim.h
+@@ -250,6 +250,8 @@ namespace SoloSim
+         uint8 escortState = 0;            // 1 on the road, 2 arrived
+         float destX = 0, destY = 0, destZ = 0;   // where they're being walked to
+         bool walk = false;                // their pace: walk in town and when tired or hurt; some people always stroll (Nov 17)
++        bool workOut = false;             // townsfolk whose work is out in the country (Nov 18): where it is today
++        float workX = 0, workY = 0, workZ = 0;
+     };
+ 
+     // ---------------------------------------------------------------- the world
+@@ -431,6 +433,7 @@ namespace SoloSim
+         void Immigration();
+         std::vector<uint32> const& DistrictsOf(uint32 town) const;
+         SimSite const* DistrictOf(SimAgent const& a) const;
++        SimSite const* WorkGround(SimAgent const& a) const;   // out-of-town work: a quiet ground nearby, a different one most days (Nov 18)
+         uint32 TownTarget(SimSite const& h) const;
+         bool CloseToAPlayer(uint32 agentId) const;
+         bool AwayAllows(uint32 salt);
+diff --git a/src/server/game/SoloSim/solosim_boards.cpp b/src/server/game/SoloSim/solosim_boards.cpp
+index 175f020..0d1355e 100644
+--- a/src/server/game/SoloSim/solosim_boards.cpp
++++ b/src/server/game/SoloSim/solosim_boards.cpp
+@@ -228,6 +228,18 @@ namespace SoloBoards
+         return true;
+     }
+ 
++    bool OpenNearestBoard(Player* player)
++    {
++        if (!player) return false;
++        for (auto const& [town, guid] : boards)
++            if (GameObject* go = player->GetMap()->GetGameObject(guid); go && go->IsWithinDistInMap(player, 6.0f))
++            {
++                ShowMenu(player, go);
++                return true;
++            }
++        return false;
++    }
++
+     void SendMarker(Player* player, uint32 map, float x, float y, std::string const& name)
+     {
+         if (!player || player->GetMapId() != map) return;           // the flag only makes sense on your own map
+diff --git a/src/server/game/SoloSim/solosim_boards.h b/src/server/game/SoloSim/solosim_boards.h
+index 985a152..0310beb 100644
+--- a/src/server/game/SoloSim/solosim_boards.h
++++ b/src/server/game/SoloSim/solosim_boards.h
+@@ -16,6 +16,8 @@ namespace SoloBoards
+     void SendMarker(Player* player, uint32 map, float x, float y, std::string const& name);
+     // the nearest bounty board that's up within 800 yd: a flag on the map for it; false if none (Nov 17)
+     bool MarkNearestBoard(Player* player);
++    // .bounty (Nov 18): the board you stand at opens as if you'd clicked it; false if none is within reach
++    bool OpenNearestBoard(Player* player);
+ }
+ 
+ void AddSC_solosim_boards();
+diff --git a/src/server/game/SoloSim/solosim_civilians.cpp b/src/server/game/SoloSim/solosim_civilians.cpp
+index 95aa97a..3d22c98 100644
+--- a/src/server/game/SoloSim/solosim_civilians.cpp
++++ b/src/server/game/SoloSim/solosim_civilians.cpp
+@@ -424,6 +424,11 @@ namespace
+                 _moving = false;
+                 Arrived();
+             }
++            else if (type == POINT_MOTION_TYPE && id == 2 && _moving)   // a stretch of a long walk done: on to the next
++            {
++                _moving = false;
++                _timer = 300;
++            }
+         }
+ 
+         void UpdateAI(uint32 diff) override
+@@ -445,6 +450,7 @@ namespace
+             {
+                 if (GetMSTimeDiffToNow(_moveStart) < 45000 && me->isMoving()) { _timer = 1000; return; }
+                 _moving = false;                                   // stuck or arrived without word: carry on
++                if (_trekking) { _timer = 300; return; }
+                 Arrived();
+                 return;
+             }
+@@ -480,6 +486,40 @@ namespace
+             DoMeleeAttackIfReady();
+         }
+ 
++        // a long walk (Nov 18): out of town to their work, and home again - in stretches of up to 65 yards along the ground,
++        // each one a real path, turning aside where the way ahead is blocked (a wall, the water, a cliff). With no way
++        // on after a few tries, they go on out of sight.
++        bool TrekTo(Position const& goal)
++        {
++            float dist = me->GetExactDist2d(goal.GetPositionX(), goal.GetPositionY());
++            if (dist < 55.0f && Walkable(goal)) { _trekking = false; _trekFails = 0; return false; }   // near enough: walk the last bit
++            BotBubble::ReleaseInnSeat(me->GetEntry());
++            ReleaseClaims(me->GetGUID());
++            me->SetStandState(UNIT_STAND_STATE_STAND);
++            me->SetEmoteState(EMOTE_ONESHOT_NONE);
++            Map* map = me->GetMap();
++            float base = std::atan2(goal.GetPositionY() - me->GetPositionY(), goal.GetPositionX() - me->GetPositionX());
++            static float const offsets[] = { 0.0f, 0.45f, -0.45f, 0.9f, -0.9f, 1.4f, -1.4f };
++            for (float o : offsets)
++            {
++                float step = std::min(dist, 65.0f);
++                float x = me->GetPositionX() + std::cos(base + o) * step, y = me->GetPositionY() + std::sin(base + o) * step;
++                float z = map->GetHeight(me->GetPhaseMask(), x, y, me->GetPositionZ() + 25.0f, true, 60.0f);
++                if (z <= INVALID_HEIGHT || map->IsInWater(me->GetPhaseMask(), x, y, z, me->GetCollisionHeight())) continue;
++                Position p(x, y, z, 0.0f);
++                if (!Walkable(p)) continue;
++                me->SetWalk(true);
++                _trekking = true; _trekFails = 0;
++                _moving = true; _moveStart = getMSTime();
++                me->GetMotionMaster()->MovePoint(2, p);
++                _timer = 1000;
++                return true;
++            }
++            if (++_trekFails > 4) { me->DespawnOrUnsummon(1s); return true; }   // no way on from here: on out of sight
++            _timer = 3000;
++            return true;
++        }
++
+         // the gatherers' work, out where it can be seen (Nov 18): the fisher on the shore, the herbalist knelt by a herb,
+         // the miner at the ore, the woodcutter at the treeline, the trapper setting snares
+         bool Gather(uint8 job, float cx, float cy, float cz)
+@@ -526,8 +566,8 @@ namespace
+         // a dry spot at the water's edge near town, facing the water - found once, kept
+         bool Shore(float cx, float cy, float cz, Position& out)
+         {
+-            if (_shoreFound) { out = _shore; return _shore.GetPositionX() != 0.0f || _shore.GetPositionY() != 0.0f; }
+-            _shoreFound = true;
++            if (_shoreFound && std::hypot(_shoreAt.first - cx, _shoreAt.second - cy) < 100.0f) { out = _shore; return _shore.GetPositionX() != 0.0f || _shore.GetPositionY() != 0.0f; }
++            _shoreFound = true; _shoreAt = { cx, cy }; _shore = Position();
+             Map* map = me->GetMap();
+             for (uint32 k = 0; k < 48; ++k)
+             {
+@@ -861,12 +901,31 @@ namespace
+                 // home time: walk to their own door and go in
+                 Position door = DoorOf(_agent);
+                 if (door.GetPositionX() == 0.0f && door.GetPositionY() == 0.0f) { me->DespawnOrUnsummon(1s); return; }
++                if (float d = me->GetExactDist2d(door.GetPositionX(), door.GetPositionY()); d > 110.0f)   // out in the country: the walk home
++                {
++                    if (d > 2500.0f) { me->DespawnOrUnsummon(1s); return; }
++                    if (TrekTo(door)) return;
++                }
+                 _home = true;
+                 Go(door, 0);
+                 return;
+             }
+             Position p;
+             float cx = in.homeX, cy = in.homeY, cz = in.homeZ;
++            // their work is out in the country today (Nov 18): out of town they go, and there they work
++            if (in.verb == Verb::Work && in.workOut)
++            {
++                Position spot(in.workX, in.workY, in.workZ, 0.0f);
++                if (me->GetExactDist2d(in.workX, in.workY) > 70.0f && TrekTo(spot)) return;
++                if (Gather(in.job, in.workX, in.workY, in.workZ)) return;
++                if (RandomNear(in.workX, in.workY, in.workZ, 10.0f, 60.0f, p))     // nothing of their trade right here: look about
++                    return Go(p, urand(30000, 60000), UNIT_STAND_STATE_STAND, EMOTE_STATE_USE_STANDING);
++            }
++            else if (float d = me->GetExactDist2d(cx, cy); d > 110.0f)    // done out there: back to town
++            {
++                if (d > 2500.0f) { me->DespawnOrUnsummon(1s); return; }
++                if (TrekTo(Position(cx, cy, cz, 0.0f))) return;
++            }
+             switch (in.verb)
+             {
+                 case Verb::Work:
+@@ -979,7 +1038,8 @@ namespace
+         ObjectGuid _npc;
+         bool _moving = false, _home = false, _following = false;
+         std::vector<Move> _moves; std::vector<uint32> _cooldowns; bool _fled = false;
+-        Position _shore; bool _shoreFound = false;
++        Position _shore; bool _shoreFound = false; std::pair<float, float> _shoreAt{ 0.0f, 0.0f };
++        bool _trekking = false; uint32 _trekFails = 0;
+     };
+ }
+ 
+diff --git a/src/server/game/SoloSim/solosim_commands.cpp b/src/server/game/SoloSim/solosim_commands.cpp
+index c6913f3..7af5465 100644
+--- a/src/server/game/SoloSim/solosim_commands.cpp
++++ b/src/server/game/SoloSim/solosim_commands.cpp
+@@ -229,8 +229,10 @@ public:
+     static bool HandleBoard(ChatHandler* handler)
+     {
+         Player* p = handler->GetPlayer();
+-        Say(handler, sSoloSim->PlayerBoard(p->GetMapId(), p->GetPositionX(), p->GetPositionY(), p->GetGUID().GetCounter()));
+-        SoloBoards::MarkNearestBoard(p);                     // and a flag on the map for where it hangs (Nov 17)
++        // the board you stand at opens, as if you'd clicked it (Nov 18 - it used to print every notice in chat)
++        if (SoloBoards::OpenNearestBoard(p)) return true;
++        if (SoloBoards::MarkNearestBoard(p)) handler->SendSysMessage("No bounty board within reach - the nearest is flagged on your map.");
++        else handler->SendSysMessage("There's no bounty board near here. Every town with an inn has one.");
+         return true;
+     }
+ 
+-- 
+2.56.0.windows.2
+

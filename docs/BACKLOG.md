@@ -123,7 +123,10 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
    (fishers on the shore with a pole, herbalists knelt at herbs, miners at the ore, woodcutters, trappers - 443 of them;
    they stock the town's market for the crafters). Townsfolk now fight back when set upon (auto attack and one or two
    moves of their work: a pitchfork Strike, a thrown stone, the smith's Head Crack, the alchemist's Liquid Fire...)
-   and some run for help when badly hurt. **Left:** mercenaries dying for good, never rolling on loot (with party
+   and some run for help when badly hurt. **Out into the world (Nov 18):** the gatherers walk out of town to a quiet
+   hunting ground nearby (up to ~1700 yd from a capital - out of Stormwind into Elwynn), a different one every few days,
+   in stretches along real paths, work there (herbs and ore by their nodes, the shore, the trees), and walk home at the
+   day's end; met out there, they are embodied at their work. **Left:** mercenaries dying for good, never rolling on loot (with party
    rolls), couriers, pilgrims and travelling traders, adventurers gathering in the open.
    - **Mercenaries:** hang about inns and towns, a few per town; hired for money; generated people at about the zone's
      band with their own gear, level and class; price by level (higher help in higher zones costs more); follow you for
