@@ -1,0 +1,567 @@
+From cab47aff8d6179921f0bb618739ff444612bf2a3 Mon Sep 17 00:00:00 2001
+From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 01:13:29 -0600
+Subject: [PATCH 43/43] Sim: dungeons and raids (solosim_dungeons.cpp) - the
+ game's own entrances, level ranges, bosses and loot tables; parties and raid
+ companies go in off-screen, boss by boss against their levels, kits and
+ numbers; XP, coin, wipes; need/greed/pass by class, upgrade and character -
+ winners wear it, the rest to the auction house or a vendor;
+ SoloGear::Gain/Equip for found items
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01JU37XfnHTvru3VVz2sNN7z
+---
+ src/server/game/SoloSim/solosim.cpp          |  13 +-
+ src/server/game/SoloSim/solosim.h            |  18 +-
+ src/server/game/SoloSim/solosim_dungeons.cpp | 315 +++++++++++++++++++
+ src/server/game/SoloSim/solosim_gear.cpp     |  67 ++++
+ src/server/game/SoloSim/solosim_gear.h       |   4 +
+ 5 files changed, 412 insertions(+), 5 deletions(-)
+ create mode 100644 src/server/game/SoloSim/solosim_dungeons.cpp
+
+diff --git a/src/server/game/SoloSim/solosim.cpp b/src/server/game/SoloSim/solosim.cpp
+index 464761a..dd0b5a0 100644
+--- a/src/server/game/SoloSim/solosim.cpp
++++ b/src/server/game/SoloSim/solosim.cpp
+@@ -839,7 +839,7 @@ bool World::Load()
+             a.knownNews = SplitIds(f[45].Get<std::string>());
+             a.role = f[46].Get<uint8>(); a.job = f[47].Get<uint8>(); a.age0 = f[48].Get<uint8>(); a.gear = f[49].Get<std::string>(); a.gearDue = f[50].Get<uint8>(); a.potions = f[51].Get<uint8>();
+             // a step that names no real verb (the Nov 17 townsfolk bug left some): start them afresh
+-            auto bad = [](Verb v) { return uint8(v) > uint8(Verb::Work); };
++            auto bad = [](Verb v) { return uint8(v) > uint8(Verb::Delve); };
+             if (bad(a.doing) || std::ranges::any_of(a.plan, [&](PlanStep const& s) { return bad(s.verb); }))
+             { a.plan.clear(); a.doing = Verb::Idle; a.wakeAt = 0; }
+             if (a.role == ROLE_CIVILIAN && a.doing == Verb::Fight) { a.plan.clear(); a.doing = Verb::Idle; a.wakeAt = 0; }
+@@ -1037,7 +1037,7 @@ static bool Rumorworthy(EventType t)
+         case EventType::Died: case EventType::Defeated: case EventType::Clash: case EventType::RareSlain: case EventType::RareRepelled:
+         case EventType::RareFind: case EventType::BountyPosted: case EventType::BountyDone: case EventType::AmbitionDone:
+         case EventType::LeftRegion: case EventType::Newcomer: case EventType::MovedHome: case EventType::PlayerBounty:
+-        case EventType::PlayerHelped: case EventType::FellBeside: case EventType::Caravan:
++        case EventType::PlayerHelped: case EventType::FellBeside: case EventType::Caravan: case EventType::DungeonRun:
+             return true;
+         default:
+             return false;
+@@ -1061,6 +1061,8 @@ void World::Log(EventType t, SimAgent const& a, uint32 site, std::string text, b
+     _pending.push_back(std::move(e));
+ }
+ 
++bool SimMap(uint32 map) { return SIM_MAPS.contains(map); }
++
+ // the town serving a dock: the nearest hub with an inn within 900 yd that will have this traveller (0 = none)
+ uint32 World::DockTown(uint32 map, float x, float y, SimAgent const& a, float reach) const
+ {
+@@ -3748,6 +3750,9 @@ void World::FinishStep(SimAgent& a, PlanStep const& s)
+         case Verb::Gather:
+             ResolveGather(a, s.site, s.minutes);
+             break;
++        case Verb::Delve:
++            FinishDelve(a);                                  // the run, played out (solosim_dungeons.cpp)
++            break;
+         case Verb::Work:
+             if (a.role == ROLE_CIVILIAN && a.job >= JOB_SMITH) CraftWork(a, s.minutes);   // the crafters' work fills the shelves
+             break;
+@@ -3934,6 +3939,7 @@ void World::Advance(SimTime end, uint32& wakes)
+         if (DayOf(t) > _lastDailyTick) { _lastDailyTick = DayOf(t); DailyTick(); }
+         if (t / (3 * MIN_PER_HOUR) > _lastWildTick) { _lastWildTick = t / (3 * MIN_PER_HOUR); WildlifeTick(); }
+         if (t / MIN_PER_HOUR > _lastGearTick) { _lastGearTick = t / MIN_PER_HOUR; RefreshKits(400); }
++        if (t / (6 * MIN_PER_HOUR) > _lastDelveTick) { _lastDelveTick = t / (6 * MIN_PER_HOUR); DelveTick(); }
+         if (t / (12 * MIN_PER_HOUR) > _lastBountyTick) { _lastBountyTick = t / (12 * MIN_PER_HOUR); PostBounties(); PostErrands(); }
+         Wake(*a);
+         ++wakes;
+@@ -4080,7 +4086,7 @@ std::vector<uint32> World::Route(uint32 fromIdx, uint32 toIdx) const
+ // =====================================================================================================
+ bool World::BodyOf(SimAgent const& a, SimBody& b) const
+ {
+-    if (a.status != AgentStatus::Active || !a.sourceEntry) return false;
++    if (a.status != AgentStatus::Active || !a.sourceEntry || a.doing == Verb::Delve) return false;   // inside a dungeon: no body
+     SimSite const* here = SiteById(a.site);
+     if (!here) return false;
+     b.agent = a.id; b.name = a.FullName(); b.race = a.race; b.cls = a.cls; b.gender = a.gender; b.level = a.level;
+@@ -4279,6 +4285,7 @@ std::string World::Doing(SimAgent const& a) const
+                     SiteName(a.plan.front().site), a.wakeAt > _clock ? a.wakeAt - _clock : 0);
+             break;
+         case Verb::Fight:     return Acore::StringFormat("hunting {}", SiteName(a.site));
++        case Verb::Delve:     return Acore::StringFormat("in a dungeon near {} with friends", SiteName(a.site));
+         case Verb::Gather:    return Acore::StringFormat("gathering {}", PlaceOnly(SiteName(a.site)));
+         case Verb::Sleep:     if (AtCamp(a)) return "camped out by a fire near " + PlaceOnly(SiteName(a.site));
+                               return std::string(a.role == ROLE_CIVILIAN ? "asleep at home in " : "asleep in ") + SiteName(a.site);
+diff --git a/src/server/game/SoloSim/solosim.h b/src/server/game/SoloSim/solosim.h
+index cb15e7c..98372d3 100644
+--- a/src/server/game/SoloSim/solosim.h
++++ b/src/server/game/SoloSim/solosim.h
+@@ -44,6 +44,7 @@ namespace SoloSim
+ 
+     // levelling curve by band (solosim_xp.cpp): the multiplier at this level for kills or quests, negative when off
+     float BandXP(uint8 level, bool quest);
++    bool SimMap(uint32 map);                     // one of the sim's continents
+ 
+     // ---------------------------------------------------------------- sites
+     enum class SiteType : uint8 { Hub = 1, Hunt = 2 };
+@@ -71,7 +72,8 @@ namespace SoloSim
+ 
+     // ---------------------------------------------------------------- agents
+     enum class AgentStatus : uint8 { Active = 1, Recovering = 2, Dead = 3, Gone = 4, Hired = 5 };
+-    enum class Verb : uint8 { Idle = 0, Goto = 1, Fight = 2, Sleep = 3, Trade = 4, Socialize = 5, Recover = 6, Gather = 7, Train = 8, Work = 9 };
++    enum class Verb : uint8 { Idle = 0, Goto = 1, Fight = 2, Sleep = 3, Trade = 4, Socialize = 5, Recover = 6, Gather = 7, Train = 8, Work = 9,
++                             Delve = 10 };   // inside a dungeon or raid (Nov 18)
+     enum class AmbitionType : uint8 { None = 0, ReachLevel = 1, SaveGold = 2, SeePlace = 3, Avenge = 4,
+                                        Revenge = 5 };   // Revenge: pay back the one who beat you in a clash (avengeFor = them)
+     enum Role : uint8 { ROLE_ADVENTURER = 0, ROLE_CIVILIAN = 1, ROLE_THREAT = 2 };   // threat: a roaming hero-class elite (hostile to all)
+@@ -165,7 +167,8 @@ namespace SoloSim
+         RareSlain = 29, BountyAbandoned = 30, RareRepelled = 31, PlayerHelped = 32, Hired = 33, Dismissed = 34, PlayerBounty = 35,
+         Clash = 36,                                        // Alliance and Horde adventurers came to blows (Nov 17)
+         Caravan = 37,                                      // a caravan set out, was attacked, robbed, arrived (Nov 17)
+-        Befriended = 38                                    // a player put them on their friends list (Nov 17 night)
++        Befriended = 38,                                   // a player put them on their friends list (Nov 17 night)
++        DungeonRun = 39                                    // a party or raid company went in, and how it went (Nov 18)
+     };
+ 
+     struct SimEvent
+@@ -297,6 +300,15 @@ namespace SoloSim
+         // A game creature died on a continent: count it against its hunting ground (if countIt), and return how many
+         // extra seconds it should stay dead because the ground has been hunted hard (0 = respawn as normal).
+         uint32 HuntedDeath(uint32 map, float x, float y, uint32 respawnDelay, bool countIt);
++        // dungeons and raids (Nov 18; solosim_dungeons.cpp)
++        struct SimBoss { uint32 entry = 0; std::string name; uint8 level = 1; uint32 lootId = 0; };
++        struct SimDungeon { uint32 map = 0; std::string name; uint32 outMap = 0; float x = 0, y = 0, z = 0; uint8 lo = 0, hi = 0; bool raid = false; uint32 size = 5; std::vector<SimBoss> bosses; };
++        struct SimRun { uint32 id = 0, dungeon = 0; std::vector<uint32> members; SimTime end = 0; bool resolved = false; };
++        void BuildDungeons();
++        void DelveTick();
++        void FinishDelve(SimAgent& a);
++        void ResolveRun(SimRun& run);
++        std::string PartyNames(std::vector<uint32> const& ids) const;
+         void RefreshKits(uint32 budget);             // real kits for everyone, changed by what happens to them (solosim_gear.cpp)
+         // the auction houses (Nov 18): what the sim's people put up, who buys, who gets paid (solosim_market.cpp)
+         struct MarketListing { uint32 agent = 0, entry = 0; int32 suffix = 0; uint8 greed = 50; bool horde = false; bool neutral = false; };
+@@ -570,6 +582,8 @@ namespace SoloSim
+         SimTime _lastWildTick = 0;                   // 3-hour wildlife steps
+         SimTime _lastGearTick = 0;                   // hourly: kits brought up to date (Nov 17 night)
+         uint32 _gearCursor = 0;
++        std::vector<SimDungeon> _dungeons; bool _dungeonsBuilt = false;
++        std::map<uint32, SimRun> _runs; std::unordered_map<uint32, uint32> _runOf; uint32 _nextRun = 1; SimTime _lastDelveTick = 0;
+         std::vector<MarketListing> _toList;        // pieces taken off, waiting to go up at the auction house
+         std::array<std::array<uint32, 9>, 2> _bandCount{}; SimTime _bandAt = 0;
+         std::unordered_map<uint32, SimTime> _lastSeen;   // agent -> when their body was last seen near the player
+diff --git a/src/server/game/SoloSim/solosim_dungeons.cpp b/src/server/game/SoloSim/solosim_dungeons.cpp
+new file mode 100644
+index 0000000..2a236cb
+--- /dev/null
++++ b/src/server/game/SoloSim/solosim_dungeons.cpp
+@@ -0,0 +1,315 @@
++// SoloWoW: dungeons and raids in the sim (Nov 18) - the user's design.
++//
++// The dungeons are the game's own: every teleport into a dungeon or raid map from the four continents is an entrance,
++// with its level range (the creatures inside), its bosses (rank boss, or marked a dungeon boss) and their real loot
++// tables. A party of the right level, of one side, gathers at the town nearest the entrance, walks in and is gone from
++// the world while inside. The run is played boss by boss against their levels, kits and numbers: a boss down gives XP,
++// coin and its loot, rolled from its own tables; a wipe ends the run - wounds, and now and then a defeat (the dungeon
++// scale: far kinder than the open world). Raids: companies of the raid's size, of one side, at its level, go once in a
++// while; boss by boss the same way; raid deaths never count.
++//
++// Loot rolls: each member needs (the item fits their class and beats what they wear), greeds (by character, or coin) or
++// passes; the highest need wins, then the highest greed. A winner who needed puts it on (what came off goes to the
++// auction house or a vendor); a greed winner sells it - at the auction house if it's not bound, else to a vendor.
++#include "solosim.h"
++#include "solosim_gear.h"
++#include "DBCStores.h"
++#include "DatabaseEnv.h"
++#include "Field.h"
++#include "Item.h"
++#include "Log.h"
++#include "ObjectMgr.h"
++#include "QueryResult.h"
++#include "Formulas.h"
++#include "MapMgr.h"
++#include <algorithm>
++#include <set>
++
++namespace SoloSim
++{
++namespace
++{
++    struct LootRow { uint32 item = 0, reference = 0; float chance = 0; uint8 group = 0; uint8 minCount = 1, maxCount = 1; };
++    std::unordered_map<uint32, std::vector<LootRow>> creatureLoot, referenceLoot;
++
++    void LoadLoot(std::set<uint32> const& ids)
++    {
++        if (ids.empty()) return;
++        std::string list;
++        for (uint32 id : ids) list += (list.empty() ? "" : ",") + std::to_string(id);
++        auto read = [](QueryResult r, std::unordered_map<uint32, std::vector<LootRow>>& into) {
++            if (!r) return;
++            do
++            {
++                Field* f = r->Fetch();
++                if (f[4].Get<bool>()) continue;                         // quest items: not for the sim
++                LootRow l; l.item = f[1].Get<uint32>(); l.reference = f[2].Get<uint32>(); l.chance = f[3].Get<float>();
++                l.group = f[5].Get<uint8>(); l.minCount = f[6].Get<uint8>(); l.maxCount = f[7].Get<uint8>();
++                into[f[0].Get<uint32>()].push_back(l);
++            } while (r->NextRow());
++        };
++        read(WorldDatabase.Query("SELECT Entry, Item, Reference, Chance, QuestRequired, GroupId, MinCount, MaxCount FROM creature_loot_template WHERE Entry IN ({})", list), creatureLoot);
++        read(WorldDatabase.Query("SELECT Entry, Item, Reference, Chance, QuestRequired, GroupId, MinCount, MaxCount FROM reference_loot_template"), referenceLoot);
++    }
++
++    // the core's way, roughly: ungrouped rows roll each on their own; a group gives one of its rows (the explicit
++    // chances first, then an equal share of the rest); a reference rolls its own table
++    void Roll(std::vector<LootRow> const& rows, Rng& r, std::vector<uint32>& out, uint32 depth)
++    {
++        if (depth > 4) return;
++        std::map<uint8, std::vector<LootRow const*>> groups;
++        for (LootRow const& l : rows)
++        {
++            if (l.group) { groups[l.group].push_back(&l); continue; }
++            if (!r.Chance(std::max(0.0f, l.chance) / 100.0f)) continue;
++            if (l.reference)
++            {
++                if (auto it = referenceLoot.find(l.reference); it != referenceLoot.end())
++                    for (uint32 n = 0; n < std::max<uint32>(1, l.maxCount); ++n) Roll(it->second, r, out, depth + 1);
++            }
++            else out.push_back(l.item);
++        }
++        for (auto const& [g, list] : groups)
++        {
++            LootRow const* pick = nullptr;
++            float roll = r.Float() * 100.0f, explicitSum = 0.0f;
++            std::vector<LootRow const*> equal;
++            for (LootRow const* l : list)
++            {
++                if (l->chance > 0.0f) { explicitSum += l->chance; if (!pick && roll < explicitSum) pick = l; }
++                else equal.push_back(l);
++            }
++            if (!pick && !equal.empty() && explicitSum < 100.0f) pick = equal[r.Range(0, uint32(equal.size()) - 1)];
++            if (!pick) continue;
++            if (pick->reference)
++            {
++                if (auto it = referenceLoot.find(pick->reference); it != referenceLoot.end()) Roll(it->second, r, out, depth + 1);
++            }
++            else out.push_back(pick->item);
++        }
++    }
++}
++
++// ---- the catalogue -------------------------------------------------------------------------------------------------
++void World::BuildDungeons()
++{
++    _dungeonsBuilt = true;
++    _dungeons.clear();
++    std::set<uint32> seen;
++    for (uint32 i = 1; i < 8000; ++i)                                    // 3.3.5's trigger ids stay below this
++    {
++        AreaTrigger const* at = sObjectMgr->GetAreaTrigger(i);
++        AreaTriggerTeleport const* tp = sObjectMgr->GetAreaTriggerTeleport(i);
++        if (!at || !tp || !SimMap(at->map) || seen.contains(tp->target_mapId)) continue;
++        MapEntry const* me = sMapStore.LookupEntry(tp->target_mapId);
++        if (!me || !me->IsDungeon() || me->IsBattlegroundOrArena()) continue;
++        seen.insert(tp->target_mapId);
++        SimDungeon d;
++        d.map = tp->target_mapId; d.name = me->name[0]; d.outMap = at->map; d.x = at->x; d.y = at->y; d.z = at->z;
++        d.raid = me->IsRaid();
++        if (MapDifficulty const* md = GetMapDifficultyData(d.map, REGULAR_DIFFICULTY)) d.size = md->maxPlayers;
++        if (!d.size) d.size = d.raid ? 40 : 5;
++        _dungeons.push_back(std::move(d));
++    }
++    // levels and bosses from the creatures inside
++    std::map<uint32, SimDungeon*> byMap;
++    for (SimDungeon& d : _dungeons) byMap[d.map] = &d;
++    std::map<uint32, std::vector<uint8>> levels;
++    std::map<uint32, std::set<uint32>> bossSeen;
++    std::set<uint32> lootIds;
++    for (auto const& [guid, data] : sObjectMgr->GetAllCreatureData())
++    {
++        auto it = byMap.find(data.mapid);
++        if (it == byMap.end()) continue;
++        CreatureTemplate const* t = sObjectMgr->GetCreatureTemplate(data.id);
++        if (!t || t->npcflag || t->type == CREATURE_TYPE_CRITTER) continue;
++        bool boss = t->rank == CREATURE_ELITE_WORLDBOSS || (t->flags_extra & CREATURE_FLAG_EXTRA_DUNGEON_BOSS);
++        if (!boss) { levels[data.mapid].push_back(t->minlevel); continue; }
++        if (!bossSeen[data.mapid].insert(t->Entry).second) continue;
++        SimDungeon& d = *it->second;
++        if (d.bosses.size() >= (d.raid ? 15u : 10u)) continue;
++        d.bosses.push_back({ t->Entry, t->Name, uint8(std::min<uint32>(t->maxlevel, 83)), t->lootid });
++        if (t->lootid) lootIds.insert(t->lootid);
++    }
++    for (SimDungeon& d : _dungeons)
++    {
++        std::vector<uint8>& l = levels[d.map];
++        if (l.empty()) continue;
++        std::ranges::sort(l);
++        d.lo = l[l.size() / 10]; d.hi = l[l.size() * 9 / 10];
++    }
++    std::erase_if(_dungeons, [](SimDungeon const& d) { return d.bosses.empty() || !d.lo; });
++    LoadLoot(lootIds);
++    uint32 raids = uint32(std::ranges::count_if(_dungeons, [](SimDungeon const& d) { return d.raid; }));
++    LOG_INFO("server.loading", "SoloWoW sim: {} dungeons and {} raids the sim's people can go into ({} boss loot tables)",
++        uint32(_dungeons.size()) - raids, raids, uint32(lootIds.size()));
++}
++
++// ---- going in --------------------------------------------------------------------------------------------------------
++// every six sim-hours: a few parties for the dungeons, now and then a raid company
++void World::DelveTick()
++{
++    if (!_dungeonsBuilt) BuildDungeons();
++    Rng r(_seed, uint32(_clock), _clock, 9970);
++    for (uint32 di = 0; di < _dungeons.size(); ++di)
++    {
++        SimDungeon const& d = _dungeons[di];
++        if (!r.Chance(d.raid ? 0.03f : 0.15f)) continue;            // (Nov 18 test: 0.35 sent ~190 parties in 61 hours)
++        bool horde = r.Chance(0.5f);
++        uint8 lo = d.lo > 1 ? d.lo - 1 : 1, hi = uint8(d.hi + (d.raid ? 3 : 1));
++        // who could go: free, fit, of the side and level, not near the player
++        std::vector<std::pair<uint32, uint32>> fit;                  // (travel minutes, agent)
++        for (auto& [id, a] : _agents)
++        {
++            if (a.role != ROLE_ADVENTURER || a.status != AgentStatus::Active || IsHordeRace(a.race) != horde) continue;
++            if (a.level < lo || a.level > hi || a.wounds > 30 || a.fatigue > 60 || a.caravan || a.follow || a.doing == Verb::Delve) continue;
++            if (auto s = _lastSeen.find(id); s != _lastSeen.end() && _clock - s->second < 30) continue;
++            SimSite const* here = SiteById(a.site);
++            if (!here || (!d.raid && here->map != d.outMap)) continue;   // dungeons: someone on the same continent
++            fit.emplace_back(0, id);
++        }
++        if (fit.size() < (d.raid ? d.size * 3 / 4 : 4u)) continue;
++        uint32 town = DockTown(d.outMap, d.x, d.y, _agents.at(fit.front().second), 4000.0f);
++        if (!town) continue;
++        for (auto& [m, id] : fit) m = TravelMinutes(_agents.at(id).site, town, _agents.at(id));
++        std::ranges::sort(fit);
++        uint32 want = std::min<uint32>(d.size, uint32(fit.size()));
++        if (!d.raid && want > 5) want = 5;
++        std::vector<uint32> members;
++        for (auto const& [m, id] : fit) { if (members.size() >= want || m > (d.raid ? 600u : 150u)) break; members.push_back(id); }
++        if (members.size() < (d.raid ? d.size * 3 / 4 : 4u)) continue;
++        // all gather, then go in together: the run ends at the same time for everyone
++        uint32 gather = 0;
++        for (uint32 id : members) gather = std::max(gather, TravelMinutes(_agents.at(id).site, town, _agents.at(id)));
++        uint32 inside = uint32(d.bosses.size()) * (d.raid ? 25 : 15) + 40;
++        SimRun run; run.id = _nextRun++; run.dungeon = di; run.members = members; run.end = _clock + gather + inside;
++        for (uint32 id : members)
++        {
++            SimAgent& a = _agents.at(id);
++            uint32 walk = TravelMinutes(a.site, town, a);
++            a.plan.clear(); a.party = 0; a.bounty = 0;
++            if (a.site != town && walk) a.plan.push_back({ Verb::Goto, town, walk, false });
++            a.plan.push_back({ Verb::Delve, town, std::max<uint32>(1, uint32(run.end - _clock) - (a.site != town ? walk : 0)), false });
++            a.doing = a.plan.front().verb; a.wakeAt = _clock + std::max<uint32>(1, a.plan.front().minutes);
++            _runOf[id] = run.id;
++            _requeue.push_back(id);
++        }
++        Log(EventType::DungeonRun, _agents.at(members.front()), town, Acore::StringFormat("{} gathered at {}{} to go into {}.",
++            d.raid ? Acore::StringFormat("A company of {}", members.size()) : PartyNames(members), SiteName(town),
++            d.raid ? "" : "", d.name), d.raid);
++        _runs[run.id] = std::move(run);
++    }
++}
++
++std::string World::PartyNames(std::vector<uint32> const& ids) const
++{
++    std::vector<std::string> n;
++    for (uint32 id : ids) if (auto it = _agents.find(id); it != _agents.end()) n.push_back(it->second.FullName());
++    if (n.empty()) return "Someone";
++    std::string s = n[0];
++    for (size_t i = 1; i < n.size(); ++i) s += (i + 1 == n.size() ? " and " : ", ") + n[i];
++    return s;
++}
++
++// a member's run is over (their Delve step ended): the first to finish plays it out for all
++void World::FinishDelve(SimAgent& a)
++{
++    auto ro = _runOf.find(a.id);
++    if (ro == _runOf.end()) return;                                   // a run from before a restart: nothing to tell
++    uint32 runId = ro->second;
++    _runOf.erase(ro);
++    auto it = _runs.find(runId);
++    if (it == _runs.end()) return;
++    if (!it->second.resolved) ResolveRun(it->second);
++    if (std::ranges::none_of(it->second.members, [this](uint32 m) { return _runOf.contains(m); })) _runs.erase(it);
++}
++
++void World::ResolveRun(SimRun& run)
++{
++    run.resolved = true;
++    SimDungeon const& d = _dungeons[run.dungeon];
++    std::vector<SimAgent*> party;
++    for (uint32 id : run.members)
++        if (SimAgent* a = AgentById(id); a && a->status == AgentStatus::Active) party.push_back(a);
++    if (party.empty()) return;
++    Rng r(_seed, run.id, _clock, 8970);
++    uint32 down = 0;
++    std::vector<std::string> notes;
++    for (uint32 bi = 0; bi < d.bosses.size(); ++bi)
++    {
++        SimBoss const& b = d.bosses[bi];
++        // the party's strength against what the boss asks of a full group of its level; the last bosses ask more
++        float power = 0;
++        for (SimAgent* m : party) power += float(m->level) * 4.0f + m->gearTier / 10.0f;
++        float need = float(d.size) * (float(b.level) * 4.0f + 5.0f) * (1.0f + 0.04f * float(bi));
++        float chance = std::clamp(0.8f + 2.0f * (power / std::max(1.0f, need) - 1.0f), 0.05f, 0.97f);
++        if (!r.Chance(chance))
++        {
++            // a wipe: everyone hurt, the run over; a defeat for some (never in a raid)
++            for (SimAgent* m : party)
++            {
++                m->wounds = uint8(std::min<uint32>(100, m->wounds + 45));
++                if (!d.raid && r.Chance(0.15f))
++                    if (SimSite const* s = SiteById(m->site)) { float keep = _deathScale; _deathScale = 0.15f; Defeat(*m, *s); _deathScale = keep; }
++            }
++            notes.push_back(Acore::StringFormat("{} beat them back", b.name));
++            break;
++        }
++        ++down;
++        // XP and coin for each, as for an elite and the packs before it
++        for (SimAgent* m : party)
++        {
++            if (m->status != AgentStatus::Active) continue;
++            float band = BandXP(m->level, false);
++            uint32 xp = uint32(Acore::XP::BaseGain(m->level, b.level, CONTENT_1_60) * 6.0f * (band >= 0.0f ? band : 1.0f) / (d.raid ? 4.0f : 1.0f));
++            m->xp += xp;
++            while (m->level < 80 && m->xp >= sObjectMgr->GetXPForLevel(m->level)) { m->xp -= sObjectMgr->GetXPForLevel(m->level); ++m->level; m->gearDue = uint8(std::min<uint32>(6, m->gearDue + 1u)); }
++            m->money += uint32(b.level) * b.level * 3 / uint32(party.size()) + 10;
++        }
++        // the loot, and the rolls
++        std::vector<uint32> drops;
++        if (auto lt = creatureLoot.find(b.lootId); lt != creatureLoot.end()) Roll(lt->second, r, drops, 0);
++        for (uint32 entry : drops)
++        {
++            ItemTemplate const* p = sObjectMgr->GetItemTemplate(entry);
++            if (!p || (p->Class != ITEM_CLASS_WEAPON && p->Class != ITEM_CLASS_ARMOR)) continue;
++            if (p->Quality < ITEM_QUALITY_UNCOMMON) continue;
++            SimAgent* winner = nullptr; int32 best = -1; bool needed = false;
++            for (SimAgent* m : party)
++            {
++                if (m->status != AgentStatus::Active) continue;
++                int32 gain = SoloGear::Gain(m->cls, m->level, m->gear, entry);
++                bool need = gain > 2;
++                bool greed = !need && (m->greed > 45 || p->SellPrice > uint32(m->level) * m->level * 20);
++                if (!need && !greed) continue;                           // pass
++                int32 roll = int32(r.Range(1, 100)) + (need ? 1000 : 0);
++                if (roll > best) { best = roll; winner = m; needed = need; }
++            }
++            if (!winner) continue;
++            int32 suffix = Item::GenerateItemRandomPropertyId(entry);
++            std::vector<std::pair<uint32, int32>> off;
++            bool sell = true;
++            if (needed && SoloGear::Equip(winner->cls, winner->level, winner->gear, entry, suffix, &off)) { TierFromKit(*winner); sell = false; }
++            else off.emplace_back(entry, suffix);
++            SimSite const* at = SiteById(winner->site);
++            for (auto const& [oe, os] : off)
++                if (ItemTemplate const* op = sObjectMgr->GetItemTemplate(oe))
++                {
++                    if (op->Quality >= ITEM_QUALITY_UNCOMMON && op->Bonding != BIND_WHEN_PICKED_UP && _toList.size() < 2000)
++                        _toList.push_back({ winner->id, oe, os, winner->greed, IsHordeRace(winner->race), at && at->side == SIDE_NEUTRAL });
++                    else winner->money += op->SellPrice;
++                }
++            if (p->Quality >= ITEM_QUALITY_RARE && notes.size() < 4)
++                notes.push_back(Acore::StringFormat("{} dropped {}, {} by {}", b.name, p->Name1, sell ? "sold on" : "won", winner->FullName()));
++        }
++    }
++    for (SimAgent* m : party) { m->fatigue = uint8(std::min<uint32>(100, m->fatigue + 30)); m->plan.clear(); }
++    std::string who = d.raid ? Acore::StringFormat("A company of {}", party.size()) : PartyNames(run.members);
++    std::string how = down == d.bosses.size() ? Acore::StringFormat("cleared {}", d.name)
++                    : down ? Acore::StringFormat("fought through {} of {}'s {} bosses", down, d.name, d.bosses.size())
++                           : Acore::StringFormat("went into {} and came straight back out", d.name);
++    std::string text = who + " " + how;
++    for (size_t i = 0; i < notes.size(); ++i) text += (i == 0 ? ": " : "; ") + notes[i];
++    Log(EventType::DungeonRun, *party.front(), party.front()->site, text + ".", true, 0, int32(down), int32(d.bosses.size()));
++}
++}
+diff --git a/src/server/game/SoloSim/solosim_gear.cpp b/src/server/game/SoloSim/solosim_gear.cpp
+index 773b7f8..3b45631 100644
+--- a/src/server/game/SoloSim/solosim_gear.cpp
++++ b/src/server/game/SoloSim/solosim_gear.cpp
+@@ -17,6 +17,7 @@
+ #include "ItemTemplate.h"
+ #include "ObjectMgr.h"
+ #include <algorithm>
++#include <climits>
+ #include <array>
+ #include <cstdio>
+ #include <map>
+@@ -116,6 +117,72 @@ namespace
+     }
+ }
+ 
++// ---- a found or won item (Nov 18: dungeon loot) ------------------------------------------------------------------
++namespace
++{
++    std::vector<uint8> SlotsFor(ItemTemplate const* p)
++    {
++        switch (p->InventoryType)
++        {
++            case INVTYPE_HEAD: return { BOT_SLOT_HEAD };
++            case INVTYPE_NECK: return { BOT_SLOT_NECK };
++            case INVTYPE_SHOULDERS: return { BOT_SLOT_SHOULDERS };
++            case INVTYPE_CLOAK: return { BOT_SLOT_BACK };
++            case INVTYPE_CHEST: case INVTYPE_ROBE: return { BOT_SLOT_CHEST };
++            case INVTYPE_WAIST: return { BOT_SLOT_WAIST };
++            case INVTYPE_LEGS: return { BOT_SLOT_LEGS };
++            case INVTYPE_FEET: return { BOT_SLOT_FEET };
++            case INVTYPE_WRISTS: return { BOT_SLOT_WRIST };
++            case INVTYPE_HANDS: return { BOT_SLOT_HANDS };
++            case INVTYPE_FINGER: return { BOT_SLOT_FINGER1, BOT_SLOT_FINGER2 };
++            case INVTYPE_TRINKET: return { BOT_SLOT_TRINKET1, BOT_SLOT_TRINKET2 };
++            case INVTYPE_WEAPON: return { BOT_SLOT_MAINHAND, BOT_SLOT_OFFHAND };
++            case INVTYPE_2HWEAPON: case INVTYPE_WEAPONMAINHAND: return { BOT_SLOT_MAINHAND };
++            case INVTYPE_WEAPONOFFHAND: case INVTYPE_SHIELD: case INVTYPE_HOLDABLE: return { BOT_SLOT_OFFHAND };
++            case INVTYPE_RANGED: case INVTYPE_THROWN: case INVTYPE_RANGEDRIGHT: case INVTYPE_RELIC: return { BOT_SLOT_RANGED };
++            default: return {};
++        }
++    }
++    int32 Worth(ItemTemplate const* p) { static int32 const q[] = { -5, 0, 3, 7, 13, 20, 20, 20 }; return int32(p->ItemLevel) + q[std::min<uint32>(p->Quality, 7)]; }
++}
++
++int32 Gain(uint8 cls, uint8 level, std::string const& kit, uint32 entry, uint8* slotOut)
++{
++    ItemTemplate const* p = sObjectMgr->GetItemTemplate(entry);
++    if (!p || cls < BOT_CLASS_WARRIOR || cls > BOT_CLASS_DRUID || cls == BOT_CLASS_DEATH_KNIGHT) return INT32_MIN;
++    std::map<uint8, uint32> have;
++    for (Piece const& g : Parse(kit)) have[g.slot] = g.entry;
++    ItemTemplate const* mh = have.contains(BOT_SLOT_MAINHAND) ? sObjectMgr->GetItemTemplate(have[BOT_SLOT_MAINHAND]) : nullptr;
++    int32 best = INT32_MIN;
++    for (uint8 s : SlotsFor(p))
++    {
++        if (!SlotOpen(s, cls, level) || !bot_ai::CanEquipFor(cls, level, BOT_SPEC_DEFAULT, CanRanged(cls), p, s)) continue;
++        if (s == BOT_SLOT_OFFHAND && mh && mh->InventoryType == INVTYPE_2HWEAPON) continue;
++        if (have.contains(s) && have[s] == entry) continue;                       // the very same piece already
++        ItemTemplate const* cur = have.contains(s) ? sObjectMgr->GetItemTemplate(have[s]) : nullptr;
++        int32 g = Worth(p) - (cur ? Worth(cur) : 0);
++        if (g > best) { best = g; if (slotOut) *slotOut = s; }
++    }
++    return best;
++}
++
++bool Equip(uint8 cls, uint8 level, std::string& kit, uint32 entry, int32 suffix, std::vector<std::pair<uint32, int32>>* off)
++{
++    uint8 slot = 0;
++    if (Gain(cls, level, kit, entry, &slot) <= 0) return false;
++    std::map<uint8, Piece> bySlot;
++    for (Piece const& g : Parse(kit)) bySlot[g.slot] = g;
++    if (auto it = bySlot.find(slot); it != bySlot.end() && off) off->emplace_back(it->second.entry, it->second.suffix);
++    Piece g; g.slot = slot; g.entry = entry; g.suffix = suffix;
++    bySlot[slot] = g;
++    if (ItemTemplate const* p = sObjectMgr->GetItemTemplate(entry); p && slot == BOT_SLOT_MAINHAND && p->InventoryType == INVTYPE_2HWEAPON)
++        if (auto oh = bySlot.find(BOT_SLOT_OFFHAND); oh != bySlot.end()) { if (off) off->emplace_back(oh->second.entry, oh->second.suffix); bySlot.erase(oh); }
++    kit.clear();
++    for (auto const& [s, x] : bySlot)
++        kit += (kit.empty() ? "" : ",") + std::to_string(uint32(s)) + ":" + std::to_string(x.entry) + ":" + std::to_string(x.suffix) + ":" + std::to_string(x.enchant);
++    return true;
++}
++
+ std::string Refresh(uint8 cls, uint8 level, std::string const& kit, uint8 due, uint64 seed, uint32* changed,
+     std::vector<std::pair<uint32, int32>>* replaced)
+ {
+diff --git a/src/server/game/SoloSim/solosim_gear.h b/src/server/game/SoloSim/solosim_gear.h
+index f0379f8..6d80e95 100644
+--- a/src/server/game/SoloSim/solosim_gear.h
++++ b/src/server/game/SoloSim/solosim_gear.h
+@@ -10,5 +10,9 @@ namespace SoloGear
+     // pieces replaced where something better fits (changed: how many pieces are new)
+     std::string Refresh(uint8 cls, uint8 level, std::string const& kit, uint8 due, uint64 seed, uint32* changed = nullptr,
+         std::vector<std::pair<uint32, int32>>* replaced = nullptr);   // replaced: the pieces taken off (entry, suffix)
++    // a found or won item: how much better it is than what they wear in the slot it would go to (item level, quality),
++    // INT32_MIN if they can't use it; Equip puts it on when it's an upgrade (what came off goes into off)
++    int32 Gain(uint8 cls, uint8 level, std::string const& kit, uint32 entry, uint8* slot = nullptr);
++    bool Equip(uint8 cls, uint8 level, std::string& kit, uint32 entry, int32 suffix, std::vector<std::pair<uint32, int32>>* off = nullptr);
+ }
+ #endif
+-- 
+2.56.0.windows.2
+

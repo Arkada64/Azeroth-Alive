@@ -1,7 +1,7 @@
 From e98ac930fac3c76a3587afde75b9b4eb71a13a4b Mon Sep 17 00:00:00 2001
 From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
 Date: Tue, 17 Nov 2026 07:06:19 -0600
-Subject: [PATCH 24/42] The sleeping don't talk: no chatter from (or to) a
+Subject: [PATCH 24/43] The sleeping don't talk: no chatter from (or to) a
  sleeping adventurer or townsperson
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

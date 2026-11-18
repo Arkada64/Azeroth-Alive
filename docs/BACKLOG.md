@@ -77,6 +77,16 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
    auction-successful hook. Tested: 277 listings in three houses, trades, clean up. Not yet seen: a sim buyer for one
    of the player's auctions (same core steps as a player buyout). Later: buyers wear what they buy; raw materials
    from the gatherers and caravans; prices drifting over days.
+   **Dungeons and raids done (Nov 18, ~1 am; solosim_dungeons.cpp):** 48 dungeons and 22 raids from the game's own
+   teleports, levels from the creatures inside, bosses (rank boss / dungeon-boss flag) and their real loot tables (332;
+   our own roller of the loot tables: groups, references, chances). Every six sim-hours some parties of one side at the
+   level gather at the town by the entrance and go in (no body while inside); raid companies of the raid's size now and
+   then. Boss by boss against levels, kits and numbers: XP and coin per boss, or a wipe (wounds; a defeat for some in a
+   dungeon, never in a raid). Rolls: need (fits the class and beats their piece), greed (character or coin), pass; the
+   need winner wears it (what came off to the AH or a vendor), a greed winner sells it (bound - to a vendor). The
+   chronicle tells it ("... cleared Gundrak: Slad'ran dropped Cannibal's Legguards, won by ..."). 84 runs in 61 hours.
+   **Left here:** rolls in the player's party (adventurer companions need/greed against you in a real dungeon;
+   mercenaries never roll) - needs the group-loot hooks; boss order inside a raid (spawn order for now).
    **Dungeons and raids in the sim:** parties walk to the instance portal and disappear inside, simulated boss by boss
    (levels, gear, make-up) - loot or a wipe (deaths rarely final, as now); raid companies form off screen and roll for
    success per boss once the raid is unlocked (raid deaths never count). Loot rolls: need/greed/pass by class, armour type,

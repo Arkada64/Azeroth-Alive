@@ -1,7 +1,7 @@
 From 153b008874e05668824bb9544d0c64beff7a6f60 Mon Sep 17 00:00:00 2001
 From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
 Date: Tue, 17 Nov 2026 23:51:16 -0600
-Subject: [PATCH 40/42] Sim: Outland and Northrend - 17 zones, their towns,
+Subject: [PATCH 40/43] Sim: Outland and Northrend - 17 zones, their towns,
  hunting grounds and adventurers at the land's level (blood elves among the
  Horde there); the Dark Portal and the Northrend boats and zeppelins, trips
  over two crossings; levels and threats to 80; dock towns cached
