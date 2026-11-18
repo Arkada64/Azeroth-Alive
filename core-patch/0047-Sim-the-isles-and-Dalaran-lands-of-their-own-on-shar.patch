@@ -1,0 +1,1004 @@
+From e75b30198755eaf96c031af2a2b92c728162b593 Mon Sep 17 00:00:00 2001
+From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 03:47:20 -0600
+Subject: [PATCH 47/47] Sim: the isles and Dalaran (lands of their own on
+ shared maps, the orb, the Exodar boat, the Violet Stand crystal; blood elves
+ and draenei at home), mercenaries for hire (a day for coin by level, contract
+ rules), gatherers seen at work (fishers, herbalists, miners, woodcutters,
+ trappers), townsfolk who fight back (auto attack, job moves, running for
+ help); generated item names by slot and material
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01JU37XfnHTvru3VVz2sNN7z
+---
+ src/server/game/AI/NpcBots/bot_ai.cpp         |   4 +-
+ src/server/game/AI/NpcBots/botbubble.cpp      |  48 +++++
+ src/server/game/AI/NpcBots/botbubble.h        |   3 +
+ src/server/game/AI/NpcBots/botmgr.cpp         |   3 +-
+ src/server/game/SoloSim/solosim.cpp           | 184 +++++++++++++++---
+ src/server/game/SoloSim/solosim.h             |  13 +-
+ src/server/game/SoloSim/solosim_civilians.cpp | 171 +++++++++++++++-
+ src/server/game/SoloSim/solosim_dungeons.cpp  |   2 +-
+ src/server/game/SoloSim/solosim_genitems.cpp  | 104 ++++++++--
+ 9 files changed, 489 insertions(+), 43 deletions(-)
+
+diff --git a/src/server/game/AI/NpcBots/bot_ai.cpp b/src/server/game/AI/NpcBots/bot_ai.cpp
+index dc3c2b4..9ca2d12 100644
+--- a/src/server/game/AI/NpcBots/bot_ai.cpp
++++ b/src/server/game/AI/NpcBots/bot_ai.cpp
+@@ -7796,7 +7796,7 @@ bool bot_ai::OnGossipHello(Player* player, uint32 /*option*/)
+ 
+     if (player_guidlow != _botData->owner && IAmFree() && (!IsWanderer() || BotBubble::SimAgentOf(me->GetEntry())))
+     {
+-        uint32 cost = BotCfg::GetNpcBotCostHire(player->GetLevel(), _botclass);
++        uint32 cost = BotBubble::HireCost(me, BotCfg::GetNpcBotCostHire(player->GetLevel(), _botclass));   // SoloWoW: a mercenary's own price
+ 
+         int8 reason = 0;
+         if (me->HasAura(BERSERK))
+@@ -7841,7 +7841,7 @@ bool bot_ai::OnGossipHello(Player* player, uint32 /*option*/)
+         }
+ 
+         if (BotCfg::GetNpcBotCostRent(player->GetLevel(), _botclass))
+-            message1 << "\n(" << BotCfg::GetNpcBotCostStr(player->GetLevel(), _botclass) << ")";
++            message1 << "\n(" << BotBubble::CostText(cost) << ")";
+ 
+         if (!reason)
+             player->PlayerTalkClass->GetGossipMenu().AddMenuItem(-1, GOSSIP_ICON_TAXI, message2.str(), GOSSIP_SENDER_HIRE, GOSSIP_ACTION_INFO_DEF + 0, message1.str(), cost, false);
+diff --git a/src/server/game/AI/NpcBots/botbubble.cpp b/src/server/game/AI/NpcBots/botbubble.cpp
+index f828e54..308f417 100644
+--- a/src/server/game/AI/NpcBots/botbubble.cpp
++++ b/src/server/game/AI/NpcBots/botbubble.cpp
+@@ -170,6 +170,7 @@ namespace
+             }
+         }
+ 
++        static std::unordered_map<uint32, uint32> mercZone;   // a hired mercenary's land (the zone they were hired in)
+         // 0. hiring: a body that got an owner is hired in the sim; free again (dismissed) -> back to their own life
+         for (auto const& [entry, agent] : simEntryToAgent)
+         {
+@@ -177,6 +178,27 @@ namespace
+             if (!bot)
+                 continue;
+             auto h = hiredBy.find(agent);
++            // a mercenary's day (Nov 18): over when the day is, or when their employer leaves the land they were hired in,
++            // goes into a raid, or somewhere far above them - they hearth home and leave the party
++            if (!bot->IsFreeBot() && h != hiredBy.end() && sSoloSim->IsMercenary(agent))
++                if (Player* owner = bot->GetBotOwner(); owner && owner->GetBotMgr())
++                {
++                    uint32 zone = owner->GetZoneId();
++                    auto [mz, fresh] = mercZone.try_emplace(agent, zone);
++                    char const* why = nullptr;
++                    if (sSoloSim->MercContractOver(agent)) why = "That's the day done. If you want me again, you know the price.";
++                    else if (owner->GetMap()->IsRaid()) why = "Not in there. Not for any coin. I'm off.";
++                    else if (!fresh && mz->second != zone && !owner->GetMap()->IsDungeon()) why = "This is as far as I go. Good luck out there.";
++                    else if (AreaTableEntry const* at = sAreaTableStore.LookupEntry(zone); at && at->area_level > int32(bot->GetLevel()) + 8)
++                        why = "This place is beyond me. I'm going home while I still can.";
++                    if (why)
++                    {
++                        const_cast<Creature*>(bot)->Whisper(why, LANG_UNIVERSAL, owner);
++                        mercZone.erase(agent);
++                        owner->GetBotMgr()->RemoveBot(bot->GetGUID(), BOT_REMOVE_DISMISS);
++                        continue;
++                    }
++                }
+             if (!bot->IsFreeBot())
+             {
+                 if (h == hiredBy.end())
+@@ -1131,6 +1153,22 @@ uint32 BotBubble::SimAgentOf(uint32 botEntry)
+     return it == simEntryToAgent.end() ? 0 : it->second;
+ }
+ 
++uint32 BotBubble::HireCost(Creature const* bot, uint32 usual)
++{
++    uint32 agent = bot ? SimAgentOf(bot->GetEntry()) : 0;
++    return agent && sSoloSim->IsLive() && sSoloSim->IsMercenary(agent) ? sSoloSim->MercPrice(agent) : usual;
++}
++
++std::string BotBubble::CostText(uint32 c)
++{
++    std::string s;
++    if (c >= 10000) s += std::to_string(c / 10000) + "g ";
++    if (c >= 100 && c / 100 % 100) s += std::to_string(c / 100 % 100) + "s ";
++    if (c % 100 || s.empty()) s += std::to_string(c % 100) + "c";
++    while (!s.empty() && s.back() == ' ') s.pop_back();
++    return s;
++}
++
+ // "/invite Marrin" (or inviting your target): a sim adventurer by that name. Near you: they join you - no gold - or
+ // whisper why not. Far away: the one who knows you best whispers where they are. Returns false if nobody has that name.
+ bool BotBubble::InviteByName(Player* player, std::string const& name)
+@@ -1171,8 +1209,18 @@ bool BotBubble::InviteByName(Player* player, std::string const& name)
+         body->Whisper("You've got all the company you can lead right now.", LANG_UNIVERSAL, player);
+         return true;
+     }
++    bool merc = sSoloSim->IsMercenary(agent);            // a sword for hire: coin first (Nov 18)
++    uint32 price = merc ? sSoloSim->MercPrice(agent) : 0;
++    if (merc && !player->HasEnoughMoney(price))
++    {
++        body->Whisper(Acore::StringFormat("My blade's {} a day. Come back when you've got it.", CostText(price)), LANG_UNIVERSAL, player);
++        return true;
++    }
+     if (ai->SetBotOwner(player))
++    {
++        if (merc) player->ModifyMoney(-int32(price));
+         body->Whisper(sSoloSim->HireYes(agent, player->GetGUID().GetCounter()), LANG_UNIVERSAL, player);
++    }
+     else
+         body->Whisper("...not right now.", LANG_UNIVERSAL, player);
+     return true;
+diff --git a/src/server/game/AI/NpcBots/botbubble.h b/src/server/game/AI/NpcBots/botbubble.h
+index d793469..e02d92c 100644
+--- a/src/server/game/AI/NpcBots/botbubble.h
++++ b/src/server/game/AI/NpcBots/botbubble.h
+@@ -35,6 +35,9 @@ namespace BotBubble
+     uint32 SimAgentOf(uint32 botEntry);
+     // a sim person asked to travel with the player: "" = yes, otherwise their answer
+     std::string HireRefusal(Creature const* bot, Player const* player);
++    // mercenaries (Nov 18): their own price for a day, else the usual NPCBots hire cost; money as the game writes it
++    uint32 HireCost(Creature const* bot, uint32 usual);
++    std::string CostText(uint32 copper);
+     // /invite <name> for a sim adventurer: true if handled (they joined, said no, or answered from afar)
+     bool InviteByName(Player* player, std::string const& name);
+     // persistent gear: a sim person's kit as their body last wore it (World::GearOf / SetGear)
+diff --git a/src/server/game/AI/NpcBots/botmgr.cpp b/src/server/game/AI/NpcBots/botmgr.cpp
+index 64e540c..e45c942 100644
+--- a/src/server/game/AI/NpcBots/botmgr.cpp
++++ b/src/server/game/AI/NpcBots/botmgr.cpp
+@@ -7,6 +7,7 @@
+ #include "botdpstracker.h"
+ #include "botlog.h"
+ #include "botmgr.h"
++#include "botbubble.h"
+ #include "botspell.h"
+ #include "bottext.h"
+ #include "bpet_ai.h"
+@@ -914,7 +915,7 @@ BotAddResult BotMgr::AddBot(Creature* bot)
+     //}
+     if (!owned)
+     {
+-        uint32 cost = BotCfg::GetNpcBotCostHire(_owner->GetLevel(), bot->GetBotClass());
++        uint32 cost = BotBubble::HireCost(bot, BotCfg::GetNpcBotCostHire(_owner->GetLevel(), bot->GetBotClass()));   // SoloWoW
+         if (!_owner->HasEnoughMoney(cost))
+         {
+             ChatHandler ch(_owner->GetSession());
+diff --git a/src/server/game/SoloSim/solosim.cpp b/src/server/game/SoloSim/solosim.cpp
+index aa32515..ef3394d 100644
+--- a/src/server/game/SoloSim/solosim.cpp
++++ b/src/server/game/SoloSim/solosim.cpp
+@@ -76,9 +76,12 @@ namespace
+                                             // Netherstorm, Shadowmoon, Shattrath
+                                             3483, 3521, 3519, 3518, 3522, 3523, 3520, 3703,
+                                             // Northrend: Borean Tundra, Howling Fjord, Dragonblight, Grizzly Hills, Zul'Drak,
+-                                            // Sholazar Basin, Crystalsong, the Storm Peaks, Icecrown (the TBC isles and
+-                                            // Dalaran have no road nodes yet; Wintergrasp is a battlefield)
+-                                            3537, 495, 65, 394, 66, 3711, 2817, 67, 210 };
++                                            // Sholazar Basin, Crystalsong, the Storm Peaks, Icecrown (Wintergrasp is a
++                                            // battlefield)
++                                            3537, 495, 65, 394, 66, 3711, 2817, 67, 210,
++                                            // Nov 18 (road nodes from scripts\roads-isles.py): Eversong, Ghostlands,
++                                            // Silvermoon, Azuremyst, Bloodmyst, the Exodar, Dalaran
++                                            3430, 3433, 3487, 3524, 3525, 3557, 4395 };
+     // the capitals and how many live there. The Horde's three have no road nodes inside, so their towns were filed under
+     // the zone outside (Durotar, Tirisfal, Mulgore) and sized as villages: a town within reach of a capital's centre
+     // belongs to it (Nov 17).
+@@ -88,12 +91,25 @@ namespace
+         { 1637, 1, 1630.0f, -4420.0f, 600.0f, 200 },     // Orgrimmar
+         { 1497, 0, 1580.0f, 240.0f, 350.0f, 140 },       // the Undercity (and the Ruins of Lordaeron above it)
+         { 1638, 1, -1280.0f, 120.0f, 380.0f, 100 },      // Thunder Bluff
++        { 3487, 530, 0.0f, 0.0f, 0.0f, 120 }, { 3557, 530, 0.0f, 0.0f, 0.0f, 90 }, { 4395, 571, 0.0f, 0.0f, 0.0f, 120 },   // Silvermoon, the Exodar, Dalaran (filed right)
+     };
+     const std::set<uint32> ELF_ZONES = { 141, 1657, 148 };   // where night elves are most of the folk
++    const std::set<uint32> DRAENEI_ZONES = { 3524, 3525, 3557 }, BELF_ZONES = { 3430, 3433, 3487 };   // Nov 18
+     // the sea crossings of 3.3.5 between the two old continents (Nov 17): dock positions; each dock is served by the nearest
+     // town with an inn within 900 yd that will have the traveller. Alliance boats, Horde zeppelins, the goblins' boat.
+     // each end: a map and a spot; the town serving it is the nearest inn within the route's reach (the Dark Portal stands
+     // well away from Nethergarde, Stonard, Honor Hold and Thrallmar). Nov 17 night: Outland and Northrend.
++    // lands that share a map with somewhere they can't walk to (Nov 18): the blood elves' and draenei's isles are on Outland's
++    // map, Dalaran floats over Crystalsong. Travel between lands goes by the crossings below, like between maps.
++    constexpr uint32 LAND_QUELTHALAS = 5301, LAND_DRAENEI = 5302, LAND_DALARAN = 5711;
++    uint32 Land(uint32 map, float x, float y, float z)
++    {
++        if (map == 530 && x > 5500.0f && y < -4000.0f) return LAND_QUELTHALAS;
++        if (map == 530 && x < -1000.0f && y < -9500.0f) return LAND_DRAENEI;
++        if (map == 571 && x > 5500.0f && x < 6100.0f && y > 200.0f && y < 1100.0f && z > 550.0f) return LAND_DALARAN;
++        return map;
++    }
++    uint32 Land(SimSite const& s) { return Land(s.map, s.x, s.y, s.z); }
+     struct SeaRoute { uint32 amap; float ax, ay; uint32 bmap; float bx, by; uint8 side; uint32 minutes; float reach; char const* name; };
+     const SeaRoute SEA_ROUTES[] = {
+         { 0,  -3895.0f,  -605.0f, 1,   -3995.0f, -4725.0f, 0, 25,  900.0f, "the boat from Menethil Harbor to Theramore" },
+@@ -106,6 +122,10 @@ namespace
+         { 0,  -3725.0f,  -575.0f, 571,   599.0f, -4928.0f, 0, 30,  900.0f, "the boat from Menethil Harbor to Valgarde" },
+         { 0,   2065.0f,   290.0f, 571,  1873.0f, -6218.0f, 1, 30,  900.0f, "the zeppelin from Tirisfal to Vengeance Landing" },
+         { 1,   1320.0f, -4650.0f, 571,  2804.0f,  6154.0f, 1, 30,  900.0f, "the zeppelin from Orgrimmar to Warsong Hold" },
++        // Nov 18: the isles and Dalaran (lands of their own on Outland's and Northrend's maps - see Land())
++        { LAND_QUELTHALAS, 10032.0f, -7000.0f, 0, 1806.0f, 349.0f, 1, 3, 900.0f, "the Orb of Translocation from Silvermoon to the Undercity" },
++        { LAND_DRAENEI, -4253.0f, -11405.0f, 1, 6420.0f, 820.0f, 0, 25, 1500.0f, "the boat from the Exodar to Auberdine" },
++        { LAND_DALARAN, 5808.0f, 588.0f, 571, 5731.0f, 1015.0f, 2, 2, 2500.0f, "the crystal from Dalaran to the Violet Stand" },
+     };
+     const std::set<uint32> DWARF_ZONES = { 1, 1537, 38 };   // where dwarves and gnomes are most of the folk
+ 
+@@ -615,6 +635,8 @@ void World::SettleNewHubs(uint32 firstNew)
+             if (!race && h.side == SIDE_NEUTRAL && r.Chance(0.5f)) race = r.Chance(0.5f) ? 2 : 6;   // both sides pass through
+             if (!race && DWARF_ZONES.contains(h.zone)) race = r.Chance(0.7f) ? 3 : (r.Chance(0.7f) ? 7 : 0);
+             if (!race && ELF_ZONES.contains(h.zone)) race = r.Chance(0.65f) ? 4 : r.Chance(0.3f) ? 12 : 0;   // Gilneans among the elves (Nov 17)
++    if (!race && DRAENEI_ZONES.contains(h.zone)) race = r.Chance(0.8f) ? 11 : r.Chance(0.5f) ? 4 : 0;   // the draenei's isles (Nov 18)
++            if (!race && DRAENEI_ZONES.contains(h.zone)) race = r.Chance(0.8f) ? 11 : r.Chance(0.5f) ? 4 : 0;   // the draenei's isles (Nov 18)
+             SimAgent a = MakeAgent(id, level, h.id, _clock, 0, race);
+             SetAmbition(a);
+             _agents[id] = a;
+@@ -957,6 +979,7 @@ std::string World::EnsureReady()
+         FindRares();
+         EnsureCivilians();
+         FillAdventurers();
++        AssignMercenaries();
+         RebuildDanger();
+         CharacterDatabase.DirectExecute("DELETE FROM sim_event WHERE notable = 0");   // older saves kept every routine step
+         RebuildTownTalk();
+@@ -975,6 +998,7 @@ std::string World::EnsureReady()
+     FindRares();
+     EnsureCivilians();
+     FillAdventurers();                                  // born full: every town has its adventurers from the first day
++    AssignMercenaries();
+     RebuildDanger();
+     // a fortnight of history before anyone arrives: people have levels, friends, grudges and a few graves
+     SimTime start = _clock;
+@@ -1112,7 +1136,7 @@ uint32 World::DockTown(uint32 map, float x, float y, SimAgent const& a, float re
+     uint32 best = 0; float bd = reach;
+     for (SimSite const& s : _sites)
+     {
+-        if (s.type != SiteType::Hub || !(s.services & SVC_INN) || s.map != map || !Welcome(a, s)) continue;
++        if (s.type != SiteType::Hub || !(s.services & SVC_INN) || Land(s) != map || !Welcome(a, s)) continue;   // map: a land
+         float d = Dist2d(s.x, s.y, x, y);
+         if (d < bd) { bd = d; best = s.id; }
+     }
+@@ -1124,7 +1148,8 @@ uint32 World::TravelMinutes(uint32 fromSite, uint32 toSite, SimAgent const& a) c
+ {
+     SimSite const* f = SiteById(fromSite); SimSite const* t = SiteById(toSite);
+     if (!f || !t || f == t) return 0;
+-    if (f->map != t->map)
++    uint32 fl = Land(*f), tl = Land(*t);
++    if (fl != tl)
+     {
+         // another continent: walk to a dock their side may use, cross (boat, zeppelin, the Dark Portal), walk on from the
+         // far dock - by way of a third continent when no crossing joins the two (Outland to Kalimdor; Nov 17 night)
+@@ -1140,14 +1165,14 @@ uint32 World::TravelMinutes(uint32 fromSite, uint32 toSite, SimAgent const& a) c
+         for (SeaRoute const& sr : SEA_ROUTES)
+         {
+             float hx, hy, tx, ty;
+-            if (!mayUse(sr) || !end(sr, f->map, hx, hy)) continue;
+-            uint32 here = DockTown(f->map, hx, hy, a, sr.reach);
++            if (!mayUse(sr) || !end(sr, fl, hx, hy)) continue;
++            uint32 here = DockTown(fl, hx, hy, a, sr.reach);
+             if (!here) continue;
+-            uint32 mid = other(sr, f->map);
+-            if (mid == t->map)
++            uint32 mid = other(sr, fl);
++            if (mid == tl)
+             {
+-                end(sr, t->map, tx, ty);
+-                if (uint32 there = DockTown(t->map, tx, ty, a, sr.reach))
++                end(sr, tl, tx, ty);
++                if (uint32 there = DockTown(tl, tx, ty, a, sr.reach))
+                     best = std::min(best, TravelMinutes(fromSite, here, a) + sr.minutes + TravelMinutes(there, toSite, a));
+                 continue;
+             }
+@@ -1158,8 +1183,8 @@ uint32 World::TravelMinutes(uint32 fromSite, uint32 toSite, SimAgent const& a) c
+             for (SeaRoute const& s2 : SEA_ROUTES)
+             {
+                 float ax2, ay2, bx2, by2;
+-                if (&s2 == &sr || !mayUse(s2) || !end(s2, mid, ax2, ay2) || !end(s2, t->map, bx2, by2)) continue;
+-                uint32 dock2 = DockTown(mid, ax2, ay2, a, s2.reach), there = DockTown(t->map, bx2, by2, a, s2.reach);
++                if (&s2 == &sr || !mayUse(s2) || !end(s2, mid, ax2, ay2) || !end(s2, tl, bx2, by2)) continue;
++                uint32 dock2 = DockTown(mid, ax2, ay2, a, s2.reach), there = DockTown(tl, bx2, by2, a, s2.reach);
+                 if (!dock2 || !there) continue;
+                 best = std::min(best, TravelMinutes(fromSite, here, a) + sr.minutes + TravelMinutes(landed, dock2, a) + s2.minutes
+                     + TravelMinutes(there, toSite, a));
+@@ -1197,12 +1222,15 @@ uint8 World::NativeRace(SimSite const& h, Rng& r, bool civilian) const
+ {
+     static std::set<uint32> const ORC_LANDS = { 14, 1637 }, TAUREN_LANDS = { 215, 1638 }, FORSAKEN_LANDS = { 85, 1497, 130 };
+     uint32 roll = r.Range(1, 100);
++    if (h.side == SIDE_NEUTRAL && h.zone == 4395)                     // Dalaran: its mages' own folk - humans and high elves
++        return civilian ? (roll <= 70 ? 1 : 10) : 0;
+     if (h.side == SIDE_NEUTRAL)
+         return civilian && roll <= 60 ? 9 : 0;                       // goblin ports: goblins, and whoever passes through
+     if (h.side != SIDE_HORDE) return 0;
+     if (ORC_LANDS.contains(h.zone))      return roll <= 55 ? 2 : roll <= (civilian ? 92u : 100u) ? 8 : 9;
+     if (TAUREN_LANDS.contains(h.zone))   return roll <= 85 ? 6 : roll <= 95 ? 2 : 8;
+     if (FORSAKEN_LANDS.contains(h.zone)) return roll <= 90 ? 5 : roll <= 95 ? 2 : 8;
++    if (BELF_ZONES.contains(h.zone))     return roll <= 85 ? 10 : roll <= 93 ? 5 : 8;   // Quel'thalas (Nov 18)
+     if (h.map == 530 || h.map == 571)                                 // Outland and Northrend: blood elves among them (Nov 17 night)
+         return roll <= 30 ? 2 : roll <= 50 ? 6 : roll <= 65 ? 8 : roll <= 80 ? 5 : 10;
+     return roll <= 40 ? 2 : roll <= 65 ? 6 : roll <= 85 ? 8 : 5;     // the Barrens and the rest of the Horde's roads
+@@ -1498,7 +1526,7 @@ uint32 World::FillAdventurers()
+ {
+     std::map<uint32, uint32> living;
+     for (auto const& [id, a] : _agents)
+-        if (a.role == ROLE_ADVENTURER && (a.status == AgentStatus::Active || a.status == AgentStatus::Recovering || a.status == AgentStatus::Hired)) ++living[a.home];
++        if (a.role == ROLE_ADVENTURER && a.job != JOB_MERCENARY && (a.status == AgentStatus::Active || a.status == AgentStatus::Recovering || a.status == AgentStatus::Hired)) ++living[a.home];
+     uint32 made = 0;
+     for (SimSite const& h : _sites)
+         for (uint32 i = living[h.id], n = AdventurerTarget(h); i < n; ++i)
+@@ -1524,7 +1552,7 @@ void World::SpawnNewcomer(uint32 minDelay, uint32 maxDelay)
+     {
+         std::map<uint32, uint32> living;
+         for (auto const& [oid, o] : _agents)
+-            if (o.role == ROLE_ADVENTURER && (o.status == AgentStatus::Active || o.status == AgentStatus::Recovering || o.status == AgentStatus::Hired)) ++living[o.home];
++            if (o.role == ROLE_ADVENTURER && o.job != JOB_MERCENARY && (o.status == AgentStatus::Active || o.status == AgentStatus::Recovering || o.status == AgentStatus::Hired)) ++living[o.home];
+         SimSite const* best = nullptr; int32 short_ = 0;
+         for (SimSite const& h : _sites)
+             if (int32 d = int32(AdventurerTarget(h)) - int32(living[h.id]); d > short_ || (d == short_ && d > 0 && r.Chance(0.3f))) { short_ = d; best = &h; }
+@@ -1644,7 +1672,7 @@ void World::FormParty(SimAgent& leader, uint32 site, uint32 minutes, uint32 want
+ {
+     want = std::clamp<uint32>(want, 1, 2);
+     auto free = [&](SimAgent const* o) {
+-        if (!o || o->id == leader.id || o->status != AgentStatus::Active || o->site != leader.site || o->party || o->caravan || o->role != ROLE_ADVENTURER) return false;
++        if (!o || o->id == leader.id || o->status != AgentStatus::Active || o->site != leader.site || o->party || o->caravan || o->role != ROLE_ADVENTURER || o->job == JOB_MERCENARY) return false;
+         if (o->doing != Verb::Socialize && o->doing != Verb::Trade && o->doing != Verb::Idle) return false;
+         return o->wounds <= 40 && o->fatigue <= 60 && std::abs(int32(o->level) - int32(leader.level)) <= 4;
+     };
+@@ -2446,6 +2474,7 @@ SimAgent World::MakeCivilian(SimSite const& h, uint32 id, uint8 forceRace)
+         // Gilnean refugees (worgen, seen in their human form) were taken in by the night elves; a few reached Stormwind
+         else if (elven) a.race = (h.zone == 1657 && roll <= 10) ? 1 : roll >= (h.zone == 1657 ? 86u : 92u) ? 12 : 4;
+         else if (h.zone == 1519) a.race = roll <= 7 ? 3 : roll <= 13 ? 7 : roll <= 18 ? 4 : roll >= 98 ? 12 : 1;
++        else if (DRAENEI_ZONES.contains(h.zone)) a.race = roll <= 88 ? 11 : roll <= 95 ? 4 : 1;
+         else a.race = roll <= 5 ? 3 : roll <= 8 ? 7 : roll <= 10 ? 4 : 1;
+         if (uint8 native = NativeRace(h, mix, true)) a.race = native;   // the Horde's towns and the goblin ports
+         else if (h.side != SIDE_ALLIANCE && a.race != 1 && a.race != 3 && a.race != 4 && a.race != 7) a.race = 1;
+@@ -2578,6 +2607,7 @@ void World::EnsureCivilians()
+     if (hi) LOG_INFO("server.loading", "SoloWoW sim: townsfolk are levels {} to {}", lo, hi);
+     AssignAges();
+     AssignCrafters();
++    AssignGatherers();
+ }
+ 
+ // =====================================================================================================
+@@ -2988,7 +3018,7 @@ bool World::IsCapital(SimSite const& s) const
+ uint32 World::WayStop(SimAgent const& a, uint32 from, uint32 to, uint32 afterMinutes) const
+ {
+     SimSite const* f = SiteById(from); SimSite const* t = SiteById(to);
+-    if (!f || !t || f->map != t->map) return 0;
++    if (!f || !t || Land(*f) != Land(*t)) return 0;
+     uint32 fi = SiteRoad(from), ti = SiteRoad(to);
+     if (fi == UINT32_MAX || ti == UINT32_MAX) return 0;
+     std::vector<float> const& df = DistTo(fi);
+@@ -3404,7 +3434,7 @@ void World::RetireAdventurers()
+     for (auto& [id, a] : _agents)
+     {
+         if (retired >= 3) break;
+-        if (a.role != ROLE_ADVENTURER || a.status != AgentStatus::Active || a.party || a.doing == Verb::Fight) continue;
++        if (a.role != ROLE_ADVENTURER || a.job == JOB_MERCENARY || a.status != AgentStatus::Active || a.party || a.doing == Verb::Fight) continue;
+         if (a.race != 1 && a.race != 3 && a.race != 4 && a.race != 12) continue;   // townsfolk looks: humans (and worgen in human form), dwarves, night elves
+         SimSite const* h = SiteById(a.home);
+         if (!h || h->type != SiteType::Hub || !(h->services & SVC_INN)) continue;
+@@ -3546,6 +3576,21 @@ void World::Decide(SimAgent& a)
+ {
+     a.follow = 0; a.followKind = 0;                       // the walk with a player, or the hunt, is over
+     if (a.role == ROLE_CIVILIAN) { CivilianDecide(a); return; }
++    if (a.job == JOB_MERCENARY)                          // a sword for hire: about the inn, waiting for work (Nov 18)
++    {
++        Rng m = R(a, P_PLAN);
++        if (a.site != a.home) a.plan.push_back({ Verb::Goto, a.home, 0 });
++        if (Asleep(a, _clock))
++        {
++            uint32 untilMorning = (WakeMinute(a) + MIN_PER_DAY - (_clock % MIN_PER_DAY)) % MIN_PER_DAY;
++            a.plan.push_back({ Verb::Sleep, a.home, std::max<uint32>(60, untilMorning) });
++        }
++        else if (a.wounds > 30 || a.durability < 50 || a.supplies < 40)
++            a.plan.push_back({ Verb::Trade, a.home, 30 });
++        else
++            a.plan.push_back({ m.Chance(0.7f) ? Verb::Socialize : Verb::Idle, a.home, m.Range(90, 240) });
++        return;
++    }
+     Rng r = R(a, P_PLAN);
+     if (a.party) { a.lastParty = a.party; a.lastPartyAt = _clock; }   // mates still finishing the same outing can find us
+     a.party = 0; a.partySize = 1;                       // hunting parties last one outing
+@@ -4162,7 +4207,7 @@ bool World::BodyOf(SimAgent const& a, SimBody& b) const
+     if (a.doing == Verb::Goto && !a.plan.empty() && a.plan.front().verb == Verb::Goto)
+     {
+         SimSite const* there = SiteById(a.plan.front().site);
+-        if (there && there->map != here->map) return false;  // at sea: no body until they land
++        if (there && Land(*there) != Land(*here)) return false;  // at sea (or through an orb): no body until they land
+         uint32 thereIdx = SiteRoad(a.plan.front().site);
+         uint32 total = std::max<uint32>(1, a.plan.front().minutes);
+         float now = float(_clock) + float(_liveMs % 60000) / 60000.0f;
+@@ -4948,7 +4993,7 @@ std::string World::HireRefusal(uint32 agentId, uint32 guid, uint8 playerLevel)
+ {
+     std::lock_guard<std::mutex> guard(sBodyLock);
+     SimAgent const* a = AgentById(agentId);
+-    if (!a || a->role != ROLE_ADVENTURER) return "";
++    if (!a || a->role != ROLE_ADVENTURER || a->job == JOB_MERCENARY) return "";   // a mercenary takes any coin
+     int32 sum = 0; bool met = false;
+     for (SimMemory const& m : _memories)
+         if (m.agent == agentId && m.subjectType == 4 && m.subject == guid) { met = true; sum += int32(m.valence) * m.intensity / 100; }
+@@ -5107,6 +5152,12 @@ std::string World::WhisperReply(uint32 agentId, uint32 guid)
+ std::string World::HireYes(uint32 agentId, uint32 guid)
+ {
+     std::lock_guard<std::mutex> guard(sBodyLock);
++    if (SimAgent const* m = AgentById(agentId); m && m->job == JOB_MERCENARY)
++    {
++        static char const* const paid[] = { "Coin's good. You have me for a day - then I'm gone.", "Paid in full. Point me at something.",
++            "A day's work for a day's pay. Lead on.", "Done. I don't follow anyone past the edge of this land, mind." };
++        return paid[(agentId + _clock / 60) % 4];
++    }
+     int32 sum = 0; bool met = false;
+     for (SimMemory const& m : _memories)
+         if (m.agent == agentId && m.subjectType == 4 && m.subject == guid) { met = true; sum += int32(m.valence) * m.intensity / 100; }
+@@ -5122,7 +5173,7 @@ void World::SharedKill(uint32 agentId, uint32 guid)
+ {
+     std::lock_guard<std::mutex> guard(sBodyLock);
+     SimAgent* a = AgentById(agentId);
+-    if (!a) return;
++    if (!a || a->job == JOB_MERCENARY) return;          // plain hired help: no friendship from it
+     for (auto it = _memories.rbegin(); it != _memories.rend() && it->at + 60 > _clock; ++it)
+         if (it->agent == agentId && it->subjectType == 4 && it->subject == guid && it->eventType == uint8(EventType::Hunted)) return;
+     RememberPlayer(*a, guid, 20, 40, EventType::Hunted);
+@@ -5138,12 +5189,14 @@ void World::SetHired(uint32 agentId, uint32 guid, std::string const& name, bool
+         a->status = AgentStatus::Hired;
+         _hiredBy[agentId] = guid;
+         a->plan.clear(); a->doing = Verb::Idle; a->party = 0;
+-        RememberPlayer(*a, guid, 30, 60, EventType::Hired);
++        if (a->job == JOB_MERCENARY) _mercUntil[agentId] = _clock + MIN_PER_DAY;   // a day's contract, no more
++        else RememberPlayer(*a, guid, 30, 60, EventType::Hired);
+         Log(EventType::Hired, *a, a->site, Acore::StringFormat("{} agreed to travel with {}.", Who(*a), name), true);
+     }
+     else if (!hired && a->status == AgentStatus::Hired)
+     {
+         a->status = AgentStatus::Active;
++        _mercUntil.erase(agentId);
+         a->site = a->home; a->plan.clear(); a->doing = Verb::Idle; a->wakeAt = _clock + 1;
+         _requeue.push_back(a->id);
+         Log(EventType::Dismissed, *a, a->home, Acore::StringFormat("{} parted ways with {} and went home to {}.", Who(*a), name, SiteName(a->home)), true);
+@@ -5265,6 +5318,83 @@ void World::AssignCrafters()
+     if (made) LOG_INFO("server.loading", "SoloWoW sim: {} townsfolk took up a craft (smiths, cooks, alchemists, leatherworkers)", made);
+ }
+ 
++// the gatherers (Nov 18): from the farmhands, labourers and idlers, once - a fisher, an herbalist and a woodcutter in a
++// town of 8, a miner from 10, a trapper from 12. They work where it can be seen (the shore, the herb patches, the trees,
++// the ore by the road) and bring the goods in for the crafters.
++void World::AssignGatherers()
++{
++    uint32 made = 0;
++    for (SimSite const& h : _sites)
++    {
++        if (h.type != SiteType::Hub || !(h.services & SVC_INN)) continue;
++        uint32 folk = TownTarget(h);
++        std::vector<Job> want;
++        if (folk >= 6) want.push_back(JOB_FISHER);
++        if (folk >= 8) { want.push_back(JOB_HERBALIST); want.push_back(JOB_WOODCUTTER); }
++        if (folk >= 10) want.push_back(JOB_MINER);
++        if (folk >= 12) want.push_back(JOB_TRAPPER);
++        for (Job j : want)
++        {
++            bool have = false; SimAgent* pick = nullptr;
++            for (auto& [id, a] : _agents)
++            {
++                if (a.role != ROLE_CIVILIAN || a.home != h.id || a.status == AgentStatus::Dead || a.status == AgentStatus::Gone) continue;
++                if (a.job == j) { have = true; break; }
++                if (!pick && (a.job == JOB_FARMHAND || a.job == JOB_LABORER || a.job == JOB_LOAFER) && Age(a) < 60) pick = &a;
++            }
++            if (have || !pick) continue;
++            pick->job = j; ++made;
++        }
++    }
++    if (made) LOG_INFO("server.loading", "SoloWoW sim: {} townsfolk took up gathering (fishers, herbalists, woodcutters, miners, trappers)", made);
++}
++
++// mercenaries (Nov 18): one at every inn of the land's level, two where the town is bigger - their own people, gear,
++// level and class, about the land's band. They wait about the inn; a player hires them for coin, for a day.
++void World::AssignMercenaries()
++{
++    std::map<uint32, uint32> have;
++    for (auto const& [id, a] : _agents)
++        if (a.job == JOB_MERCENARY && a.status != AgentStatus::Dead && a.status != AgentStatus::Gone) ++have[a.home];
++    uint32 made = 0;
++    for (SimSite const& h : _sites)
++    {
++        if (h.type != SiteType::Hub || !(h.services & SVC_INN) || h.regionLevel < 5 || IsStartCamp(h)) continue;
++        uint32 want = TownTarget(h) >= 14 ? 2 : 1;
++        for (uint32 i = have[h.id]; i < want; ++i)
++        {
++            uint32 id = _nextAgent++;
++            SimAgent a = MakeSettler(h, id, 0x3E5C);
++            a.job = JOB_MERCENARY; a.ambition = AmbitionType::None; a.ambitionTarget = 0;
++            _agents[id] = a;
++            ++made;
++        }
++    }
++    if (made) LOG_INFO("server.loading", "SoloWoW sim: {} mercenaries took rooms at the inns", made);
++}
++
++bool World::IsMercenary(uint32 agentId)
++{
++    std::lock_guard<std::mutex> guard(sBodyLock);
++    SimAgent const* a = AgentById(agentId);
++    return a && a->job == JOB_MERCENARY;
++}
++
++// a day of their blade: by their level - help for the higher lands costs more (1g at 20, 4g at 40, 9g at 60, 16g at 80)
++uint32 World::MercPrice(uint32 agentId)
++{
++    std::lock_guard<std::mutex> guard(sBodyLock);
++    SimAgent const* a = AgentById(agentId);
++    return a ? std::max<uint32>(500, uint32(a->level) * a->level * 25) : 0;
++}
++
++bool World::MercContractOver(uint32 agentId)
++{
++    std::lock_guard<std::mutex> guard(sBodyLock);
++    auto it = _mercUntil.find(agentId);
++    return it != _mercUntil.end() && _clock >= it->second;
++}
++
+ // a working session: so many batches, each turning the market's raw goods into something made. A cook with nothing to
+ // cook goes down to the water for fish; the others wait for the gatherers.
+ void World::CraftWork(SimAgent& a, uint32 minutes)
+@@ -5276,6 +5406,12 @@ void World::CraftWork(SimAgent& a, uint32 minutes)
+         case JOB_ALCHEMIST:     craft = CRAFT_POTION;  input = PROF_HERBALISM; per = 3; yield = 5; break;
+         case JOB_LEATHERWORKER: craft = CRAFT_LEATHER; input = PROF_SKINNING;  per = 3; yield = 2; break;
+         case JOB_COOK:          craft = CRAFT_FOOD;    input = PROF_FISHING;   per = 1; yield = 4; break;
++        case JOB_FISHER: case JOB_HERBALIST: case JOB_MINER: case JOB_TRAPPER:   // the gatherers bring the raw goods in (Nov 18)
++        {
++            uint8 prof = a.job == JOB_FISHER ? PROF_FISHING : a.job == JOB_HERBALIST ? PROF_HERBALISM : a.job == JOB_MINER ? PROF_MINING : PROF_SKINNING;
++            _market[a.home][prof] = std::min<uint32>(_market[a.home][prof] + std::max<uint32>(1, minutes / 30), 60);
++            return;
++        }
+         default: return;
+     }
+     auto& market = _market[a.home];
+@@ -6462,7 +6598,7 @@ void World::CaravanTick()
+         std::vector<std::pair<SimAgent*, uint32>> idle;                   // (agent, minutes to the town)
+         for (auto& [id, a] : _agents)
+         {
+-            if (a.role != ROLE_ADVENTURER || a.status != AgentStatus::Active || a.caravan || a.bounty || a.party || a.wounds >= 40) continue;
++            if (a.role != ROLE_ADVENTURER || a.job == JOB_MERCENARY || a.status != AgentStatus::Active || a.caravan || a.bounty || a.party || a.wounds >= 40) continue;
+             if (a.home != from && a.site != from) continue;
+             if (a.doing == Verb::Goto || a.doing == Verb::Sleep || a.greed + a.wanderlust < 80) continue;
+             uint32 m = a.site == from ? 0 : TravelMinutes(a.site, from, a);
+@@ -6812,7 +6948,7 @@ std::string World::NotePlayer(uint32 guid, std::string const& name, PlayerSeen c
+     // of the side they robbed: someone near their level who'd take the work - else a newcomer drawn by the coin
+     std::vector<SimAgent*> pick;
+     for (auto& [id, a] : _agents)
+-        if (pick.size() < want && a.role == ROLE_ADVENTURER && a.status == AgentStatus::Active && !a.caravan && !a.party && !a.follow
++        if (pick.size() < want && a.role == ROLE_ADVENTURER && a.job != JOB_MERCENARY && a.status == AgentStatus::Active && !a.caravan && !a.party && !a.follow
+             && IsHordeRace(a.race) == h.horde && std::abs(int32(a.level) - int32(seen.level)) <= 2 && a.doing != Verb::Goto && a.greed >= 45)
+             pick.push_back(&a);
+     while (pick.size() < want)
+diff --git a/src/server/game/SoloSim/solosim.h b/src/server/game/SoloSim/solosim.h
+index 23c3f47..d1603f3 100644
+--- a/src/server/game/SoloSim/solosim.h
++++ b/src/server/game/SoloSim/solosim.h
+@@ -98,7 +98,9 @@ namespace SoloSim
+     struct SimAmbush { uint32 guid = 0, entry = 0; uint8 level = 1, count = 1; };   // bandits falling on a caravan the player rides with
+     struct SimCamp { uint32 id = 0, map = 0, entry = 0, town = 0, site = 0; float x = 0, y = 0, z = 0; std::string name; uint8 level = 1, size = 0, alive = 0; SimTime made = 0, until = 0; bool done = false; uint8 kind = CAMP_BAND; uint32 home = 0; };   // a bounty target with this bit is a threat's agent id, not a creature entry
+     enum Job : uint8 { JOB_NONE = 0, JOB_FARMHAND = 1, JOB_LABORER = 2, JOB_MARKET = 3, JOB_LOAFER = 4,
+-                       JOB_SMITH = 5, JOB_ALCHEMIST = 6, JOB_COOK = 7, JOB_LEATHERWORKER = 8 };   // crafters (Nov 17)
++                       JOB_SMITH = 5, JOB_ALCHEMIST = 6, JOB_COOK = 7, JOB_LEATHERWORKER = 8,    // crafters (Nov 17)
++                       JOB_FISHER = 9, JOB_HERBALIST = 10, JOB_WOODCUTTER = 11, JOB_MINER = 12, JOB_TRAPPER = 13,   // gatherers, seen at it (Nov 18)
++                       JOB_MERCENARY = 14 };   // an adventurer who hangs about the inn for hire (Nov 18)
+     enum CraftKind : uint8 { CRAFT_POTION = 0, CRAFT_FOOD = 1, CRAFT_ARMS = 2, CRAFT_LEATHER = 3, CRAFT_COUNT = 4 };
+     enum Profession : uint8 { PROF_NONE = 0, PROF_MINING = 1, PROF_HERBALISM = 2, PROF_SKINNING = 3, PROF_FISHING = 4, PROF_COUNT = 5 };
+ 
+@@ -389,7 +391,11 @@ namespace SoloSim
+         TalkLine TalkClose(uint32 replierId, uint32 speakerId, TalkLine const& follow);                       // (lock held)
+         TalkLine Talk(uint32 speakerId, uint32 listenerId);                       // empty text: nothing of their own to say
+         TalkLine TalkReply(uint32 replierId, uint32 speakerId, TalkLine const& said);
+-        std::string RareNameOf(uint32 entry) const { return RareName(entry); }   // for the bounty rewards (solosim_quests.cpp)
++        std::string RareNameOf(uint32 entry) const { return RareName(entry); }
++        // mercenaries (Nov 18): plain hired help - a price by their level, a day's contract, no friendship
++        bool IsMercenary(uint32 agentId);
++        uint32 MercPrice(uint32 agentId);              // copper
++        bool MercContractOver(uint32 agentId);   // for the bounty rewards (solosim_quests.cpp)
+         std::string TalkSample(uint32 n);                                          // GM: exchanges it would make now
+         std::string ReachedPlace(uint32 guid, uint32 map, float x, float y);
+         void HelpedBy(uint32 agentId, uint32 guid, std::string const& name);
+@@ -501,6 +507,8 @@ namespace SoloSim
+         void FormParty(SimAgent& leader, uint32 site, uint32 minutes, uint32 want = 2, bool open = false);
+         void FindRares();
+         void EnsureCivilians();
++        void AssignGatherers();                        // a fisher, herbalist, woodcutter, miner, trapper where a town is big enough (Nov 18)
++        void AssignMercenaries();                      // a sword or two for hire at every inn (Nov 18)
+         void AssignCrafters();                         // a smith, an alchemist, a cook, a leatherworker where a town can keep one
+         void CraftWork(SimAgent& a, uint32 minutes);   // a crafter's working session: inputs from the market, goods to the shelf
+         uint8 StationsOf(uint32 hub);
+@@ -593,6 +601,7 @@ namespace SoloSim
+         std::map<uint32, uint8> _stations;                         // hub site -> 1 anvil/forge, 2 cooking fire (from the world's objects)
+         std::map<uint32, bool> _rain;                              // zone -> raining today
+         std::vector<SimRare> _rares;
++        std::unordered_map<uint32, SimTime> _mercUntil;   // hired mercenaries: when their day is up (runtime)
+         std::map<uint32, SimTime> _rareDownUntil;                  // rare entry -> slain, back after this time
+         std::string _culprit;
+         std::vector<SimMail> _mail;
+diff --git a/src/server/game/SoloSim/solosim_civilians.cpp b/src/server/game/SoloSim/solosim_civilians.cpp
+index 7f99366..95aa97a 100644
+--- a/src/server/game/SoloSim/solosim_civilians.cpp
++++ b/src/server/game/SoloSim/solosim_civilians.cpp
+@@ -29,6 +29,8 @@
+ #include "Random.h"
+ #include "TemporarySummon.h"
+ #include "Timer.h"
++#include "SpellInfo.h"
++#include "SpellMgr.h"
+ #include <algorithm>
+ #include <cmath>
+ #include <list>
+@@ -73,6 +75,11 @@ namespace
+             case SoloSim::JOB_ALCHEMIST: return "Alchemist";
+             case SoloSim::JOB_COOK:     return "Cook";
+             case SoloSim::JOB_LEATHERWORKER: return "Leatherworker";
++            case SoloSim::JOB_FISHER:   return "Fisherman";
++            case SoloSim::JOB_HERBALIST: return "Herbalist";
++            case SoloSim::JOB_WOODCUTTER: return "Woodcutter";
++            case SoloSim::JOB_MINER:    return "Miner";
++            case SoloSim::JOB_TRAPPER:  return "Trapper";
+             default:                    return "Townsfolk";
+         }
+     }
+@@ -163,6 +170,12 @@ namespace
+         }
+         t.minlevel = t.maxlevel = std::max<uint8>(1, b.level);
+         t.npcflag = UNIT_NPC_FLAG_GOSSIP | UNIT_NPC_FLAG_QUESTGIVER;   // you can talk to them; some have a request (blue !)
++        // they can be set upon and they hit back (Nov 18): some borrowed townsfolk could never enter a fight, so a pack of
++        // wolves only stared at them (and they at the wolves) - the user saw one frozen on the road to Redridge
++        t.flags_extra &= ~uint32(CREATURE_FLAG_EXTRA_CANNOT_ENTER_COMBAT);
++        t.unit_flags &= ~uint32(UNIT_FLAG_PACIFIED | UNIT_FLAG_IMMUNE_TO_NPC | UNIT_FLAG_NON_ATTACKABLE);
++        t.DamageModifier = std::max(t.DamageModifier, 1.0f);
++        if (!t.BaseAttackTime) t.BaseAttackTime = 2000;
+         t.AIName = "";
+         t.ScriptID = 0;
+         for (uint32& k : t.KillCredit) k = 0;
+@@ -292,6 +305,50 @@ namespace
+     uint32 AgentOf(Creature const* c);
+ 
+     // ------------------------------------------------------------------------------------------------- the body
++    // a couple of plain moves to defend themselves with, from their work (Nov 18): the game's own NPC spells
++    struct Move { uint32 spell; uint32 every; };      // cooldown, ms
++    std::vector<Move> MovesFor(uint8 job, bool veteran)
++    {
++        constexpr uint32 STRIKE = 11976, BACKHAND = 6253, THROW_ROCK = 4164, PUMMEL = 12555, HEAD_CRACK = 3148, ACID = 6306,
++            LIQUID_FIRE = 23970, HAMSTRING = 9080, CLEAVE = 15496, WRENCH = 13398, NET = 6533, KICK = 11978;
++        std::vector<Move> m;
++        if (veteran) m = { { CLEAVE, 9000 }, { STRIKE, 7000 } };   // old hands remember how
++        else switch (job)
++        {
++            case SoloSim::JOB_FARMHAND:      m = { { STRIKE, 9000 }, { THROW_ROCK, 14000 } }; break;   // the pitchfork, a stone
++            case SoloSim::JOB_LABORER:       m = { { STRIKE, 9000 }, { BACKHAND, 16000 } }; break;
++            case SoloSim::JOB_MARKET:        m = { { BACKHAND, 14000 }, { WRENCH, 12000 } }; break;
++            case SoloSim::JOB_SMITH:         m = { { STRIKE, 8000 }, { HEAD_CRACK, 18000 } }; break;   // the hammer
++            case SoloSim::JOB_ALCHEMIST:     m = { { LIQUID_FIRE, 12000 }, { ACID, 15000 } }; break;   // a flask or two
++            case SoloSim::JOB_COOK:          m = { { BACKHAND, 14000 }, { THROW_ROCK, 12000 } }; break; // the pan, whatever's to hand
++            case SoloSim::JOB_LEATHERWORKER: m = { { HAMSTRING, 12000 }, { STRIKE, 9000 } }; break;    // a skinning knife
++            case SoloSim::JOB_FISHER:        m = { { NET, 20000 }, { STRIKE, 9000 } }; break;
++            case SoloSim::JOB_HERBALIST:     m = { { ACID, 15000 }, { KICK, 12000 } }; break;
++            case SoloSim::JOB_WOODCUTTER:    m = { { CLEAVE, 11000 }, { STRIKE, 9000 } }; break;      // the axe
++            case SoloSim::JOB_MINER:         m = { { HEAD_CRACK, 16000 }, { STRIKE, 8000 } }; break;  // the pick
++            case SoloSim::JOB_TRAPPER:       m = { { NET, 18000 }, { HAMSTRING, 12000 } }; break;
++            default:                         m = { { BACKHAND, 15000 } }; break;
++        }
++        std::erase_if(m, [](Move const& x) { return !sSpellMgr->GetSpellInfo(x.spell); });
++        return m;
++    }
++
++    // what they look for out of town, for the gatherers' work: herbs and ore by their lock (Nov 18)
++    class NodeNear
++    {
++    public:
++        NodeNear(float x, float y, float range, uint32 lockType) : _x(x), _y(y), _range(range), _lock(lockType) { }
++        bool operator()(GameObject* g) const
++        {
++            GameObjectTemplate const* t = g ? g->GetGOInfo() : nullptr;
++            if (!t || t->type != GAMEOBJECT_TYPE_CHEST || g->GetExactDist2d(_x, _y) > _range) return false;
++            LockEntry const* l = sLockStore.LookupEntry(t->GetLockId());
++            return l && l->Type[0] == LOCK_KEY_SKILL && l->Index[0] == _lock;
++        }
++    private:
++        float _x, _y, _range; uint32 _lock;
++    };
++
+     class TownsfolkAI : public CreatureAI
+     {
+     public:
+@@ -309,6 +366,13 @@ namespace
+             if (EquipmentInfo const* e = sObjectMgr->GetEquipmentInfo(src, id))
+                 for (uint8 i = 0; i < MAX_EQUIPMENT_ITEMS; ++i)
+                     me->SetVirtualItem(i, e->ItemEntry[i]);
++            SoloSim::SimIntent in;
++            uint8 job = sSoloSim->Intent(_agent, in) ? in.job : 0;
++            bool veteran = me->GetCreatureTemplate()->SubName == "Retired Adventurer";
++            _moves = MovesFor(job, veteran);
++            _cooldowns.assign(_moves.size(), 0);
++            if (job == SoloSim::JOB_FISHER) me->SetVirtualItem(0, 6256);   // a fishing pole
++            if (job == SoloSim::JOB_MINER) me->SetVirtualItem(0, 2901);    // a mining pick
+             _timer = urand(500, 3000);
+         }
+ 
+@@ -366,9 +430,10 @@ namespace
+         {
+             if (UpdateVictim())
+             {
+-                DoMeleeAttackIfReady();
++                Defend(diff);
+                 return;
+             }
++            _fled = false;
+             if (_held)
+             {
+                 if (_held > diff) { _held -= diff; return; }
+@@ -387,6 +452,107 @@ namespace
+         }
+ 
+     private:
++        // set upon (Nov 18): they fight back with their fists or their tools and a move or two of their work; badly hurt,
++        // some run for help (the guards, the town)
++        void Defend(uint32 diff)
++        {
++            for (uint32& c : _cooldowns) c = c > diff ? c - diff : 0;
++            if (!_fled && me->HealthBelowPct(20) && urand(0, 1))
++            {
++                _fled = true;
++                me->DoFleeToGetAssistance();
++                return;
++            }
++            Unit* victim = me->GetVictim();
++            if (victim && !me->HasUnitState(UNIT_STATE_CASTING))
++                for (uint32 i = 0; i < _moves.size(); ++i)
++                {
++                    if (_cooldowns[i]) continue;
++                    SpellInfo const* si = sSpellMgr->GetSpellInfo(_moves[i].spell);
++                    if (!si || !me->IsWithinDistInMap(victim, std::max(si->GetMaxRange(false), 5.0f))) continue;
++                    if (me->CastSpell(victim, _moves[i].spell, false) == SPELL_CAST_OK)
++                    {
++                        _cooldowns[i] = _moves[i].every + urand(0, 3000);
++                        break;
++                    }
++                    _cooldowns[i] = 3000;                                  // couldn't: try again in a moment
++                }
++            DoMeleeAttackIfReady();
++        }
++
++        // the gatherers' work, out where it can be seen (Nov 18): the fisher on the shore, the herbalist knelt by a herb,
++        // the miner at the ore, the woodcutter at the treeline, the trapper setting snares
++        bool Gather(uint8 job, float cx, float cy, float cz)
++        {
++            Position p;
++            uint32 stay = urand(60000, 150000);
++            switch (job)
++            {
++                case SoloSim::JOB_FISHER:
++                    if (Shore(cx, cy, cz, p)) { Go(p, stay, UNIT_STAND_STATE_STAND, EMOTE_STATE_FISHING, p.GetOrientation()); return true; }
++                    break;
++                case SoloSim::JOB_HERBALIST: case SoloSim::JOB_MINER:
++                {
++                    std::list<GameObject*> found;
++                    NodeNear check(cx, cy, 170.0f, job == SoloSim::JOB_MINER ? LOCKTYPE_MINING : LOCKTYPE_HERBALISM);
++                    Acore::GameObjectListSearcher<NodeNear> searcher(me, found, check);
++                    Cell::VisitObjects(me, searcher, 170.0f + me->GetExactDist2d(cx, cy));
++                    std::vector<GameObject*> nodes(found.begin(), found.end());
++                    for (uint32 n = 0; n < nodes.size() && n < 4; ++n)
++                    {
++                        GameObject* g = nodes[urand(0, uint32(nodes.size()) - 1)];
++                        float ang = g->GetAngle(cx, cy);                      // on the town's side of it
++                        Position at(g->GetPositionX() + std::cos(ang) * 1.6f, g->GetPositionY() + std::sin(ang) * 1.6f, g->GetPositionZ(), 0.0f);
++                        at.SetOrientation(at.GetAngle(g));
++                        if (!Walkable(at)) continue;
++                        if (job == SoloSim::JOB_MINER) Go(at, stay, UNIT_STAND_STATE_STAND, EMOTE_STATE_WORK_MINING, at.GetOrientation());
++                        else Go(at, urand(25000, 50000), UNIT_STAND_STATE_KNEEL, 0, at.GetOrientation());
++                        return true;
++                    }
++                    if (RandomNear(cx, cy, cz, 50.0f, 120.0f, p))             // nothing near: out looking
++                    { Go(p, urand(20000, 40000), UNIT_STAND_STATE_KNEEL); return true; }
++                    break;
++                }
++                case SoloSim::JOB_WOODCUTTER:
++                    if (RandomNear(cx, cy, cz, 45.0f, 110.0f, p)) { Go(p, stay, UNIT_STAND_STATE_STAND, EMOTE_STATE_WORK_CHOPWOOD); return true; }
++                    break;
++                case SoloSim::JOB_TRAPPER:
++                    if (RandomNear(cx, cy, cz, 60.0f, 140.0f, p)) { Go(p, urand(30000, 60000), UNIT_STAND_STATE_KNEEL); return true; }
++                    break;
++            }
++            return false;
++        }
++
++        // a dry spot at the water's edge near town, facing the water - found once, kept
++        bool Shore(float cx, float cy, float cz, Position& out)
++        {
++            if (_shoreFound) { out = _shore; return _shore.GetPositionX() != 0.0f || _shore.GetPositionY() != 0.0f; }
++            _shoreFound = true;
++            Map* map = me->GetMap();
++            for (uint32 k = 0; k < 48; ++k)
++            {
++                float ang = float(k) * 2.399963f, r = 30.0f + float(k) * 4.0f;            // a widening spiral
++                float x = cx + r * std::cos(ang), y = cy + r * std::sin(ang);
++                float z = map->GetHeight(me->GetPhaseMask(), x, y, cz + 20.0f, true, 60.0f);
++                if (z <= INVALID_HEIGHT) continue;
++                LiquidData const& liq = map->GetLiquidData(me->GetPhaseMask(), x, y, z, me->GetCollisionHeight(), {});
++                if (liq.Status == LIQUID_MAP_NO_WATER) continue;
++                // water here: walk back toward town until the feet are dry
++                for (float back = 2.0f; back <= 20.0f; back += 2.0f)
++                {
++                    float bx = x + (cx - x) / r * back, by = y + (cy - y) / r * back;
++                    float bz = map->GetHeight(me->GetPhaseMask(), bx, by, z + 10.0f, true, 30.0f);
++                    if (bz <= INVALID_HEIGHT || map->IsInWater(me->GetPhaseMask(), bx, by, bz, me->GetCollisionHeight())) continue;
++                    Position p(bx, by, bz, 0.0f);
++                    p.SetOrientation(p.GetAngle(x, y));
++                    if (!Walkable(p)) break;
++                    _shore = p; out = p;
++                    return true;
++                }
++            }
++            return false;
++        }
++
+         // somewhere they can walk to: a real path that ends where it should (Nov 17 - with none, they went in a straight
+         // line through the air: townsfolk "flying" to seats upstairs or to a board stuck in a wall)
+         bool Walkable(Position const& p)
+@@ -704,6 +870,7 @@ namespace
+             switch (in.verb)
+             {
+                 case Verb::Work:
++                    if (in.job >= SoloSim::JOB_FISHER && in.job <= SoloSim::JOB_TRAPPER && Gather(in.job, cx, cy, cz)) return;
+                     if (in.job == SoloSim::JOB_FARMHAND && RandomNear(cx, cy, cz, 35.0f, 80.0f, p))
+                         return Go(p, urand(40000, 90000), UNIT_STAND_STATE_STAND, urand(0, 1) ? EMOTE_STATE_WORK : EMOTE_STATE_USE_STANDING);
+                     if (in.job == SoloSim::JOB_LABORER && urand(0, 99) < 35 && UseThing(cx, cy, THING_ANVIL)) return;   // at the forge
+@@ -811,6 +978,8 @@ namespace
+         float _face = -1.0f;
+         ObjectGuid _npc;
+         bool _moving = false, _home = false, _following = false;
++        std::vector<Move> _moves; std::vector<uint32> _cooldowns; bool _fled = false;
++        Position _shore; bool _shoreFound = false;
+     };
+ }
+ 
+diff --git a/src/server/game/SoloSim/solosim_dungeons.cpp b/src/server/game/SoloSim/solosim_dungeons.cpp
+index 6fd10d6..49c8bc0 100644
+--- a/src/server/game/SoloSim/solosim_dungeons.cpp
++++ b/src/server/game/SoloSim/solosim_dungeons.cpp
+@@ -161,7 +161,7 @@ void World::DelveTick()
+         std::vector<std::pair<uint32, uint32>> fit;                  // (travel minutes, agent)
+         for (auto& [id, a] : _agents)
+         {
+-            if (a.role != ROLE_ADVENTURER || a.status != AgentStatus::Active || IsHordeRace(a.race) != horde) continue;
++            if (a.role != ROLE_ADVENTURER || a.job == JOB_MERCENARY || a.status != AgentStatus::Active || IsHordeRace(a.race) != horde) continue;
+             if (a.level < lo || a.level > hi || a.wounds > 30 || a.fatigue > 60 || a.caravan || a.follow || a.doing == Verb::Delve) continue;
+             if (auto s = _lastSeen.find(id); s != _lastSeen.end() && _clock - s->second < 30) continue;
+             SimSite const* here = SiteById(a.site);
+diff --git a/src/server/game/SoloSim/solosim_genitems.cpp b/src/server/game/SoloSim/solosim_genitems.cpp
+index 70f9f64..e0642cc 100644
+--- a/src/server/game/SoloSim/solosim_genitems.cpp
++++ b/src/server/game/SoloSim/solosim_genitems.cpp
+@@ -23,6 +23,7 @@
+ #include "Player.h"
+ #include "QueryResult.h"
+ #include "Random.h"
++#include <array>
+ #include <cstdio>
+ #include <deque>
+ #include <map>
+@@ -86,11 +87,80 @@ namespace
+         }
+     }
+ 
+-    std::string Noun(std::string const& name)
++    // what the item is called, by what it is - the real item's own word only when it is one of these (Nov 18: "Might",
++    // "Guide", "Star" came from proper names)
++    std::vector<std::string> const& Nouns(ItemTemplate const& b)
+     {
+-        std::string n = name.substr(0, name.find(" of "));
+-        size_t sp = n.find_last_of(' ');
+-        return sp == std::string::npos ? n : n.substr(sp + 1);
++        static std::vector<std::string> const none = { "Trinket" };
++        static std::map<uint32, std::vector<std::string>> const weapon = {
++            { ITEM_SUBCLASS_WEAPON_AXE, { "Axe", "Hatchet", "Cleaver", "Chopper", "Hand Axe" } },
++            { ITEM_SUBCLASS_WEAPON_AXE2, { "Greataxe", "Battleaxe", "Waraxe", "Reaver", "Splitter" } },
++            { ITEM_SUBCLASS_WEAPON_BOW, { "Bow", "Longbow", "Shortbow", "Recurve" } },
++            { ITEM_SUBCLASS_WEAPON_GUN, { "Rifle", "Blunderbuss", "Musket", "Boomstick", "Shotgun" } },
++            { ITEM_SUBCLASS_WEAPON_MACE, { "Mace", "Hammer", "Cudgel", "Club", "Morningstar", "Flail" } },
++            { ITEM_SUBCLASS_WEAPON_MACE2, { "Maul", "Warhammer", "Greathammer", "Sledge", "Crusher" } },
++            { ITEM_SUBCLASS_WEAPON_POLEARM, { "Polearm", "Halberd", "Glaive", "Spear", "Pike", "Scythe" } },
++            { ITEM_SUBCLASS_WEAPON_SWORD, { "Sword", "Longsword", "Shortsword", "Blade", "Saber", "Scimitar", "Broadsword" } },
++            { ITEM_SUBCLASS_WEAPON_SWORD2, { "Greatsword", "Claymore", "Zweihander", "Bastard Sword", "Warblade" } },
++            { ITEM_SUBCLASS_WEAPON_STAFF, { "Staff", "Quarterstaff", "Stave", "Walking Stick", "Spire" } },
++            { ITEM_SUBCLASS_WEAPON_FIST, { "Fist", "Claw", "Knuckles", "Talon", "Gauntlet" } },
++            { ITEM_SUBCLASS_WEAPON_DAGGER, { "Dagger", "Dirk", "Stiletto", "Knife", "Kris", "Shiv" } },
++            { ITEM_SUBCLASS_WEAPON_THROWN, { "Throwing Knives", "Throwing Axe", "Chakram", "Javelin" } },
++            { ITEM_SUBCLASS_WEAPON_CROSSBOW, { "Crossbow", "Arbalest", "Repeater" } },
++            { ITEM_SUBCLASS_WEAPON_WAND, { "Wand", "Rod", "Scepter" } } };
++        static std::map<uint32, std::vector<std::string>> const anyArmour = {
++            { INVTYPE_NECK, { "Amulet", "Pendant", "Necklace", "Choker", "Medallion", "Talisman" } },
++            { INVTYPE_FINGER, { "Ring", "Band", "Loop", "Signet", "Seal" } },
++            { INVTYPE_TRINKET, { "Charm", "Idol", "Token", "Fetish", "Totem", "Insignia" } },
++            { INVTYPE_CLOAK, { "Cloak", "Cape", "Shroud", "Mantle", "Drape" } },
++            { INVTYPE_HOLDABLE, { "Orb", "Tome", "Lantern", "Focus", "Grimoire", "Codex" } },
++            { INVTYPE_SHIELD, { "Shield", "Buckler", "Bulwark", "Kite Shield", "Aegis", "Barrier" } } };
++        // slot by armour type: cloth, leather, mail, plate
++        static std::map<uint32, std::array<std::vector<std::string>, 4>> const byType = {
++            { INVTYPE_HEAD, {{ { "Hood", "Cowl", "Circlet", "Crown" }, { "Cap", "Mask", "Headband", "Hood" }, { "Coif", "Helm", "Headguard", "Hood" }, { "Helm", "Greathelm", "Visor", "Faceguard" } }} },
++            { INVTYPE_SHOULDERS, {{ { "Mantle", "Amice", "Shoulderpads" }, { "Shoulders", "Spaulders", "Shoulderpads" }, { "Pauldrons", "Spaulders", "Epaulets" }, { "Pauldrons", "Shoulderplates", "Spaulders" } }} },
++            { INVTYPE_CHEST, {{ { "Vest", "Tunic", "Jerkin" }, { "Tunic", "Jerkin", "Vest", "Harness" }, { "Hauberk", "Chain Vest", "Chestguard" }, { "Breastplate", "Chestplate", "Cuirass", "Chestguard" } }} },
++            { INVTYPE_ROBE, {{ { "Robe", "Vestments", "Raiment", "Garb" }, { "Robe", "Tunic" }, { "Hauberk" }, { "Breastplate" } }} },
++            { INVTYPE_WAIST, {{ { "Sash", "Cord", "Belt" }, { "Belt", "Girdle", "Waistband" }, { "Girdle", "Belt", "Links" }, { "Waistguard", "Girdle", "Belt" } }} },
++            { INVTYPE_LEGS, {{ { "Leggings", "Trousers", "Pants" }, { "Leggings", "Breeches", "Pants", "Kilt" }, { "Legguards", "Leggings", "Chausses" }, { "Legplates", "Legguards", "Greaves", "Cuisses" } }} },
++            { INVTYPE_FEET, {{ { "Slippers", "Sandals", "Shoes", "Footwraps" }, { "Boots", "Moccasins", "Treads", "Footpads" }, { "Boots", "Sabatons", "Greaves" }, { "Sabatons", "Warboots", "Greaves", "Stompers" } }} },
++            { INVTYPE_WRISTS, {{ { "Bracers", "Cuffs", "Wraps" }, { "Bracers", "Bindings", "Wristguards" }, { "Bracers", "Wristguards", "Vambraces" }, { "Vambraces", "Bracers", "Wristplates" } }} },
++            { INVTYPE_HANDS, {{ { "Gloves", "Handwraps", "Mitts" }, { "Gloves", "Grips", "Handguards" }, { "Gauntlets", "Gloves", "Grips" }, { "Gauntlets", "Handguards", "Fists" } }} } };
++        if (b.Class == ITEM_CLASS_WEAPON) { auto it = weapon.find(b.SubClass); return it != weapon.end() ? it->second : none; }
++        uint32 inv = b.InventoryType == INVTYPE_WEAPONOFFHAND ? INVTYPE_HOLDABLE : b.InventoryType;
++        if (auto it = anyArmour.find(inv); it != anyArmour.end()) return it->second;
++        if (auto it = byType.find(inv); it != byType.end())
++        {
++            uint32 k = b.SubClass >= ITEM_SUBCLASS_ARMOR_CLOTH && b.SubClass <= ITEM_SUBCLASS_ARMOR_PLATE ? b.SubClass - ITEM_SUBCLASS_ARMOR_CLOTH : 1;
++            return it->second[k];
++        }
++        return none;
++    }
++
++    std::string Noun(ItemTemplate const& b)
++    {
++        std::vector<std::string> const& ok = Nouns(b);
++        std::string n = b.Name1.substr(0, b.Name1.find(" of "));
++        for (std::string const& w : ok)                           // the real item's own word, when it says what it is
++            if (n.size() >= w.size() && n.compare(n.size() - w.size(), w.size(), w) == 0) return w;
++        return ok[urand(0, uint32(ok.size()) - 1)];
++    }
++
++    // what the item is made of, for the adjectives
++    enum Mat : uint32 { M_CLOTH = 1, M_LEATHER = 2, M_MAIL = 4, M_PLATE = 8, M_WEAPON = 16, M_JEWEL = 32, M_SHIELD = 64, M_ALL = 127 };
++    uint32 MatOf(ItemTemplate const& b)
++    {
++        if (b.Class == ITEM_CLASS_WEAPON) return M_WEAPON;
++        if (b.SubClass == ITEM_SUBCLASS_ARMOR_SHIELD) return M_SHIELD;
++        if (b.InventoryType == INVTYPE_CLOAK) return M_CLOTH;
++        switch (b.SubClass)
++        {
++            case ITEM_SUBCLASS_ARMOR_CLOTH: return M_CLOTH;
++            case ITEM_SUBCLASS_ARMOR_LEATHER: return M_LEATHER;
++            case ITEM_SUBCLASS_ARMOR_MAIL: return M_MAIL;
++            case ITEM_SUBCLASS_ARMOR_PLATE: return M_PLATE;
++            default: return M_JEWEL;                                   // rings, necks, trinkets, off-hands
++        }
+     }
+ 
+     // for the GM sample command (no player): the class may use it, and its best armour type
+@@ -108,21 +178,31 @@ namespace
+ 
+     std::string Name(ItemTemplate const& base, uint32 theme, uint32 quality, std::string const& source)
+     {
+-        static std::map<uint32, std::vector<std::string>> const adj = {
+-            { ITEM_MOD_STRENGTH,  { "Brutal", "Ironclad", "Savage", "Warbound", "Crushing", "Battle-Worn", "Bloodied", "Unyielding" } },
+-            { ITEM_MOD_AGILITY,   { "Swift", "Shadowed", "Feral", "Nimble", "Stalker's", "Keen", "Wolfhide", "Silent" } },
+-            { ITEM_MOD_INTELLECT, { "Arcane", "Runed", "Mystic", "Starlit", "Sorcerous", "Ember-Touched", "Eldritch", "Whispering" } },
+-            { ITEM_MOD_SPIRIT,    { "Serene", "Blessed", "Hallowed", "Tranquil", "Pilgrim's", "Radiant", "Dawnlit" } },
+-            { ITEM_MOD_STAMINA,   { "Sturdy", "Stalwart", "Enduring", "Hardened", "Steadfast", "Weathered" } } };
++        struct Adj { char const* word; uint32 mats; };
++        constexpr uint32 HARD = M_MAIL | M_PLATE | M_WEAPON | M_SHIELD, SOFT = M_CLOTH | M_LEATHER, HIDE = M_LEATHER | M_MAIL;
++        static std::map<uint32, std::vector<Adj>> const adj = {
++            { ITEM_MOD_STRENGTH,  { { "Brutal", M_ALL }, { "Ironclad", M_MAIL | M_PLATE | M_SHIELD }, { "Savage", M_ALL }, { "Warbound", M_ALL }, { "Crushing", M_WEAPON },
++                                    { "Battle-Worn", M_ALL & ~M_JEWEL }, { "Bloodied", M_ALL }, { "Unyielding", M_ALL }, { "Forged", HARD }, { "Riveted", M_MAIL | M_PLATE } } },
++            { ITEM_MOD_AGILITY,   { { "Swift", M_ALL }, { "Shadowed", M_ALL }, { "Feral", HIDE | M_WEAPON | M_JEWEL }, { "Nimble", M_ALL }, { "Stalker's", M_ALL }, { "Keen", M_WEAPON | M_JEWEL },
++                                    { "Wolfhide", HIDE }, { "Silent", M_ALL }, { "Supple", M_LEATHER }, { "Studded", HIDE } } },
++            { ITEM_MOD_INTELLECT, { { "Arcane", M_ALL }, { "Runed", M_ALL }, { "Mystic", M_ALL }, { "Starlit", M_ALL }, { "Sorcerous", M_ALL }, { "Ember-Touched", M_ALL },
++                                    { "Eldritch", M_ALL }, { "Whispering", M_ALL }, { "Silken", M_CLOTH }, { "Spellwoven", M_CLOTH } } },
++            { ITEM_MOD_SPIRIT,    { { "Serene", M_ALL }, { "Blessed", M_ALL }, { "Hallowed", M_ALL }, { "Tranquil", M_ALL }, { "Pilgrim's", SOFT | M_JEWEL | M_WEAPON }, { "Radiant", M_ALL },
++                                    { "Dawnlit", M_ALL }, { "Linen-Wrapped", M_CLOTH } } },
++            { ITEM_MOD_STAMINA,   { { "Sturdy", M_ALL }, { "Stalwart", M_ALL }, { "Enduring", M_ALL }, { "Hardened", M_ALL & ~M_CLOTH }, { "Steadfast", M_ALL }, { "Weathered", M_ALL & ~M_JEWEL },
++                                    { "Thick", SOFT }, { "Reinforced", HARD } } } };
+         static std::vector<std::string> const ofThe = { "the Fallen Watch", "the Wolf King", "the Deep Roads", "the Last Light", "the Broken Crown",
+             "the Silent Grove", "the Burning Sky", "the Hollow Moon", "the Iron Tide", "the Red Wastes", "the Old Kings", "the Lost Legion",
+             "the Ashen Vale", "the First Frost", "the Long Night", "the Drowned Coast" };
+         static std::vector<std::string> const ofWord = { "Ruin", "Thorns", "Dusk", "Embers", "Sorrow", "Valor", "the Tempest", "Whispers", "Vengeance", "Echoes" };
+         static std::vector<std::string> const coinA = { "Dusk", "Grim", "Storm", "Night", "Blood", "Frost", "Ember", "Doom", "Soul", "Thunder", "Ash", "Shadow", "Iron", "Sun", "Star", "Wraith" };
+         static std::vector<std::string> const coinB = { "rend", "fang", "caller", "bane", "reaver", "song", "ward", "bringer", "fall", "edge", "heart", "maw", "whisper", "forge" };
+-        std::string noun = Noun(base.Name1);
++        std::string noun = Noun(base);
++        uint32 mat = MatOf(base);
+         auto a = adj.find(theme);
+-        std::string adjective = a != adj.end() ? Any(a->second) : Any(adj.at(ITEM_MOD_STAMINA));
++        std::vector<std::string> fit;
++        for (Adj const& x : (a != adj.end() ? a->second : adj.at(ITEM_MOD_STAMINA))) if (x.mats & mat) fit.push_back(x.word);
++        std::string adjective = fit.empty() ? "Sturdy" : Any(fit);
+         std::string ending = urand(0, 1) ? Any(ofThe) : Any(ofWord);
+         std::string owner;
+         if (!source.empty())
+-- 
+2.56.0.windows.2
+

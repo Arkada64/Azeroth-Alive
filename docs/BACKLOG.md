@@ -49,8 +49,13 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
    crossings - the Dark Portal, Stormwind-Valiance Keep, Menethil-Valgarde, Tirisfal-Vengeance Landing, Orgrimmar-
    Warsong Hold - with two-crossing trips (Outland to Kalimdor); levels to 80, threats up to 80. 263 crossings in a
    61-hour test; caravans in Outland. Dock towns cached (the first try ran 20x slower; now as fast as before).
-   **Next there:** generated rares for Northrend; road nodes for the TBC isles (Eversong, Ghostlands, Azuremyst,
-   Bloodmyst) and Dalaran so blood elves and draenei have homes; the Exodar boat and the Silvermoon orb.
+   **Isles and Dalaran, done (Nov 18):** scripts\roads-isles.py builds road nodes where the wander graph had none
+   (609: Eversong, Ghostlands, Silvermoon, Azuremyst, Bloodmyst, the Exodar, Dalaran) from the server's own terrain
+   files (zones and ground height) and the guards' patrol paths, linked where the ground is walkable; 58 towns, 305
+   hunting grounds, blood elves and draenei at home there. "Lands" that share a map (the isles on Outland's, Dalaran
+   over Crystalsong) travel by crossings: the Orb of Translocation to the Undercity, the boat from the Exodar to
+   Auberdine, the crystal to the Violet Stand.
+   **Next there:** generated rares for Northrend.
 3. **Full gear generation** (persistent gear for sim people; truly generated items for loot later).
    **Done (Nov 18, just after midnight):** every adventurer owns a real kit of the game's items, body or no body
    (solosim_gear.cpp), built with the rules their body uses (bot_ai::CanEquipFor - _canEquip's class/level/slot rules,
@@ -105,7 +110,15 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
    (greedy and low-regard more, close companions less). **Mercenaries never roll** - all loot is yours.
 5. **Launcher / installer:** create and manage accounts on the server (and the graphics step as an option - Reforged and
    especially LuxVelum are heavy: off, or on per part: HD models, LuxVelum, DXVK, Lexara).
-6. **New civilian types:**
+6. **New civilian types:** **Done in part (Nov 18):** mercenaries (169: one or two at every inn of the land's level;
+   hired for coin by their level - 1g at 20, 4g at 40, 9g at 60, 16g at 80 - by /invite or the hire option; a day's
+   contract; they leave at the day's end, on a zone change, in a raid or where the land is far above them; no
+   friendship from it; never in parties, bounties or dungeon runs of their own) and the gatherers, seen at work
+   (fishers on the shore with a pole, herbalists knelt at herbs, miners at the ore, woodcutters, trappers - 443 of them;
+   they stock the town's market for the crafters). Townsfolk now fight back when set upon (auto attack and one or two
+   moves of their work: a pitchfork Strike, a thrown stone, the smith's Head Crack, the alchemist's Liquid Fire...)
+   and some run for help when badly hurt. **Left:** mercenaries dying for good, never rolling on loot (with party
+   rolls), couriers, pilgrims and travelling traders, adventurers gathering in the open.
    - **Mercenaries:** hang about inns and towns, a few per town; hired for money; generated people at about the zone's
      band with their own gear, level and class; price by level (higher help in higher zones costs more); follow you for
      about a day, then must be hired again; no relationship (plain hired help); die for good; won't follow into other
