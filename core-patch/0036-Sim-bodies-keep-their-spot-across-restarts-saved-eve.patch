@@ -1,0 +1,547 @@
+From df93ce4d8901eefd674c027aa251e47d2b2e19e3 Mon Sep 17 00:00:00 2001
+From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 22:10:23 -0600
+Subject: [PATCH 36/36] Sim: bodies keep their spot across restarts (saved
+ every 30 s with the world; same step -> the exact spot, else straight to
+ their first spot instead of a pile on the site's node); adventurers as
+ friends: /friend someone you've met or face, their level, class and zone live
+ on the friends list (laid up = away), whispers answered, invite from the list
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01JU37XfnHTvru3VVz2sNN7z
+---
+ src/server/game/AI/NpcBots/botbubble.cpp      | 129 ++++++++++++++++++
+ src/server/game/AI/NpcBots/botbubble.h        |   5 +
+ src/server/game/Entities/Player/SocialMgr.cpp |  14 ++
+ src/server/game/Handlers/ChatHandler.cpp      |   4 +
+ src/server/game/Handlers/QueryHandler.cpp     |  14 ++
+ src/server/game/Handlers/Socialhandler.cpp    |   4 +
+ src/server/game/SoloSim/solosim.cpp           | 116 +++++++++++++++-
+ src/server/game/SoloSim/solosim.h             |  14 +-
+ 8 files changed, 298 insertions(+), 2 deletions(-)
+
+diff --git a/src/server/game/AI/NpcBots/botbubble.cpp b/src/server/game/AI/NpcBots/botbubble.cpp
+index f4676db..dd93995 100644
+--- a/src/server/game/AI/NpcBots/botbubble.cpp
++++ b/src/server/game/AI/NpcBots/botbubble.cpp
+@@ -15,6 +15,7 @@
+ #include "botlog.h"
+ #include "botwanderful.h"
+ #include "Chat.h"
++#include "SocialMgr.h"
+ #include "Config.h"
+ #include "Creature.h"
+ #include "DBCStores.h"
+@@ -210,6 +211,17 @@ namespace
+         for (uint32 e : stale)
+             ForgetSimBot(e);
+ 
++        // where each body is, every 30 s: written out with the world, so a restart puts them back (Nov 17 night)
++        static uint32 spotsNotedAt = 0;
++        if (getMSTimeDiff(spotsNotedAt, getMSTime()) >= 30000)
++        {
++            spotsNotedAt = getMSTime();
++            for (auto const& [entry, agent] : simEntryToAgent)
++                if (Creature const* bot = BotDataMgr::FindBot(entry); bot && bot->IsInWorld() && bot->IsAlive() && bot->IsFreeBot() && !bot->IsInCombat()
++                    && !bot->isMoving() && GetMSTimeDiffToNow(simSpawnedAt[entry]) > 20000)   // settled, and not one still on its spawn node
++                        sSoloSim->NoteSpot(agent, bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), bot->GetOrientation(), uint8(bot->GetStandState()));
++        }
++
+         // 2. who should have a body: sim people whose position is in the bubble, nearest first
+         std::vector<SoloSim::SimBody> bodies;
+         sSoloSim->Bodies(mapId, bodies);
+@@ -411,6 +423,8 @@ namespace
+         uint64 spot = 0;                          // inn seat/bed claimed (key), 0 = none
+         bool snap = false;                        // on arrival, settle exactly onto the spot (chairs)
+         float sx = 0, sy = 0, sz = 0, so = 0;
++        bool placed = false;                      // the first look at a fresh body has been taken (Nov 17 night)
++        bool jump = false;                        // a fresh body: go straight to the first spot instead of walking from the node
+     };
+     std::unordered_map<uint32, Life> lives;       // bot entry -> life
+     struct CampFire { ObjectGuid guid; uint32 map = 0; float x = 0, y = 0, z = 0; };
+@@ -704,6 +718,25 @@ bool BotBubble::SimLife(Creature* me, WanderNode const* cur, Position& target, W
+     }
+ 
+ 
++    // a fresh body (a restart, the player arriving): everyone at a place used to appear on its one road node and walk off
++    // from there - forty in a pile (user, Nov 17). Still on the step they were on when last seen: back to that very spot,
++    // as they were (sitting on that bench). Otherwise straight to wherever their life sends them first.
++    if (!life.placed)
++    {
++        life.placed = true;
++        SoloSim::World::BodySpot s;
++        if (sSoloSim->SavedSpot(agent, s) && s.map == me->GetMapId() && me->GetExactDist2d(s.x, s.y) < 250.0f)
++        {
++            me->NearTeleportTo(s.x, s.y, s.z, s.o);
++            target.Relocate(s.x, s.y, s.z, s.o);
++            arrive = 2.0f; waitMs = 1;
++            life.pending = true; life.stay = urand(20000, 60000); life.stand = s.stand; life.faceAngle = s.o;
++            life.snap = true; life.sx = s.x; life.sy = s.y; life.sz = s.z; life.so = s.o;
++            return true;
++        }
++        life.jump = true;
++    }
++
+     // This is called when the body has reached its last target. The engine's wait comes BEFORE the next
+     // move, so a stay is done here, on arrival: settle (sit, lie down, face and greet the NPC), then wait.
+     if (life.pending)
+@@ -747,6 +780,11 @@ bool BotBubble::SimLife(Creature* me, WanderNode const* cur, Position& target, W
+         arrive = arriveWithin;
+         waitMs = 1;
+         life.pending = true; life.stay = stay; life.stand = stand; life.faceAngle = face;
++        if (life.jump)
++        {
++            life.jump = false;
++            me->NearTeleportTo(p.GetPositionX(), p.GetPositionY(), p.GetPositionZ(), face >= 0.0f ? face : me->GetOrientation());
++        }
+         return true;
+     };
+ 
+@@ -770,6 +808,7 @@ bool BotBubble::SimLife(Creature* me, WanderNode const* cur, Position& target, W
+                 x = next->GetPositionX(); y = next->GetPositionY();
+             }
+             nextNode = next;
++            life.jump = false;                                       // on the road they walk from where they appeared
+             go(Position(x, y, z, next->GetOrientation()), 8.0f, 1);   // round the corner early, don't touch the node
+             life.pending = false;                                    // no stay on the road
+             return true;
+@@ -1099,6 +1138,96 @@ bool BotBubble::InviteByName(Player* player, std::string const& name)
+     return true;
+ }
+ 
++// ---- friends (Nov 17 night) --------------------------------------------------------------------------
++static uint32 FriendAgent(ObjectGuid guid)
++{
++    if (!guid.IsPlayer() || guid.GetCounter() < SoloSim::World::FRIEND_GUID_BASE) return 0;
++    return guid.GetCounter() - SoloSim::World::FRIEND_GUID_BASE;
++}
++static ObjectGuid FriendGuid(uint32 agent) { return ObjectGuid::Create<HighGuid::Player>(SoloSim::World::FRIEND_GUID_BASE + agent); }
++
++bool BotBubble::SimFriendName(ObjectGuid guid, std::string& name, uint8& race, uint8& gender, uint8& cls)
++{
++    uint32 agent = FriendAgent(guid);
++    return agent && sSoloSim->IsLive() && sSoloSim->FriendCard(agent, name, race, gender, cls);
++}
++
++bool BotBubble::SimFriendInfo(ObjectGuid guid, uint8& status, uint32& area, uint8& level, uint8& cls)
++{
++    uint32 agent = FriendAgent(guid);
++    if (!agent) return false;
++    status = 0; area = 0; level = 0; cls = 0;
++    if (sSoloSim->IsLive()) sSoloSim->FriendStatus(agent, status, area, level, cls);
++    return true;
++}
++
++// the nearest living body by that name, within reach (someone you're talking to)
++static uint32 NearAgentNamed(Player* player, std::string const& name, float range)
++{
++    uint32 best = 0; float bestD = range;
++    for (uint32 a : sSoloSim->AgentsNamed(name))
++        if (auto it = simAgentToEntry.find(a); it != simAgentToEntry.end())
++            if (Creature const* c = BotDataMgr::FindBot(it->second); c && c->IsInWorld() && c->IsAlive() && c->GetMap() == player->GetMap())
++                if (float d = c->GetExactDist(player); d < bestD) { bestD = d; best = a; }
++    return best;
++}
++
++static void WhisperAs(Player* player, uint32 agent, std::string const& text)
++{
++    WorldPacket data;
++    ChatHandler::BuildChatPacket(data, CHAT_MSG_WHISPER, LANG_UNIVERSAL, FriendGuid(agent), player->GetGUID(), text, 0);
++    player->SendDirectMessage(&data);
++}
++
++bool BotBubble::AddSimFriend(Player* player, std::string const& name, std::string const& note)
++{
++    if (!player || !sSoloSim->IsLive()) return false;
++    uint32 pguid = player->GetGUID().GetCounter();
++    std::string reply, full;
++    uint32 agent = sSoloSim->Befriend(pguid, name, player->GetTeamId() == TEAM_HORDE, NearAgentNamed(player, name, 30.0f), reply, full);
++    if (!agent)
++    {
++        if (full.empty()) return false;                                       // nobody by that name on your side
++        if (reply.empty())
++            ChatHandler(player->GetSession()).PSendSysMessage("You don't know {} well enough yet - meet them first, or ask them face to face.", full);
++        else
++            ChatHandler(player->GetSession()).PSendSysMessage("{}: \"{}\"", full, reply);
++        sSocialMgr->SendFriendStatus(player, FRIEND_NOT_FOUND, ObjectGuid::Empty, false);
++        return true;
++    }
++    ObjectGuid fg = FriendGuid(agent);
++    PlayerSocial* social = player->GetSocial();
++    if (social->HasFriend(fg)) { sSocialMgr->SendFriendStatus(player, FRIEND_ALREADY, fg, false); return true; }
++    if (!social->AddToSocialList(fg, SOCIAL_FLAG_FRIEND)) { sSocialMgr->SendFriendStatus(player, FRIEND_LIST_FULL, fg, false); return true; }
++    social->SetFriendNote(fg, note.empty() ? full : note);                    // the friends list shows one name; the note has both
++    uint8 st = 0, lv = 0, cl = 0; uint32 ar = 0;
++    sSoloSim->FriendStatus(agent, st, ar, lv, cl);
++    sSocialMgr->SendFriendStatus(player, st ? FRIEND_ADDED_ONLINE : FRIEND_ADDED_OFFLINE, fg, false);
++    WhisperAs(player, agent, reply);
++    return true;
++}
++
++bool BotBubble::WhisperSim(Player* player, std::string const& to, std::string const& msg)
++{
++    if (!player || !sSoloSim->IsLive()) return false;
++    uint32 pguid = player->GetGUID().GetCounter();
++    std::vector<uint32> agents = sSoloSim->AgentsNamed(to);
++    bool horde = player->GetTeamId() == TEAM_HORDE;
++    std::erase_if(agents, [horde](uint32 a) { return sSoloSim->AgentIsHorde(a) != horde; });
++    if (agents.empty()) return false;
++    // the one on your friends list, else the one near you, else the first by that name
++    uint32 agent = 0;
++    for (uint32 a : agents) if (player->GetSocial()->HasFriend(FriendGuid(a))) { agent = a; break; }
++    if (!agent) agent = NearAgentNamed(player, to, 40.0f);
++    if (!agent) agent = agents.front();
++    WorldPacket echo;                                                        // "To Marrin: ..." in your own chat
++    ChatHandler::BuildChatPacket(echo, CHAT_MSG_WHISPER_INFORM, LANG_UNIVERSAL, FriendGuid(agent), FriendGuid(agent), msg, 0);
++    player->SendDirectMessage(&echo);
++    if (std::string say = sSoloSim->WhisperReply(agent, pguid); !say.empty())
++        WhisperAs(player, agent, say);
++    return true;
++}
++
+ bool BotBubble::SimGear(uint32 agent, std::vector<GearPiece>& out, uint8& due)
+ {
+     std::string gear;
+diff --git a/src/server/game/AI/NpcBots/botbubble.h b/src/server/game/AI/NpcBots/botbubble.h
+index 3cc0390..d793469 100644
+--- a/src/server/game/AI/NpcBots/botbubble.h
++++ b/src/server/game/AI/NpcBots/botbubble.h
+@@ -58,6 +58,11 @@ namespace BotBubble
+     void ReleaseInnSeat(uint32 entry);
+     // A sim person's body (any kind) died in the game world.
+     void ReportFallen(uint32 agent, std::string const& killer);
++    // Friends (Nov 17 night): sim adventurers on a player's friends list, under a stand-in player guid.
++    bool SimFriendName(ObjectGuid guid, std::string& name, uint8& race, uint8& gender, uint8& cls);
++    bool SimFriendInfo(ObjectGuid guid, uint8& status, uint32& area, uint8& level, uint8& cls);   // false: not one of ours
++    bool AddSimFriend(Player* player, std::string const& name, std::string const& note);          // false: nobody by that name
++    bool WhisperSim(Player* player, std::string const& to, std::string const& msg);               // false: nobody by that name
+ }
+ 
+ #endif
+diff --git a/src/server/game/Entities/Player/SocialMgr.cpp b/src/server/game/Entities/Player/SocialMgr.cpp
+index 46fc3a4..41b853f 100644
+--- a/src/server/game/Entities/Player/SocialMgr.cpp
++++ b/src/server/game/Entities/Player/SocialMgr.cpp
+@@ -16,6 +16,7 @@
+  */
+ 
+ #include "SocialMgr.h"
++#include "botbubble.h" // SoloWoW
+ #include "AccountMgr.h"
+ #include "DatabaseEnv.h"
+ #include "ObjectMgr.h"
+@@ -220,6 +221,19 @@ void SocialMgr::GetFriendInfo(Player* player, ObjectGuid const& friendGUID, Frie
+     friendInfo.Level = 0;
+     friendInfo.Class = 0;
+ 
++    // SoloWoW: an adventurer of the living world - out there (and where) while they live, away while laid up
++    {
++        uint8 st = 0, lv = 0, cl = 0; uint32 ar = 0;
++        if (BotBubble::SimFriendInfo(friendGUID, st, ar, lv, cl))
++        {
++            if (auto it = player->GetSocial()->m_playerSocialMap.find(friendGUID); it != player->GetSocial()->m_playerSocialMap.end())
++                friendInfo.Note = it->second.Note;
++            friendInfo.Status = st == 2 ? FRIEND_STATUS_AFK : st ? FRIEND_STATUS_ONLINE : FRIEND_STATUS_OFFLINE;
++            if (st) { friendInfo.Area = ar; friendInfo.Level = lv; friendInfo.Class = cl; }
++            return;
++        }
++    }
++
+     Player* pFriend = ObjectAccessor::FindConnectedPlayer(friendGUID);
+     if (!pFriend || pFriend->GetSession()->IsGMAccount())
+         return;
+diff --git a/src/server/game/Handlers/ChatHandler.cpp b/src/server/game/Handlers/ChatHandler.cpp
+index b9ba20d..dcf809e 100644
+--- a/src/server/game/Handlers/ChatHandler.cpp
++++ b/src/server/game/Handlers/ChatHandler.cpp
+@@ -42,6 +42,7 @@
+ #include "World.h"
+ #include "WorldPacket.h"
+ #include "WorldSession.h"
++#include "botbubble.h" // SoloWoW
+ 
+ inline bool isNasty(uint8 c)
+ {
+@@ -405,6 +406,9 @@ void WorldSession::HandleMessagechatOpcode(WorldPacket& recvData)
+                     return;
+                 }
+ 
++                if (!receiver && lang != LANG_ADDON && BotBubble::WhisperSim(sender, to, msg))   // SoloWoW: someone of the living world
++                    return;
++
+                 if (!receiver || (lang != LANG_ADDON && !receiver->isAcceptWhispers() && receiver->GetSession()->HasPermission(rbac::RBAC_PERM_CAN_FILTER_WHISPERS) && !receiver->IsInWhisperWhiteList(sender->GetGUID())))
+                 {
+                     SendPlayerNotFoundNotice(to);
+diff --git a/src/server/game/Handlers/QueryHandler.cpp b/src/server/game/Handlers/QueryHandler.cpp
+index 7ab40a1..a16ac2a 100644
+--- a/src/server/game/Handlers/QueryHandler.cpp
++++ b/src/server/game/Handlers/QueryHandler.cpp
+@@ -33,6 +33,7 @@
+ #include "CreatureData.h"
+ #include "botdatamgr.h"
+ #include "botmgr.h"
++#include "botbubble.h" // SoloWoW
+ //end npcbot
+ 
+ void WorldSession::SendNameQueryOpcode(ObjectGuid guid)
+@@ -70,6 +71,19 @@ void WorldSession::SendNameQueryOpcode(ObjectGuid guid)
+     }
+     //end npcbot
+ 
++    // SoloWoW: an adventurer of the living world on your friends list (botbubble.cpp)
++    {
++        std::string simName; uint8 race = 0, gender = 0, cls = 0;
++        if (BotBubble::SimFriendName(guid, simName, race, gender, cls))
++        {
++            WorldPackets::Query::NameQueryResponse r;
++            r.Guid = guid.WriteAsPacked();
++            r.NameUnknown = false; r.Name = simName; r.Race = race; r.Sex = gender; r.Class = cls; r.Declined = false;
++            SendPacket(r.Write());
++            return;
++        }
++    }
++
+     CharacterCacheEntry const* playerData = sCharacterCache->GetCharacterCacheByGuid(guid);
+ 
+     WorldPackets::Query::NameQueryResponse nameQueryResponse;
+diff --git a/src/server/game/Handlers/Socialhandler.cpp b/src/server/game/Handlers/Socialhandler.cpp
+index ba2ebea..f23938c 100644
+--- a/src/server/game/Handlers/Socialhandler.cpp
++++ b/src/server/game/Handlers/Socialhandler.cpp
+@@ -24,6 +24,7 @@
+ #include "Player.h"
+ #include "Realm.h"
+ #include "SocialMgr.h"
++#include "botbubble.h" // SoloWoW
+ #include "World.h"
+ #include "WorldSession.h"
+ 
+@@ -48,7 +49,10 @@ void WorldSession::HandleAddFriendOpcode(WorldPacket& recv_data)
+ 
+     ObjectGuid friendGuid = sCharacterCache->GetCharacterGuidByName(friendName);
+     if (!friendGuid)
++    {
++        BotBubble::AddSimFriend(GetPlayer(), friendName, friendNote);   // SoloWoW: an adventurer of the living world
+         return;
++    }
+ 
+     CharacterCacheEntry const* playerData = sCharacterCache->GetCharacterCacheByGuid(friendGuid);
+     if (!playerData)
+diff --git a/src/server/game/SoloSim/solosim.cpp b/src/server/game/SoloSim/solosim.cpp
+index 0e15225..7d600a3 100644
+--- a/src/server/game/SoloSim/solosim.cpp
++++ b/src/server/game/SoloSim/solosim.cpp
+@@ -182,7 +182,7 @@ namespace
+ // setup
+ // =====================================================================================================
+ static char const* const SIM_TABLES[] = { "sim_state", "sim_site", "sim_agent", "sim_relation", "sim_memory", "sim_event",
+-                                          "sim_bounty", "sim_news", "sim_hub_news", "sim_market", "sim_errand", "sim_camp", "sim_ground", "sim_crafted", "sim_caravan" };
++                                          "sim_bounty", "sim_news", "sim_hub_news", "sim_market", "sim_errand", "sim_camp", "sim_ground", "sim_crafted", "sim_caravan", "sim_spot" };
+ 
+ void World::CreateTables()
+ {
+@@ -230,6 +230,8 @@ void World::CreateTables()
+         "until INT UNSIGNED NOT NULL, done TINYINT UNSIGNED NOT NULL) ENGINE=InnoDB");
+     if (!CharacterDatabase.Query("SHOW COLUMNS FROM sim_camp LIKE 'kind'"))
+         CharacterDatabase.DirectExecute("ALTER TABLE sim_camp ADD COLUMN kind TINYINT UNSIGNED NOT NULL DEFAULT 0, ADD COLUMN home INT UNSIGNED NOT NULL DEFAULT 0");
++    CharacterDatabase.DirectExecute("CREATE TABLE IF NOT EXISTS sim_spot (agent INT UNSIGNED NOT NULL PRIMARY KEY, map INT UNSIGNED NOT NULL, x FLOAT NOT NULL, y FLOAT NOT NULL, z FLOAT NOT NULL, o FLOAT NOT NULL, "
++        "stand TINYINT UNSIGNED NOT NULL, doing TINYINT UNSIGNED NOT NULL, wake_at INT UNSIGNED NOT NULL) ENGINE=InnoDB");
+     CharacterDatabase.DirectExecute("CREATE TABLE IF NOT EXISTS sim_ground (site INT UNSIGNED NOT NULL PRIMARY KEY, pressure FLOAT NOT NULL, last_hunt INT UNSIGNED NOT NULL) ENGINE=InnoDB");
+     if (!CharacterDatabase.Query("SHOW COLUMNS FROM sim_errand LIKE 'target'"))
+         CharacterDatabase.DirectExecute("ALTER TABLE sim_errand ADD COLUMN target INT UNSIGNED NOT NULL DEFAULT 0");
+@@ -726,6 +728,11 @@ void World::Save()
+     for (auto const& [site, t] : _lastHunt)
+         if (!_pressure.contains(site)) rows.push_back(Acore::StringFormat("({},0,{})", site, t));
+     Chunked("INSERT INTO sim_ground VALUES ", rows);
++    CharacterDatabase.DirectExecute("DELETE FROM sim_spot");
++    rows.clear();
++    for (auto const& [agent, s] : _spots)
++        rows.push_back(Acore::StringFormat("({},{},{},{},{},{},{},{},{})", agent, s.map, s.x, s.y, s.z, s.o, uint32(s.stand), uint32(s.doing), s.wakeAt));
++    Chunked("INSERT INTO sim_spot VALUES ", rows);
+     kv("next_camp", _nextCamp);
+ 
+     CharacterDatabase.DirectExecute("DELETE FROM sim_news");
+@@ -848,6 +855,15 @@ bool World::Load()
+     _pressure.clear(); _lastHunt.clear();
+     if (QueryResult r = CharacterDatabase.Query("SELECT site, pressure, last_hunt FROM sim_ground"))
+         do { Field* f = r->Fetch(); if (float p = f[1].Get<float>(); p > 0.0f) _pressure[f[0].Get<uint32>()] = p; if (uint32 t = f[2].Get<uint32>()) _lastHunt[f[0].Get<uint32>()] = t; } while (r->NextRow());
++    _spots.clear();
++    if (QueryResult r = CharacterDatabase.Query("SELECT agent, map, x, y, z, o, stand, doing, wake_at FROM sim_spot"))
++        do
++        {
++            Field* f = r->Fetch(); BodySpot s;
++            s.map = f[1].Get<uint32>(); s.x = f[2].Get<float>(); s.y = f[3].Get<float>(); s.z = f[4].Get<float>(); s.o = f[5].Get<float>();
++            s.stand = f[6].Get<uint8>(); s.doing = f[7].Get<uint8>(); s.wakeAt = f[8].Get<uint32>();
++            _spots[f[0].Get<uint32>()] = s;
++        } while (r->NextRow());
+     _errands.clear();
+     if (QueryResult r = CharacterDatabase.Query("SELECT id, agent, kind, item, site, count, reward, player, progress, expires, done, target FROM sim_errand ORDER BY id"))
+         do
+@@ -944,6 +960,7 @@ std::string World::Reset()
+     _nextErrand = 1; _lastBountyTick = 0;
+     _ready = false;
+     _siteRoad.clear(); _flushed = 0; _liveStarted = false; _liveMs = 0; _realTime = 0;
++    _spots.clear();
+     return _live ? "sim data cleared - the live world rebuilds on the next server tick" : "sim data cleared - next .sim run builds a new world";
+ }
+ 
+@@ -4707,6 +4724,26 @@ bool World::AgentIsHorde(uint32 agentId)
+     return a && IsHordeRace(a->race);
+ }
+ 
++void World::NoteSpot(uint32 agentId, uint32 map, float x, float y, float z, float o, uint8 stand)
++{
++    std::lock_guard<std::mutex> guard(sBodyLock);
++    SimAgent const* a = AgentById(agentId);
++    if (!a || a->status != AgentStatus::Active) { _spots.erase(agentId); return; }
++    _spots[agentId] = { map, x, y, z, o, stand, uint8(a->doing), a->wakeAt };
++}
++
++bool World::SavedSpot(uint32 agentId, BodySpot& out)
++{
++    std::lock_guard<std::mutex> guard(sBodyLock);
++    auto it = _spots.find(agentId);
++    if (it == _spots.end()) return false;
++    out = it->second;
++    _spots.erase(it);
++    SimAgent const* a = AgentById(agentId);
++    // the same step as when they were last seen: nothing has moved them on since (a restart, a short absence)
++    return a && a->status == AgentStatus::Active && uint8(a->doing) == out.doing && a->wakeAt == out.wakeAt;
++}
++
+ std::string World::HireRefusal(uint32 agentId, uint32 guid, uint8 playerLevel)
+ {
+     std::lock_guard<std::mutex> guard(sBodyLock);
+@@ -4789,6 +4826,83 @@ std::string World::InviteFromAfar(std::vector<uint32> const& ids, uint32 guid, s
+     return Acore::StringFormat("I'm {}. If you want company, come and ask me properly.", Doing(*best));
+ }
+ 
++bool World::FriendCard(uint32 agentId, std::string& name, uint8& race, uint8& gender, uint8& cls)
++{
++    std::lock_guard<std::mutex> guard(sBodyLock);
++    SimAgent const* a = AgentById(agentId);
++    if (!a || a->role != ROLE_ADVENTURER) return false;
++    name = a->given; race = a->race; gender = a->gender; cls = a->cls;
++    return true;
++}
++
++bool World::FriendStatus(uint32 agentId, uint8& status, uint32& zone, uint8& level, uint8& cls)
++{
++    std::lock_guard<std::mutex> guard(sBodyLock);
++    SimAgent const* a = AgentById(agentId);
++    status = 0; zone = 0; level = 0; cls = 0;
++    if (!a || a->role != ROLE_ADVENTURER) return false;
++    if (a->status == AgentStatus::Dead || a->status == AgentStatus::Gone) return true;
++    status = a->status == AgentStatus::Recovering ? 2 : 1;
++    if (SimSite const* s = SiteById(a->site)) zone = s->zone;
++    level = a->level; cls = a->cls;
++    return true;
++}
++
++// "/friend Marrin": you can befriend someone you've met, or someone standing in front of you. It warms them to you.
++uint32 World::Befriend(uint32 guid, std::string const& asked, bool horde, uint32 nearAgent, std::string& reply, std::string& fullName)
++{
++    std::lock_guard<std::mutex> guard(sBodyLock);
++    auto lower = [](std::string s) { for (char& ch : s) ch = char(std::tolower(uint8(ch))); return s; };
++    std::string q = lower(asked);
++    SimAgent* best = nullptr; int32 bestRegard = INT32_MIN; bool bestMet = false;
++    for (auto& [id, a] : _agents)
++    {
++        if (a.role != ROLE_ADVENTURER || a.status == AgentStatus::Dead || a.status == AgentStatus::Gone) continue;
++        if (IsHordeRace(a.race) != horde) continue;
++        if (lower(a.given) != q && lower(a.FullName()) != q) continue;
++        int32 sum = 0; bool met = false;
++        for (SimMemory const& m : _memories) if (m.agent == id && m.subjectType == 4 && m.subject == guid) { met = true; sum += int32(m.valence) * m.intensity / 100; }
++        if (id == nearAgent) { met = true; sum += 1000; }                     // the one in front of you
++        if (!best || sum > bestRegard) { best = &a; bestRegard = sum; bestMet = met; }
++    }
++    if (!best) return 0;
++    fullName = best->FullName();
++    if (!bestMet) { reply = ""; return 0; }                                    // nobody by that name knows you
++    int32 regard = bestRegard >= 1000 ? bestRegard - 1000 : bestRegard;
++    if (regard < -30) { reply = "Friends? With you? No."; return 0; }
++    bool already = false;
++    for (SimMemory const& m : _memories)
++        if (m.agent == best->id && m.subjectType == 4 && m.subject == guid && m.eventType == uint8(EventType::Befriended)) already = true;
++    if (!already) RememberPlayer(*best, guid, 25, 60, EventType::Befriended);
++    Rng r(_seed, best->id, uint64(guid) << 8, P_SOCIAL + 910);
++    static char const* const warm[] = { "Glad to call you a friend. Send word if you need a hand.", "A friend, then. Look me up when you're near.",
++        "I'll remember that. Whisper if you're ever in a fix." };
++    static char const* const cool[] = { "All right. We'll see how it goes.", "Friends, eh? Fair enough.", "Sure. Don't make me regret it." };
++    reply = regard >= 0 ? warm[r.Range(0, 2)] : cool[r.Range(0, 2)];
++    return best->id;
++}
++
++// a whisper to someone far away: a line back about where they are and what they're about
++std::string World::WhisperReply(uint32 agentId, uint32 guid)
++{
++    std::lock_guard<std::mutex> guard(sBodyLock);
++    SimAgent const* a = AgentById(agentId);
++    if (!a) return "";
++    int32 sum = 0;
++    for (SimMemory const& m : _memories) if (m.agent == agentId && m.subjectType == 4 && m.subject == guid) sum += int32(m.valence) * m.intensity / 100;
++    Rng r(_seed, agentId, (uint64(guid) << 20) ^ (_clock / 30), P_SOCIAL + 920);
++    SimSite const* s = SiteById(a->site);
++    std::string where = s ? AreaOf(SiteName(s->id)) : std::string("the road");
++    if (a->status == AgentStatus::Hired) return "Can't talk long - I'm on the road with someone.";
++    if (a->status == AgentStatus::Recovering) return Acore::StringFormat("Still laid up near {}. Few more days and I'll be on my feet.", where);
++    if (sum < 0) return r.Chance(0.5f) ? "What do you want?" : "I've nothing to say to you.";
++    static char const* const open[] = { "Good to hear from you!", "Hey, friend.", "There you are.", "Well met." };
++    std::string line = Acore::StringFormat("{} I'm {}.", open[r.Range(0, 3)], Doing(*a));
++    if (a->doing == Verb::Fight && r.Chance(0.5f)) line += " Busy, mind - talk later.";
++    else if (sum >= 30 && r.Chance(0.4f)) line += " Want to meet up? Invite me and I'll tell you where.";
++    return line;
++}
++
+ // they said yes
+ std::string World::HireYes(uint32 agentId, uint32 guid)
+ {
+diff --git a/src/server/game/SoloSim/solosim.h b/src/server/game/SoloSim/solosim.h
+index 6c3e657..2e5a2f3 100644
+--- a/src/server/game/SoloSim/solosim.h
++++ b/src/server/game/SoloSim/solosim.h
+@@ -163,7 +163,8 @@ namespace SoloSim
+         BountyPosted = 22, BountyTaken = 23, BountyDone = 24, BountyExpired = 25, Trained = 26, Weather = 27, FellBeside = 28,
+         RareSlain = 29, BountyAbandoned = 30, RareRepelled = 31, PlayerHelped = 32, Hired = 33, Dismissed = 34, PlayerBounty = 35,
+         Clash = 36,                                        // Alliance and Horde adventurers came to blows (Nov 17)
+-        Caravan = 37                                       // a caravan set out, was attacked, robbed, arrived (Nov 17)
++        Caravan = 37,                                      // a caravan set out, was attacked, robbed, arrived (Nov 17)
++        Befriended = 38                                    // a player put them on their friends list (Nov 17 night)
+     };
+ 
+     struct SimEvent
+@@ -258,6 +259,10 @@ namespace SoloSim
+         void Bodies(uint32 mapId, std::vector<SimBody>& out);
+         uint32 GoalNode(uint32 agentId);
+         bool Intent(uint32 agentId, SimIntent& out);
++        // where an embodied person stood when last seen, so a restart puts them back there (Nov 17 night)
++        struct BodySpot { uint32 map = 0; float x = 0, y = 0, z = 0, o = 0; uint8 stand = 0; uint8 doing = 0; uint32 wakeAt = 0; };
++        void NoteSpot(uint32 agentId, uint32 map, float x, float y, float z, float o, uint8 stand);
++        bool SavedSpot(uint32 agentId, BodySpot& out);   // still on the step they were on then? (used once)
+         // an embodied person was killed in the game world (call on the world thread)
+         void BodyFell(uint32 agentId, std::string const& killer, bool dungeon = false, uint32 playerGuid = 0, bool playerHorde = false);   // dungeon: far less likely to be final; playerGuid: a player's hand
+         bool AgentIsHorde(uint32 agentId);                 // which side a sim person is on (for hiring)
+@@ -348,6 +353,12 @@ namespace SoloSim
+         std::string HireRefusal(uint32 agentId, uint32 guid, uint8 playerLevel);   // "" = they'd come; else their answer
+         std::vector<uint32> AgentsNamed(std::string const& name);                  // /invite by name
+         std::string InviteFromAfar(std::vector<uint32> const& ids, uint32 guid, std::string& who);
++        // friends (Nov 17 night): an adventurer on a player's friends list stands in as a player guid above every real one
++        static constexpr uint32 FRIEND_GUID_BASE = 0x7F000000;
++        bool FriendCard(uint32 agentId, std::string& name, uint8& race, uint8& gender, uint8& cls);
++        bool FriendStatus(uint32 agentId, uint8& status, uint32& zone, uint8& level, uint8& cls);   // status 0 off, 1 on, 2 away (laid up)
++        uint32 Befriend(uint32 guid, std::string const& name, bool horde, uint32 nearAgent, std::string& reply, std::string& fullName);
++        std::string WhisperReply(uint32 agentId, uint32 guid);
+         std::string HireYes(uint32 agentId, uint32 guid);
+         void SharedKill(uint32 agentId, uint32 guid);
+         // markets: town shops sell what the gatherers brought in (world thread); a buy draws down the stock (true = sold out)
+@@ -514,6 +525,7 @@ namespace SoloSim
+         std::vector<SimSite> _sites;
+         std::map<uint32, SimAgent> _agents;        // ordered: deterministic iteration
+         std::vector<SimRelation> _relations;
++        std::unordered_map<uint32, BodySpot> _spots;
+         std::vector<SimMemory> _memories;
+         std::vector<SimEvent> _pending;            // events not yet saved/written
+         std::map<std::pair<uint32, uint32>, SimTime> _socialChronicled; // a pair makes the chronicle at most every 5 days
+-- 
+2.56.0.windows.2
+
