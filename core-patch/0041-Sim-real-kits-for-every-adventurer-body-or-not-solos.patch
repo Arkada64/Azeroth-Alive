@@ -1,0 +1,667 @@
+From 4fca82f447845b089eaa608273b4d2b3dabe64d1 Mon Sep 17 00:00:00 2001
+From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 00:17:24 -0600
+Subject: [PATCH 41/41] Sim: real kits for every adventurer, body or not
+ (solosim_gear.cpp): the rules their body uses (bot_ai::CanEquipFor split out
+ of _canEquip), quality by level band, matching armour, level-gated slots, no
+ doubled ring or trinket; pieces due from level-ups, finds and purchases
+ replaced hourly where something better fits; the gear tier from the kit
+ against a normal item for the level
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01JU37XfnHTvru3VVz2sNN7z
+---
+ src/server/game/AI/NpcBots/bot_ai.cpp    | 105 +++++++------
+ src/server/game/AI/NpcBots/bot_ai.h      |   1 +
+ src/server/game/SoloSim/solosim.cpp      |  48 +++++-
+ src/server/game/SoloSim/solosim.h        |   5 +
+ src/server/game/SoloSim/solosim_gear.cpp | 180 +++++++++++++++++++++++
+ src/server/game/SoloSim/solosim_gear.h   |  11 ++
+ 6 files changed, 297 insertions(+), 53 deletions(-)
+ create mode 100644 src/server/game/SoloSim/solosim_gear.cpp
+ create mode 100644 src/server/game/SoloSim/solosim_gear.h
+
+diff --git a/src/server/game/AI/NpcBots/bot_ai.cpp b/src/server/game/AI/NpcBots/bot_ai.cpp
+index b7e2ccd..dc3c2b4 100644
+--- a/src/server/game/AI/NpcBots/bot_ai.cpp
++++ b/src/server/game/AI/NpcBots/bot_ai.cpp
+@@ -12239,33 +12239,16 @@ bool bot_ai::_canCombineWeapons(ItemTemplate const* mh, ItemTemplate const* oh)
+     return _canEquip(mh, BOT_SLOT_MAINHAND, true, nullptr, true) && _canEquip(oh, BOT_SLOT_OFFHAND, true, nullptr, true) && _canUseOffHand(mh);
+ }
+ 
+-bool bot_ai::_canEquip(ItemTemplate const* newProto, uint8 slot, bool ignoreItemLevel, Item const* newItem/* = nullptr*/, bool ignore_combine/* = false*/) const
++// SoloWoW (Nov 17 night): the class, level and slot rules of _canEquip, without a bot - the sim builds real kits for
++// people who have no body yet with the same rules their body will use.
++bool bot_ai::CanEquipFor(uint8 botclass, uint8 level, uint8 spec, bool canRanged, ItemTemplate const* newProto, uint8 slot)
+ {
+-    EquipmentInfo const* einfo = BotDataMgr::GetBotEquipmentInfo(me->GetEntry());
+-
+-    if (Item const* oldItem = _equips[slot])
+-    {
+-        ItemTemplate const* oldProto = oldItem->GetTemplate();
+-        //prevent reequipping same items
+-        if (newProto->ItemId == oldProto->ItemId && (!newItem || !newItem->GetItemRandomPropertyId()))
+-            return false;
+-        //prevent equipping worse items (only standard or not)
+-        if (!ignoreItemLevel)
+-            if (slot > BOT_SLOT_RANGED || einfo->ItemEntry[slot] != oldProto->ItemId)
+-                if (IAmFree() || !master->IsGameMaster())
+-                    if (_getItemGearStatScore(oldProto, slot, oldItem) > _getItemGearStatScore(newProto, slot, newItem))
+-                        return false;
+-    }
+-
+-    if (slot == BOT_SLOT_OFFHAND && !_canUseOffHand(nullptr, ignore_combine))
+-        return false;
+-
+     //level requirements
+-    if (me->GetLevel() < newProto->RequiredLevel)
++    if (level < newProto->RequiredLevel)
+         return false;
+ 
+     //class requirements
+-    if (_botclass < BOT_CLASS_EX_START && !(newProto->AllowableClass & (1u<<(_botclass-1))))
++    if (botclass < BOT_CLASS_EX_START && !(newProto->AllowableClass & (1u<<(botclass-1))))
+         return false;
+ 
+     //skip race requirements
+@@ -12276,7 +12259,7 @@ bool bot_ai::_canEquip(ItemTemplate const* newProto, uint8 slot, bool ignoreItem
+         switch (slot)
+         {
+             case BOT_SLOT_MAINHAND:
+-                switch (_botclass)
++                switch (botclass)
+                 {
+                     case BOT_CLASS_BM:
+                         if (newProto->SubClass != ITEM_SUBCLASS_WEAPON_POLEARM &&
+@@ -12296,18 +12279,18 @@ bool bot_ai::_canEquip(ItemTemplate const* newProto, uint8 slot, bool ignoreItem
+             case BOT_SLOT_OFFHAND:
+                 if (newProto->SubClass == ITEM_SUBCLASS_WEAPON_POLEARM || newProto->SubClass == ITEM_SUBCLASS_WEAPON_STAFF)
+                     return false;
+-                switch (_botclass)
++                switch (botclass)
+                 {
+                     case BOT_CLASS_DEATH_KNIGHT:
+                     case BOT_CLASS_ROGUE:
+                         break;
+                     case BOT_CLASS_WARRIOR:
+                     case BOT_CLASS_HUNTER:
+-                        if (me->GetLevel() < 20)
++                        if (level < 20)
+                             return false;
+                         break;
+                     case BOT_CLASS_SHAMAN:
+-                        if (me->GetLevel() < 40 || _spec != BOT_SPEC_SHAMAN_ENHANCEMENT)
++                        if (level < 40 || spec != BOT_SPEC_SHAMAN_ENHANCEMENT)
+                             return false;
+                         break;
+                     case BOT_CLASS_SPHYNX:
+@@ -12321,7 +12304,7 @@ bool bot_ai::_canEquip(ItemTemplate const* newProto, uint8 slot, bool ignoreItem
+                 }
+                 break;
+             case BOT_SLOT_RANGED:
+-                if (!_canUseRanged())
++                if (!canRanged)
+                     return false;
+                 break;
+             default:
+@@ -12339,13 +12322,13 @@ bool bot_ai::_canEquip(ItemTemplate const* newProto, uint8 slot, bool ignoreItem
+                     return false;
+                 break;
+             case INVTYPE_2HWEAPON:
+-                switch (_botclass)
++                switch (botclass)
+                 {
+                     case BOT_CLASS_WARRIOR:
+                         switch (slot)
+                         {
+                             case BOT_SLOT_OFFHAND:
+-                                if (me->GetLevel() < 60)
++                                if (level < 60)
+                                     return false;
+                                 break;
+                             case BOT_SLOT_RANGED:
+@@ -12372,7 +12355,7 @@ bool bot_ai::_canEquip(ItemTemplate const* newProto, uint8 slot, bool ignoreItem
+                     return false;
+                 break;
+             case INVTYPE_RANGEDRIGHT:
+-                switch (_botclass)
++                switch (botclass)
+                 {
+                     case BOT_CLASS_SPHYNX:
+                         if (slot != BOT_SLOT_MAINHAND && slot != BOT_SLOT_OFFHAND)
+@@ -12388,7 +12371,7 @@ bool bot_ai::_canEquip(ItemTemplate const* newProto, uint8 slot, bool ignoreItem
+                 return false;
+         }
+ 
+-        switch (_botclass)
++        switch (botclass)
+         {
+             case BOT_CLASS_WARRIOR:
+                 switch (newProto->SubClass)
+@@ -12626,7 +12609,7 @@ bool bot_ai::_canEquip(ItemTemplate const* newProto, uint8 slot, bool ignoreItem
+             case INVTYPE_BODY:
+                 if (slot != BOT_SLOT_BODY)
+                     return false;
+-                switch (_botclass)
++                switch (botclass)
+                 {
+                     case BOT_CLASS_SPHYNX:
+                         return false;
+@@ -12662,7 +12645,7 @@ bool bot_ai::_canEquip(ItemTemplate const* newProto, uint8 slot, bool ignoreItem
+             case INVTYPE_FINGER:
+                 if (slot != BOT_SLOT_FINGER1 && slot != BOT_SLOT_FINGER2)
+                     return false;
+-                switch (_botclass)
++                switch (botclass)
+                 {
+                     case BOT_CLASS_SPHYNX:
+                         return false;
+@@ -12673,7 +12656,7 @@ bool bot_ai::_canEquip(ItemTemplate const* newProto, uint8 slot, bool ignoreItem
+             case INVTYPE_TRINKET:
+                 if (slot != BOT_SLOT_TRINKET1 && slot != BOT_SLOT_TRINKET2)
+                     return false;
+-                switch (_botclass)
++                switch (botclass)
+                 {
+                     case BOT_CLASS_SPHYNX:
+                         return false;
+@@ -12684,7 +12667,7 @@ bool bot_ai::_canEquip(ItemTemplate const* newProto, uint8 slot, bool ignoreItem
+             case INVTYPE_NECK:
+                 if (slot != BOT_SLOT_NECK)
+                     return false;
+-                switch (_botclass)
++                switch (botclass)
+                 {
+                     case BOT_CLASS_SPHYNX:
+                         return false;
+@@ -12695,7 +12678,7 @@ bool bot_ai::_canEquip(ItemTemplate const* newProto, uint8 slot, bool ignoreItem
+             case INVTYPE_CLOAK:
+                 if (slot != BOT_SLOT_BACK)
+                     return false;
+-                switch (_botclass)
++                switch (botclass)
+                 {
+                     case BOT_CLASS_SPHYNX:
+                         return false;
+@@ -12707,7 +12690,7 @@ bool bot_ai::_canEquip(ItemTemplate const* newProto, uint8 slot, bool ignoreItem
+             case INVTYPE_SHIELD:
+                 if (slot != BOT_SLOT_OFFHAND)
+                     return false;
+-                switch (_botclass)
++                switch (botclass)
+                 {
+                     case BOT_CLASS_SPHYNX:
+                         return false;
+@@ -12728,7 +12711,7 @@ bool bot_ai::_canEquip(ItemTemplate const* newProto, uint8 slot, bool ignoreItem
+             case ITEM_SUBCLASS_ARMOR_SHIELD:
+                 if (slot != BOT_SLOT_OFFHAND)
+                     return false;
+-                switch (_botclass)
++                switch (botclass)
+                 {
+                     case BOT_CLASS_SPELLBREAKER:
+                         break;
+@@ -12741,7 +12724,7 @@ bool bot_ai::_canEquip(ItemTemplate const* newProto, uint8 slot, bool ignoreItem
+                 }
+                 break;
+             case ITEM_SUBCLASS_ARMOR_PLATE:
+-                switch (_botclass)
++                switch (botclass)
+                 {
+                     case BOT_CLASS_BM:
+                     case BOT_CLASS_SPHYNX:
+@@ -12752,7 +12735,7 @@ bool bot_ai::_canEquip(ItemTemplate const* newProto, uint8 slot, bool ignoreItem
+                     case BOT_CLASS_WARRIOR:
+                     case BOT_CLASS_PALADIN:
+                     case BOT_CLASS_DEATH_KNIGHT:
+-                        if (me->GetLevel() >= 40 || newProto->Quality == ITEM_QUALITY_HEIRLOOM)
++                        if (level >= 40 || newProto->Quality == ITEM_QUALITY_HEIRLOOM)
+                             break;
+                         return false;
+                     default:
+@@ -12760,7 +12743,7 @@ bool bot_ai::_canEquip(ItemTemplate const* newProto, uint8 slot, bool ignoreItem
+                 }
+                 break;
+             case ITEM_SUBCLASS_ARMOR_MAIL:
+-                switch (_botclass)
++                switch (botclass)
+                 {
+                     case BOT_CLASS_BM:
+                     case BOT_CLASS_SPHYNX:
+@@ -12773,7 +12756,7 @@ bool bot_ai::_canEquip(ItemTemplate const* newProto, uint8 slot, bool ignoreItem
+                         break;
+                     case BOT_CLASS_SHAMAN:
+                     case BOT_CLASS_HUNTER:
+-                        if (me->GetLevel() >= 40 || newProto->Quality == ITEM_QUALITY_HEIRLOOM)
++                        if (level >= 40 || newProto->Quality == ITEM_QUALITY_HEIRLOOM)
+                             break;
+                         return false;
+                     default:
+@@ -12781,7 +12764,7 @@ bool bot_ai::_canEquip(ItemTemplate const* newProto, uint8 slot, bool ignoreItem
+                 }
+                 break;
+             case ITEM_SUBCLASS_ARMOR_LEATHER:
+-                switch (_botclass)
++                switch (botclass)
+                 {
+                     case BOT_CLASS_DARK_RANGER:
+                         break;
+@@ -12799,7 +12782,7 @@ bool bot_ai::_canEquip(ItemTemplate const* newProto, uint8 slot, bool ignoreItem
+                 }
+                 break;
+             case ITEM_SUBCLASS_ARMOR_CLOTH:
+-                switch (_botclass)
++                switch (botclass)
+                 {
+                     case BOT_CLASS_SPHYNX:
+                         return false;
+@@ -12814,7 +12797,7 @@ bool bot_ai::_canEquip(ItemTemplate const* newProto, uint8 slot, bool ignoreItem
+                 }
+                 break;
+             case ITEM_SUBCLASS_ARMOR_MISC:
+-                switch (_botclass)
++                switch (botclass)
+                 {
+                     case BOT_CLASS_SPHYNX:
+                         return false;
+@@ -12823,7 +12806,7 @@ bool bot_ai::_canEquip(ItemTemplate const* newProto, uint8 slot, bool ignoreItem
+                 }
+                 break;
+             case ITEM_SUBCLASS_ARMOR_LIBRAM:
+-                switch (_botclass)
++                switch (botclass)
+                 {
+                     case BOT_CLASS_PALADIN:
+                         break;
+@@ -12832,7 +12815,7 @@ bool bot_ai::_canEquip(ItemTemplate const* newProto, uint8 slot, bool ignoreItem
+                 }
+                 break;
+             case ITEM_SUBCLASS_ARMOR_IDOL:
+-                switch (_botclass)
++                switch (botclass)
+                 {
+                     case BOT_CLASS_DRUID:
+                         break;
+@@ -12841,7 +12824,7 @@ bool bot_ai::_canEquip(ItemTemplate const* newProto, uint8 slot, bool ignoreItem
+                 }
+                 break;
+             case ITEM_SUBCLASS_ARMOR_TOTEM:
+-                switch (_botclass)
++                switch (botclass)
+                 {
+                     case BOT_CLASS_SHAMAN:
+                         break;
+@@ -12850,7 +12833,7 @@ bool bot_ai::_canEquip(ItemTemplate const* newProto, uint8 slot, bool ignoreItem
+                 }
+                 break;
+             case ITEM_SUBCLASS_ARMOR_SIGIL:
+-                switch (_botclass)
++                switch (botclass)
+                 {
+                     case BOT_CLASS_DEATH_KNIGHT:
+                         break;
+@@ -12868,6 +12851,30 @@ bool bot_ai::_canEquip(ItemTemplate const* newProto, uint8 slot, bool ignoreItem
+     return false;
+ }
+ 
++bool bot_ai::_canEquip(ItemTemplate const* newProto, uint8 slot, bool ignoreItemLevel, Item const* newItem/* = nullptr*/, bool ignore_combine/* = false*/) const
++{
++    EquipmentInfo const* einfo = BotDataMgr::GetBotEquipmentInfo(me->GetEntry());
++
++    if (Item const* oldItem = _equips[slot])
++    {
++        ItemTemplate const* oldProto = oldItem->GetTemplate();
++        //prevent reequipping same items
++        if (newProto->ItemId == oldProto->ItemId && (!newItem || !newItem->GetItemRandomPropertyId()))
++            return false;
++        //prevent equipping worse items (only standard or not)
++        if (!ignoreItemLevel)
++            if (slot > BOT_SLOT_RANGED || einfo->ItemEntry[slot] != oldProto->ItemId)
++                if (IAmFree() || !master->IsGameMaster())
++                    if (_getItemGearStatScore(oldProto, slot, oldItem) > _getItemGearStatScore(newProto, slot, newItem))
++                        return false;
++    }
++
++    if (slot == BOT_SLOT_OFFHAND && !_canUseOffHand(nullptr, ignore_combine))
++        return false;
++
++    return CanEquipFor(_botclass, me->GetLevel(), _spec, _canUseRanged(), newProto, slot);
++}
++
+ bool bot_ai::_isItemFitForGeneratedBot([[maybe_unused]] uint8 category, uint8 slot, ItemTemplate const* proto) const
+ {
+     if (!_canEquip(proto, slot, true))
+diff --git a/src/server/game/AI/NpcBots/bot_ai.h b/src/server/game/AI/NpcBots/bot_ai.h
+index 7b62e52..42e42df 100644
+--- a/src/server/game/AI/NpcBots/bot_ai.h
++++ b/src/server/game/AI/NpcBots/bot_ai.h
+@@ -648,6 +648,7 @@ private:
+     bool _canUseRelic() const;
+     bool _canCombineWeapons(ItemTemplate const* mh, ItemTemplate const* oh) const;
+     bool _canEquip(ItemTemplate const* newProto, uint8 slot, bool ignoreItemLevel, Item const* newItem = nullptr, bool ignore_combine = false) const;
++    public: static bool CanEquipFor(uint8 botclass, uint8 level, uint8 spec, bool canRanged, ItemTemplate const* newProto, uint8 slot); private:
+     void _removeEquipment(uint8 slot);
+     bool _isItemFitForGeneratedBot(uint8 category, uint8 slot, ItemTemplate const* proto) const;
+     [[nodiscard]] BotEquipResult _unequip(uint8 slot, ObjectGuid receiver, bool store_to_bank, bool on_equip_from_bank = false);
+diff --git a/src/server/game/SoloSim/solosim.cpp b/src/server/game/SoloSim/solosim.cpp
+index be4bcb1..4c87d37 100644
+--- a/src/server/game/SoloSim/solosim.cpp
++++ b/src/server/game/SoloSim/solosim.cpp
+@@ -2,6 +2,7 @@
+ // v2 adds: hunting parties, gathering professions + town markets, town bounties, news that travels, trainer
+ // visits and rainy days.
+ #include "solosim.h"
++#include "solosim_gear.h"
+ #include "ItemTemplate.h"
+ #include "GameObjectData.h"
+ #include <filesystem>
+@@ -3932,6 +3933,7 @@ void World::Advance(SimTime end, uint32& wakes)
+         _clock = t;
+         if (DayOf(t) > _lastDailyTick) { _lastDailyTick = DayOf(t); DailyTick(); }
+         if (t / (3 * MIN_PER_HOUR) > _lastWildTick) { _lastWildTick = t / (3 * MIN_PER_HOUR); WildlifeTick(); }
++        if (t / MIN_PER_HOUR > _lastGearTick) { _lastGearTick = t / MIN_PER_HOUR; RefreshKits(400); }
+         if (t / (12 * MIN_PER_HOUR) > _lastBountyTick) { _lastBountyTick = t / (12 * MIN_PER_HOUR); PostBounties(); PostErrands(); }
+         Wake(*a);
+         ++wakes;
+@@ -4687,13 +4689,47 @@ bool World::HasPotion(uint32 agentId)
+     return !a || a->potions > 0;
+ }
+ 
++// real kits for everyone (Nov 17 night): those with none get one, those with pieces due get the weakest replaced where
++// something better fits - a few hundred people an hour, round the whole world in turn. Anyone whose body was near the
++// player lately is left alone (the body wears and records their kit).
++void World::RefreshKits(uint32 budget)
++{
++    if (_agents.empty()) return;
++    auto it = _agents.lower_bound(_gearCursor);
++    uint32 looked = 0, done = 0, pieces = 0;
++    while (done < budget && looked < _agents.size())
++    {
++        if (it == _agents.end()) it = _agents.begin();
++        SimAgent& a = it->second;
++        _gearCursor = it->first + 1;
++        ++it; ++looked;
++        if (a.role != ROLE_ADVENTURER || (a.status != AgentStatus::Active && a.status != AgentStatus::Recovering)) continue;
++        if (!a.gear.empty() && !a.gearDue) continue;
++        if (auto s = _lastSeen.find(a.id); s != _lastSeen.end() && _clock - s->second < 30) continue;
++        uint32 changed = 0;
++        a.gear = SoloGear::Refresh(a.cls, a.level, a.gear, a.gear.empty() ? 0 : a.gearDue, Mix((uint64(_seed) << 20) ^ (uint64(a.id) << 8) ^ (_clock / MIN_PER_DAY)), &changed);
++        a.gearDue = 0;
++        TierFromKit(a);
++        ++done; pieces += changed;
++    }
++    (void)pieces;
++}
++
+ void World::SetGear(uint32 agentId, std::string const& gear)
+ {
+     std::lock_guard<std::mutex> guard(sBodyLock);
+     SimAgent* a = AgentById(agentId);
+     if (!a) return;
+     a->gear = gear; a->gearDue = 0;
+-    // how well equipped they really are: item level and quality against what's normal for their level, minus empty slots
++    _lastSeen[agentId] = _clock;
++    TierFromKit(*a);
++}
++
++// how well equipped they really are: item level and quality against what's normal for their level, minus empty slots
++void World::TierFromKit(SimAgent& sa)
++{
++    SimAgent* a = &sa;
++    std::string const& gear = a->gear;
+     static int32 const qualityBonus[] = { -5, 0, 3, 7, 13, 20, 20, 20 };
+     int32 sum = 0, n = 0;
+     std::istringstream in(gear);
+@@ -4705,9 +4741,12 @@ void World::SetGear(uint32 agentId, std::string const& gear)
+         if (ItemTemplate const* p = sObjectMgr->GetItemTemplate(entry)) { sum += int32(p->ItemLevel) + qualityBonus[std::min<uint32>(p->Quality, 7)]; ++n; }
+     }
+     if (!n) return;
+-    int32 expected = a->level < 20 ? 12 : a->level < 30 ? 15 : 17;
+-    float rel = float(sum) / float(n) - float(a->level + 3);
+-    float tier = 50.0f + rel * 4.0f - float(std::max<int32>(0, expected - n)) * 3.0f;
++    int32 expected = a->level < 10 ? 9 : a->level < 20 ? 10 : a->level < 30 ? 13 : 16;   // the slots open at the level (Nov 17 night)
++    // a typical item for the level: close to the level itself up to 60, then Outland's and Northrend's steeper climb
++    // (about 115 at 70, about 195 at 80) - measured as a share, so a few item levels count the same at 20 as at 80
++    float norm = a->level <= 60 ? float(a->level) + 3.0f : a->level <= 70 ? 63.0f + float(a->level - 60) * 5.2f : 115.0f + float(a->level - 70) * 8.0f;
++    float rel = (float(sum) / float(n) / norm - 1.0f) * 100.0f;       // per cent above (or below) the norm
++    float tier = 50.0f + rel * 1.3f - float(std::max<int32>(0, expected - n)) * 3.0f;
+     a->gearTier = uint8(std::clamp(tier, 5.0f, 100.0f));
+ }
+ 
+@@ -4783,6 +4822,7 @@ void World::NoteSpot(uint32 agentId, uint32 map, float x, float y, float z, floa
+     SimAgent const* a = AgentById(agentId);
+     if (!a || a->status != AgentStatus::Active) { _spots.erase(agentId); return; }
+     _spots[agentId] = { map, x, y, z, o, stand, uint8(a->doing), a->wakeAt };
++    _lastSeen[agentId] = _clock;
+ }
+ 
+ bool World::SavedSpot(uint32 agentId, BodySpot& out)
+diff --git a/src/server/game/SoloSim/solosim.h b/src/server/game/SoloSim/solosim.h
+index 6a18284..7b3ed01 100644
+--- a/src/server/game/SoloSim/solosim.h
++++ b/src/server/game/SoloSim/solosim.h
+@@ -297,6 +297,8 @@ namespace SoloSim
+         // A game creature died on a continent: count it against its hunting ground (if countIt), and return how many
+         // extra seconds it should stay dead because the ground has been hunted hard (0 = respawn as normal).
+         uint32 HuntedDeath(uint32 map, float x, float y, uint32 respawnDelay, bool countIt);
++        void RefreshKits(uint32 budget);             // real kits for everyone, changed by what happens to them (solosim_gear.cpp)
++        void TierFromKit(SimAgent& a);
+         void SetGear(uint32 agentId, std::string const& gear);          // the server is stopping: write the living world out now   // GM: raise a threat now on each continent that has none   // a townsperson's body won a fight in the game world
+         uint32 Age(SimAgent const& a) const;   // years; a year passes every game week
+         // the physical board: its menu items (text, action: 1000+n = take bounty n, 0 = one of yours) for the town at (x, y)
+@@ -560,6 +562,9 @@ namespace SoloSim
+         std::map<uint32, float> _pressure;           // hunting ground -> how hard it's been hunted lately (decays daily)
+         std::map<uint32, SimTime> _lastHunt;         // hunting ground -> when someone last hunted it
+         SimTime _lastWildTick = 0;                   // 3-hour wildlife steps
++        SimTime _lastGearTick = 0;                   // hourly: kits brought up to date (Nov 17 night)
++        uint32 _gearCursor = 0;
++        std::unordered_map<uint32, SimTime> _lastSeen;   // agent -> when their body was last seen near the player
+         uint32 _nextErrand = 1;
+         std::map<uint32, std::deque<std::pair<SimTime, std::string>>> _notices;   // town -> board notices (rebuilt from sim_event on load)
+         std::map<uint32, std::vector<std::string>> _rumors;         // town -> recent notable happenings nearby (runtime)
+diff --git a/src/server/game/SoloSim/solosim_gear.cpp b/src/server/game/SoloSim/solosim_gear.cpp
+new file mode 100644
+index 0000000..7667266
+--- /dev/null
++++ b/src/server/game/SoloSim/solosim_gear.cpp
+@@ -0,0 +1,180 @@
++// SoloWoW: real kits for the sim's people (Nov 17 night) - "full gear generation".
++//
++// Every adventurer owns a kit of the game's real items, kept in sim_agent.kit ("slot:entry:suffix:enchant,...") whether
++// or not they have ever had a body near the player. It is built and changed with the same rules their body uses
++// (bot_ai::CanEquipFor - class, level, slot, weapon skills, armour types - and NPCBots' sorted gear lists), and shaped
++// for the look of progression: quality by level band (greens early, blues from the 20s, epics near 60 and rare),
++// armour that hangs together from 30 (one name family), level-gated slots (rings/neck/shoulders from 20, head and
++// trinkets from 30). What happens to them changes it: each level, a rare find, savings spent, a smith's work mark pieces
++// due, and the sim replaces the weakest due pieces with something better (World::RefreshKits). The kit sets their gear
++// tier, which the sim's fights use.
++#include "solosim_gear.h"
++#include "bot_ai.h"
++#include "botcommon.h"
++#include "botdatamgr.h"
++#include "botconfig.h"
++#include "Item.h"
++#include "ItemTemplate.h"
++#include "ObjectMgr.h"
++#include <algorithm>
++#include <array>
++#include <cstdio>
++#include <map>
++#include <sstream>
++#include <vector>
++
++namespace SoloGear
++{
++namespace
++{
++    struct Piece { uint8 slot = 0; uint32 entry = 0; int32 suffix = 0; uint32 enchant = 0; };
++
++    // a small deterministic generator: the same person, the same day, the same roll
++    struct Roll
++    {
++        uint64 s;
++        explicit Roll(uint64 seed) : s(seed * 6364136223846793005ULL + 1442695040888963407ULL) { }
++        uint32 Next() { s ^= s >> 33; s *= 0xff51afd7ed558ccdULL; s ^= s >> 33; s *= 0xc4ceb9fe1a85ec53ULL; s ^= s >> 33; return uint32(s); }
++        uint32 Below(uint32 n) { return n ? Next() % n : 0; }
++    };
++
++    bool CanRanged(uint8 cls)
++    {
++        return cls == BOT_CLASS_HUNTER || cls == BOT_CLASS_ROGUE || cls == BOT_CLASS_WARRIOR || cls == BOT_CLASS_PRIEST
++            || cls == BOT_CLASS_MAGE || cls == BOT_CLASS_WARLOCK;
++    }
++    bool Caster(uint8 cls) { return cls == BOT_CLASS_PRIEST || cls == BOT_CLASS_MAGE || cls == BOT_CLASS_WARLOCK || cls == BOT_CLASS_DRUID; }
++
++    // the slot is open at this level (as bot_ai::InitEquips does it)
++    bool SlotOpen(uint8 slot, uint8 cls, uint8 level)
++    {
++        if (slot == BOT_SLOT_BODY) return false;                                          // shirts: not worth a roll
++        if (slot == BOT_SLOT_OFFHAND && level < 10 && Caster(cls)) return false;
++        if ((slot == BOT_SLOT_FINGER1 || slot == BOT_SLOT_FINGER2 || slot == BOT_SLOT_NECK || slot == BOT_SLOT_SHOULDERS) && level < 20) return false;
++        if ((slot == BOT_SLOT_TRINKET1 || slot == BOT_SLOT_TRINKET2 || slot == BOT_SLOT_HEAD) && level < 30) return false;
++        return true;
++    }
++
++    bool QualityFits(uint32 q, uint8 level, Roll& r)
++    {
++        if (q >= ITEM_QUALITY_EPIC) return r.Below(100) < (level >= 60 ? 12u : level >= 50 ? 2u : 0u);
++        if (q == ITEM_QUALITY_RARE) return r.Below(100) < (level < 20 ? 5u : level < 50 ? 25u : level < 60 ? 40u : 100u);
++        return q >= ITEM_QUALITY_NORMAL;
++    }
++
++    // one piece for the slot: from the highest level step down, the items this class can wear there
++    uint32 Pick(uint8 cls, uint8 level, uint8 slot, ItemTemplate const* mainHand, std::string& family, Roll& r, uint32 avoid = 0)
++    {
++        if (cls >= BOT_CLASS_END || slot >= BOT_INVENTORY_SIZE) return 0;
++        ItemLeveledArr const& steps = BotDataMgr::GetWanderingBotsSortedGearMap()[BOT_GENERATED_WANDERING][cls][slot];
++        uint32 maxIlvl = BotCfg::GetBotWandererMaxItemLevel(level);
++        bool armour = slot >= BOT_SLOT_HEAD && slot <= BOT_SLOT_HANDS;
++        for (int32 lvl = level; lvl > ITEM_SORTING_LEVEL_STEP; lvl -= ITEM_SORTING_LEVEL_STEP)
++        {
++            uint32 step = uint32(lvl) / ITEM_SORTING_LEVEL_STEP;
++            if (step >= steps.size() || steps[step].empty()) continue;
++            std::vector<ItemTemplate const*> valid;
++            for (uint32 id : steps[step])
++            {
++                ItemTemplate const* p = sObjectMgr->GetItemTemplate(id);
++                if (!p || (maxIlvl && p->ItemLevel > maxIlvl) || p->ItemId == avoid) continue;   // not the same ring or trinket twice
++                if (!bot_ai::CanEquipFor(cls, level, BOT_SPEC_DEFAULT, CanRanged(cls), p, slot)) continue;
++                if (slot == BOT_SLOT_OFFHAND && mainHand && mainHand->InventoryType == INVTYPE_2HWEAPON) continue;   // two hands full
++                valid.push_back(p);
++            }
++            if (valid.empty()) continue;
++            ItemTemplate const* keep = nullptr;
++            for (uint32 attempt = 0; attempt < 6; ++attempt)
++            {
++                ItemTemplate const* p = valid[r.Below(uint32(valid.size()))];
++                bool qualityOk = QualityFits(p->Quality, level, r);
++                bool familyOk = !armour || level < 30 || family.empty() || p->Name1.rfind(family + " ", 0) == 0;
++                if (qualityOk && familyOk) { keep = p; break; }
++                if (qualityOk && !keep) keep = p;
++            }
++            if (!keep) keep = valid[r.Below(uint32(valid.size()))];
++            if (armour && level >= 30 && family.empty())
++                if (size_t sp = keep->Name1.find(' '); sp != std::string::npos && keep->Name1.find(" of ") == std::string::npos)
++                    family = keep->Name1.substr(0, sp);
++            return keep->ItemId;
++        }
++        return 0;
++    }
++
++    std::vector<Piece> Parse(std::string const& kit)
++    {
++        std::vector<Piece> out;
++        std::istringstream in(kit);
++        std::string part;
++        while (std::getline(in, part, ','))
++        {
++            Piece g; uint32 slot = 0;
++            if (std::sscanf(part.c_str(), "%u:%u:%d:%u", &slot, &g.entry, &g.suffix, &g.enchant) == 4 && g.entry && slot < BOT_INVENTORY_SIZE)
++            { g.slot = uint8(slot); out.push_back(g); }
++        }
++        return out;
++    }
++}
++
++std::string Refresh(uint8 cls, uint8 level, std::string const& kit, uint8 due, uint64 seed, uint32* changed)
++{
++    if (changed) *changed = 0;
++    if (cls < BOT_CLASS_WARRIOR || cls > BOT_CLASS_DRUID || cls == BOT_CLASS_DEATH_KNIGHT) return kit;
++    std::vector<Piece> have = Parse(kit);
++    std::map<uint8, Piece> bySlot;
++    for (Piece const& g : have) bySlot[g.slot] = g;
++    Roll r(seed);
++
++    // which slots get a new piece: an empty kit - all of them; otherwise the open slots with nothing in them, then the
++    // weakest pieces, as many as are due
++    std::vector<uint8> todo;
++    std::vector<std::pair<uint32, uint8>> weakest;
++    for (uint8 s = 0; s < BOT_INVENTORY_SIZE; ++s)
++    {
++        if (!SlotOpen(s, cls, level)) continue;
++        auto it = bySlot.find(s);
++        if (it == bySlot.end()) { todo.push_back(s); continue; }
++        if (ItemTemplate const* p = sObjectMgr->GetItemTemplate(it->second.entry)) weakest.emplace_back(p->ItemLevel, s);
++        else todo.push_back(s);
++    }
++    std::ranges::sort(weakest);
++    for (uint32 k = 0; k < weakest.size() && k < due; ++k) todo.push_back(weakest[k].second);
++    if (todo.empty()) return kit;
++    std::ranges::sort(todo);                                   // main hand first: the off hand depends on it
++
++    // the armour family they already wear, so new pieces match it
++    std::string family;
++    for (auto const& [s, g] : bySlot)
++        if (s >= BOT_SLOT_HEAD && s <= BOT_SLOT_HANDS)
++            if (ItemTemplate const* p = sObjectMgr->GetItemTemplate(g.entry); p && p->Name1.find(" of ") == std::string::npos)
++                if (size_t sp = p->Name1.find(' '); sp != std::string::npos) { family = p->Name1.substr(0, sp); break; }
++
++    uint32 n = 0;
++    for (uint8 s : todo)
++    {
++        ItemTemplate const* mh = nullptr;
++        if (auto it = bySlot.find(BOT_SLOT_MAINHAND); it != bySlot.end()) mh = sObjectMgr->GetItemTemplate(it->second.entry);
++        // the other ring or trinket they wear: never the same piece twice
++        uint8 partner = s == BOT_SLOT_FINGER1 ? BOT_SLOT_FINGER2 : s == BOT_SLOT_FINGER2 ? BOT_SLOT_FINGER1
++                      : s == BOT_SLOT_TRINKET1 ? BOT_SLOT_TRINKET2 : s == BOT_SLOT_TRINKET2 ? BOT_SLOT_TRINKET1 : BOT_INVENTORY_SIZE;
++        uint32 avoid = 0;
++        if (partner < BOT_INVENTORY_SIZE) if (auto pit = bySlot.find(partner); pit != bySlot.end()) avoid = pit->second.entry;
++        uint32 entry = Pick(cls, level, s, mh, family, r, avoid);
++        if (!entry) continue;
++        ItemTemplate const* np = sObjectMgr->GetItemTemplate(entry);
++        auto it = bySlot.find(s);
++        if (it != bySlot.end())
++            if (ItemTemplate const* op = sObjectMgr->GetItemTemplate(it->second.entry); op && np && op->ItemLevel + (op->Quality > np->Quality ? 5 : 0) > np->ItemLevel)
++                continue;                                      // nothing better on offer: keep what they have
++        Piece g; g.slot = s; g.entry = entry; g.suffix = Item::GenerateItemRandomPropertyId(entry);
++        bySlot[s] = g;
++        ++n;
++        if (s == BOT_SLOT_MAINHAND && np && np->InventoryType == INVTYPE_2HWEAPON) bySlot.erase(BOT_SLOT_OFFHAND);   // a two-hander: off hand empty
++    }
++    if (changed) *changed = n;
++    std::string out;
++    for (auto const& [s, g] : bySlot)
++        out += (out.empty() ? "" : ",") + std::to_string(uint32(s)) + ":" + std::to_string(g.entry) + ":" + std::to_string(g.suffix) + ":" + std::to_string(g.enchant);
++    return out;
++}
++}
+diff --git a/src/server/game/SoloSim/solosim_gear.h b/src/server/game/SoloSim/solosim_gear.h
+new file mode 100644
+index 0000000..9cb0c2f
+--- /dev/null
++++ b/src/server/game/SoloSim/solosim_gear.h
+@@ -0,0 +1,11 @@
++#ifndef SOLOSIM_GEAR_H
++#define SOLOSIM_GEAR_H
++#include "Define.h"
++#include <string>
++namespace SoloGear
++{
++    // the kit after a refresh: an empty kit is built whole; otherwise the open slots are filled and the `due` weakest
++    // pieces replaced where something better fits (changed: how many pieces are new)
++    std::string Refresh(uint8 cls, uint8 level, std::string const& kit, uint8 due, uint64 seed, uint32* changed = nullptr);
++}
++#endif
+-- 
+2.56.0.windows.2
+

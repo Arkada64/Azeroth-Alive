@@ -52,6 +52,16 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
    **Next there:** generated rares for Northrend; road nodes for the TBC isles (Eversong, Ghostlands, Azuremyst,
    Bloodmyst) and Dalaran so blood elves and draenei have homes; the Exodar boat and the Silvermoon orb.
 3. **Full gear generation** (persistent gear for sim people; truly generated items for loot later).
+   **Done (Nov 18, just after midnight):** every adventurer owns a real kit of the game's items, body or no body
+   (solosim_gear.cpp), built with the rules their body uses (bot_ai::CanEquipFor - _canEquip's class/level/slot rules,
+   split out so the sim can call them - and NPCBots' sorted gear lists): quality by level band, matching armour names
+   from 30, slots opening with level, no ring or trinket twice. Level-ups, rare finds, savings spent and crafted gear
+   mark pieces due; an hourly pass (400 people) replaces the weakest due pieces where something better fits, round the
+   world in turn - not anyone whose body was near the player lately (the body wears and records the kit). The kit sets
+   the gear tier the fights use, now against a normal item for the level (Outland's and Northrend's item levels too).
+   99% of adventurers had a kit after a 61-hour test; 48 sim-hours still run in ~17 s.
+   **Left:** purchases from town vendors and the AH (with the market), dungeon and raid loot (with that sim), truly
+   generated items.
 4. **Auction houses and the market sim:** prices from the game's own values (vendor price, quality, level, slot,
    usefulness), moved by supply and demand from the sim (robbed caravans, quiet mines, farmed areas), drifting over days;
    adventurers list what they don't want like a player (greys still to vendors), at prices by character (greedy high,
