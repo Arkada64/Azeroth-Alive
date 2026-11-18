@@ -1,7 +1,7 @@
 From 8cb221845a700bcca71fcc4afd640c7d8f3068d0 Mon Sep 17 00:00:00 2001
 From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
 Date: Mon, 16 Nov 2026 21:41:26 -0600
-Subject: [PATCH 04/36] Gear drives the sim's odds; quality curve and matching
+Subject: [PATCH 04/37] Gear drives the sim's odds; quality curve and matching
  looks for sim bodies
 
 - The gear tier comes from the real kit (item level and quality against the norm for their level, minus empty slots); shopping and rare drops mark pieces due so the next body shows it

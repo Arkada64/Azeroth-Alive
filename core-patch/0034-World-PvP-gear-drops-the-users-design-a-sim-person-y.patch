@@ -1,7 +1,7 @@
 From 132f4cf67cca2dc1093beccd1ee1437daa508a56 Mon Sep 17 00:00:00 2001
 From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
 Date: Tue, 17 Nov 2026 14:37:39 -0600
-Subject: [PATCH 34/36] World PvP gear drops (the users design): a sim person
+Subject: [PATCH 34/37] World PvP gear drops (the users design): a sim person
  you kill in the open world may drop a piece of what they wear on their body;
  off-screen clashes move gear to the winner; never the players gear
 

@@ -103,6 +103,9 @@ $w['Rate.XP.Kill'] = $xp; $w['Rate.XP.Quest'] = $xp; $w['Rate.XP.Explore'] = $xp
 # XP bands (Nov 17, the user's OK): vanilla's pace for 1-60 by band, replacing the flat rate above for players and the
 # sim's adventurers (SoloWoW.XPBands holds the numbers; see solosim_xp.cpp)
 $w['SoloWoW.XPBands.Enable'] = if ($NoEra) { '0' } else { '1' }
+# with the difficulty revert (era-db.ps1: vanilla's XP curve and each quest's old XP) the game's own numbers are vanilla's:
+# the bands stay on (they set the sim's pace too) at 1.0 - no stand-in multipliers any more (Nov 17 night)
+$w['SoloWoW.XPBands'] = '"1-80:1.0/1.0"'
 $w['SoloWoW.Loot.Enable'] = '1'   # random suffixes and rare finds on loot (solosim_loot.cpp)
 $w['DungeonFinder.OptionsMask'] = if ($NoEra) { '7' } else { '0' }   # 0 = no queue-and-teleport; walk there with hired bots
 # Hiring is free: people come along for their own reasons (regard - see BotBubble::InviteByName / World::HireRefusal), not for gold.

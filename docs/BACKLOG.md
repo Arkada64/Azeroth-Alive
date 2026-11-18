@@ -22,6 +22,7 @@ Tracks, roughly in the order we work them. Each step should be playable on its o
    regen as they were, riding at 40/60 and the 3 s cast, old dungeon loot; the sim paced to match. Also: **where hostile
    creatures became neutral** (find and restore). To decide with the user: which comforts stay (later flight paths, the
    dungeon finder, heirlooms...).
+   **Decided (Nov 17 22:30): keep only the later flight paths.** Dual spec, heirlooms, the barbershop and the cheap respecs go back to vanilla/TBC.
    - **Generated quests reviewed with the revert:** requests and board bounties pay XP and money by difficulty and
      distance, matched to ordinary quests of the same level after the revert.
    - **Wrath content to the same rules:** review Northrend; where it lacks what vanilla/TBC had (outdoor elites, elite
@@ -67,6 +68,9 @@ Also noted the same evening:
   grim wit, night elf old formality, gnome rapid tech-talk, goblin deals, tauren slow earthiness, draenei devotion, plain
   human; personality shading) -> delivery (/say, /yell, whisper by mood and distance; emotes /lol /cry /cheer /angry
   /cower /shrug /bow /thank...; body language). Generated from the sim's own facts - never contradicts the world.
+
+### Lighter world save (user, Nov 17 22:26 - fit in alongside other sim work)
+- The 10-minute save rewrites every sim table (~4 MB, ~12 MB on disk with InnoDB overhead). Write only rows changed since the last save (dirty flags per agent/table; events are append-only already).
 
 ### Bodies keep their spot across restarts (user, Nov 17 21:41)
 - Today the plan/step survives a restart and downtime is caught up, but bodies respawn at the town anchor: 40 in a pile.

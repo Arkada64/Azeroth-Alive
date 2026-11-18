@@ -1,0 +1,99 @@
+From b8387bd37e155193722f48f2d37533dd0e00815e Mon Sep 17 00:00:00 2001
+From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 22:43:52 -0600
+Subject: [PATCH 37/37] Era: quests pay their old XP (solo_era_quest_xp from
+ era-db.ps1; the usual fall-off for low quests stays)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01JU37XfnHTvru3VVz2sNN7z
+---
+ src/server/game/Quests/QuestDef.cpp     |  4 ++-
+ src/server/game/SoloSim/solosim_era.cpp | 38 +++++++++++++++++++++++++
+ src/server/game/SoloSim/solosim_era.h   |  8 ++++++
+ 3 files changed, 49 insertions(+), 1 deletion(-)
+ create mode 100644 src/server/game/SoloSim/solosim_era.cpp
+ create mode 100644 src/server/game/SoloSim/solosim_era.h
+
+diff --git a/src/server/game/Quests/QuestDef.cpp b/src/server/game/Quests/QuestDef.cpp
+index 80149f9..c5db946 100644
+--- a/src/server/game/Quests/QuestDef.cpp
++++ b/src/server/game/Quests/QuestDef.cpp
+@@ -16,6 +16,7 @@
+  */
+ 
+ #include "QuestDef.h"
++#include "solosim_era.h" // SoloWoW
+ #include "Formulas.h"
+ #include "Opcodes.h"
+ #include "Player.h"
+@@ -215,7 +216,8 @@ uint32 Quest::XPValue(uint8 playerLevel) const
+         diffFactor = 10;
+     }
+ 
+-    uint32 xp = diffFactor * xpentry->Exp[RewardXPDifficulty] / 10;
++    uint32 full = SoloEra::QuestXP(GetQuestId());                 // SoloWoW Era: what it paid before Blizzard boosted it
++    uint32 xp = diffFactor * (full ? full : xpentry->Exp[RewardXPDifficulty]) / 10;
+     if (xp <= 100)
+     {
+         xp = 5 * ((xp + 2) / 5);
+diff --git a/src/server/game/SoloSim/solosim_era.cpp b/src/server/game/SoloSim/solosim_era.cpp
+new file mode 100644
+index 0000000..43ad33b
+--- /dev/null
++++ b/src/server/game/SoloSim/solosim_era.cpp
+@@ -0,0 +1,38 @@
++// SoloWoW Era (Nov 17 night): the difficulty revert's pieces that need the core. The data half is scripts\era-db.ps1
++// (vanilla/TBC facts for creatures and quests, the XP curve - backed up and reversible); here:
++//   - quest XP: a quest pays what it paid before Blizzard boosted it (solo_era_quest_xp, filled by era-db.ps1); the
++//     usual fall-off for quests far below you stays (vanilla had the same 80/60/40/20/10% steps)
++#include "solosim_era.h"
++#include "Config.h"
++#include "DatabaseEnv.h"
++#include "Field.h"
++#include "QueryResult.h"
++#include "Log.h"
++#include <mutex>
++#include <unordered_map>
++
++namespace SoloEra
++{
++namespace
++{
++    std::once_flag questXpOnce;
++    std::unordered_map<uint32, uint32> questXp;
++
++    void LoadQuestXP()
++    {
++        if (!sConfigMgr->GetOption<bool>("SoloWoW.Era.QuestXP", true)) return;
++        QueryResult has = WorldDatabase.Query("SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'solo_era_quest_xp'");
++        if (!has) return;
++        if (QueryResult r = WorldDatabase.Query("SELECT quest, xp FROM solo_era_quest_xp"))
++            do { Field* f = r->Fetch(); questXp[f[0].Get<uint32>()] = f[1].Get<uint32>(); } while (r->NextRow());
++        LOG_INFO("server.loading", "SoloWoW era: {} quests pay their old XP", questXp.size());
++    }
++}
++
++uint32 QuestXP(uint32 questId)
++{
++    std::call_once(questXpOnce, LoadQuestXP);
++    auto it = questXp.find(questId);
++    return it == questXp.end() ? 0 : it->second;
++}
++}
+diff --git a/src/server/game/SoloSim/solosim_era.h b/src/server/game/SoloSim/solosim_era.h
+new file mode 100644
+index 0000000..52bd05a
+--- /dev/null
++++ b/src/server/game/SoloSim/solosim_era.h
+@@ -0,0 +1,8 @@
++#ifndef SOLOSIM_ERA_H
++#define SOLOSIM_ERA_H
++#include "Define.h"
++namespace SoloEra
++{
++    uint32 QuestXP(uint32 questId);     // the quest's full XP before Blizzard's boosts, 0 = not known (use the game's)
++}
++#endif
+-- 
+2.56.0.windows.2
+

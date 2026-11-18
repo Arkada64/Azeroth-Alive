@@ -1,7 +1,7 @@
 From 1ff9444d140b87c86e8ed838e6ca7fb32b2e79cc Mon Sep 17 00:00:00 2001
 From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
 Date: Tue, 17 Nov 2026 14:17:19 -0600
-Subject: [PATCH 32/36] Lead the caravan at your own pace (they follow you, you
+Subject: [PATCH 32/37] Lead the caravan at your own pace (they follow you, you
  get the flag); a price on raiders: hunters near your level, now and then,
  never in towns or at rest
 
