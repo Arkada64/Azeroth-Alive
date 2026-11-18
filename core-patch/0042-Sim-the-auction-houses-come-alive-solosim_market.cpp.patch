@@ -1,7 +1,7 @@
 From 72ec809b9d8b231b890ea4ffad0f0c50f46c834f Mon Sep 17 00:00:00 2001
 From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
 Date: Wed, 18 Nov 2026 00:51:37 -0600
-Subject: [PATCH 42/44] Sim: the auction houses come alive (solosim_market.cpp)
+Subject: [PATCH 42/45] Sim: the auction houses come alive (solosim_market.cpp)
  - the sim's people put up what they take off, priced from the item's value
  times supply and demand, under their own names, in their side's house or a
  goblin one; auctions sell over time near the market price (never far above)

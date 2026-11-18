@@ -1,7 +1,7 @@
 From df93ce4d8901eefd674c027aa251e47d2b2e19e3 Mon Sep 17 00:00:00 2001
 From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
 Date: Tue, 17 Nov 2026 22:10:23 -0600
-Subject: [PATCH 36/44] Sim: bodies keep their spot across restarts (saved
+Subject: [PATCH 36/45] Sim: bodies keep their spot across restarts (saved
  every 30 s with the world; same step -> the exact spot, else straight to
  their first spot instead of a pile on the site's node); adventurers as
  friends: /friend someone you've met or face, their level, class and zone live

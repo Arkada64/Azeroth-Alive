@@ -1,7 +1,7 @@
 From abda64d0fe994afdfb4a28dd16b9f6d2e0e775c9 Mon Sep 17 00:00:00 2001
 From: Arkada64 <166951731+Arkada64@users.noreply.github.com>
 Date: Wed, 18 Nov 2026 01:45:25 -0600
-Subject: [PATCH 44/44] Sim: the text generator (solosim_talk.cpp) - moods from
+Subject: [PATCH 44/45] Sim: the text generator (solosim_talk.cpp) - moods from
  memories and state, what to say from the sim's own facts (news, dangers,
  dungeon runs and loot, rares, grief, clashes, ambitions, friends and rivals),
  eleven race voices true to lore, personality shading, /yell and emotes, and

@@ -130,8 +130,15 @@ Also noted the same evening:
   the bold; emotes (cry, cheer, flex, point, roar, wave, laugh, rude, no, yes); the listener's answer by what they know,
   the relation and the speaker's state. Used by townsfolk and by adventurers near you; GM .sim talk [n] prints samples.
   Also: generated names are checked against a list of hateful/crude words (the troll kit had made "Nazi") and existing
-  ones renamed on load. **Next:** longer exchanges (three or four turns), questions to the player, whispers, more
-  phrase banks per voice, the gossip/menu Rumor() through Speakable too.
+  ones renamed on load.
+  **Second pass (Nov 18, ~2 am, the user's notes):** grammar - places inside sentences ("near the Stagnant Oasis", never
+  "closest The..."), subjects restored ("I ran into...", "We went into... and came straight back out"), a/an, no doubled
+  tags ("..., mon, mon"), news keeps its capital after "Did you hear?" and lower-cases "the" after "Word is,"; the
+  chronicle's own "the The" and "N of the <singular>" fixed. Conversations of up to four turns: the opener, an answer
+  with a tone (agree, surprise, fear, bravado, praise, a jab, comfort, sympathy, mockery, encouragement, doubt, a
+  greeting, scorn), the speaker's follow-up to that tone, and a close - a real "how've you been?" answered by their
+  mood, or a goodbye in their race's voice. Good news and grim news get different answers. **Next:** questions to the
+  player, whispers, more phrase banks per voice, the gossip/menu Rumor() through the same grammar.
 
 ### Lighter world save (user, Nov 17 22:26 - fit in alongside other sim work)
 - The 10-minute save rewrites every sim table (~4 MB, ~12 MB on disk with InnoDB overhead). Write only rows changed since the last save (dirty flags per agent/table; events are append-only already).
